@@ -3,7 +3,7 @@ description: Iteratively refine an epic PRD with open Q&A until confidence reach
 argument-hint: <epic-id>
 ---
 
-You are running /refine for epic **$ARGUMENTS**.
+You are running /refine-epic for epic **$ARGUMENTS**.
 
 Work through the steps below **in order**. Do not skip any step.
 
