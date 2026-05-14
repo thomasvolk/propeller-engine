@@ -60,6 +60,7 @@ A project is the central data structure that defines what MIDI signals the engin
 - A note can be a rest, occupying duration without producing a sound.
 - The time signature is expressed as two numerals: the upper numeral indicates how many note values constitute a bar; the lower numeral indicates the note value being counted and must be a power of 2 (2, 4, 8, or 16).
 - A project can be created and modified at runtime.
+- Project updates take effect only on a bar boundary — the current bar always plays to completion first.
 - The engine can hold one active project at a time.
 
 **Dependencies:** EP-1

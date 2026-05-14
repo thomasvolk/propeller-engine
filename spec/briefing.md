@@ -29,11 +29,12 @@ A track has a name, a midi-channel, a midi-instrument and a list of bars.
 
 ## bar
 A bar contains a list of notes. Every bar in a project has the same length depending on the time signature.
+The bar is always played completely before the engine will update the project.
 
 ## Note
 
 A note has a pitch (MIDI standard), a velocity (MIDI) and a duration depending on the time signature.
-A note can also be a rest. The duration can be samller than the note value defined by the time signature but not bigger then the duration of a bar.
+A note can also be a rest. The duration can be smaller than the note value defined by the time signature but not bigger then the duration of a bar.
 
 ## time signature
 Most time signatures consist of two numerals, one stacked above the other:
