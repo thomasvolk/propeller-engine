@@ -41,3 +41,13 @@ Most time signatures consist of two numerals, one stacked above the other:
 
 The lower numeral indicates the note value that the signature is counting. This number is always a power of 2 (unless the time signature is irrational), usually 2, 4 or 8, but less often 16 is also used, usually in Baroque music. 2 corresponds to the half note (minim), 4 to the quarter note (crotchet), 8 to the eighth note (quaver), 16 to the sixteenth note (semiquaver).
 The upper numeral indicates how many such note values constitute a bar.
+
+# Important requirements
+
+This tool is for life performances.
+
+- A project will be repeated endlessly
+- The loop has to run precisely in time
+- There must be no timing gap if the project repeats
+- There must be no timing gap when the project gets updated
+

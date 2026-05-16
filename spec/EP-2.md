@@ -40,7 +40,7 @@ A musician loads a completely different project while the engine is running. The
 | F-10 | The time signature lower numeral indicates the note value and must be a power of 2 (2, 4, 8, or 16). |
 | F-11 | A project can be created via the runtime interface while the engine is running. |
 | F-12 | An existing project can be modified via the runtime interface while the engine is running. |
-| F-13 | Project updates (create or modify) take effect only at the next bar boundary; the current bar always plays to completion first. |
+| F-13 | Project updates (create or modify) take effect only at the next bar boundary; the current bar always plays to completion first. The updated project must begin immediately when that bar ends — there must be no timing gap between the last tick of the current bar and the first tick of the updated project. |
 | F-14 | The engine holds at most one active project at a time; loading a new project replaces the previous one. |
 | F-15 | The engine validates a project on receipt and rejects invalid projects with a structured error. |
 
@@ -52,6 +52,7 @@ A musician loads a completely different project while the engine is running. The
 |----|-------------|
 | NF-1 | Validation must complete synchronously before the project is accepted or rejected; a rejected project must not partially replace the current active project. |
 | NF-2 | The project data model must be defined as a first-class type in the engine's domain layer, independent of any serialization format. |
+| NF-3 | Project updates must take effect at the bar boundary with no perceptible timing gap. The swap must be atomic from the engine's scheduler perspective: the updated content must begin on the very next tick after the current bar ends. |
 
 ---
 
@@ -60,12 +61,13 @@ A musician loads a completely different project while the engine is running. The
 | ID | Given | When | Then |
 |----|-------|------|------|
 | AC-1 | A valid project definition | the project is submitted to the engine | the engine accepts it and holds it as the active project |
-| AC-2 | The engine is looping an active project | a runtime modification is submitted | the running bar plays to completion and the change takes effect from the next bar boundary |
+| AC-2 | The engine is looping an active project | a runtime modification is submitted | the running bar plays to completion and the change takes effect from the next bar boundary with no timing gap |
 | AC-3 | A note with a duration exceeding the bar length | the project containing it is submitted | the engine rejects the project with a validation error |
 | AC-4 | A time signature with a lower numeral that is not a power of 2 | the project is submitted | the engine rejects the project with a validation error |
 | AC-5 | The engine has an active project | a new project is submitted | the previous project is discarded and the new one becomes active from the next bar boundary |
 | AC-6 | A bar containing a rest note | the bar is played | no MIDI note-on event is emitted for the rest's duration |
 | AC-7 | A project with a MIDI channel outside 1–16 or an instrument outside 0–127 | the project is submitted | the engine rejects it with a validation error |
+| AC-8 | The engine is looping an active project | a runtime modification is submitted and the bar boundary is reached | the first tick of the updated project follows immediately after the last tick of the previous bar with no silent gap |
 
 ---
 
@@ -139,3 +141,7 @@ What should the engine do when a project with zero tracks is submitted?
 ### Cycle 1 — Confidence: 50%
 - Reconciled: nothing (PRD created from roadmap)
 - Added: Q1 (note duration representation), Q2 (bar fill constraint), Q3 (project persistence), Q4 (multi-track playback), Q5 (empty project behaviour)
+
+### Cycle 2 — Confidence: 50%
+- Reconciled: briefing "Important requirements" → F-13 updated (no timing gap on project update), NF-3 added (atomic bar-boundary swap), AC-2 updated (no timing gap), AC-8 added (gap-free transition test)
+- Added: none — open questions Q1–Q5 remain unanswered
