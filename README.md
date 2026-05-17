@@ -12,8 +12,8 @@ mid-performance. propeller-engine is that process.
 # Start the daemon — returns immediately; engine runs in the background
 propeller start
 
-# Confirm it is running (socket is connectable)
-nc -U /tmp/propeller.sock </dev/null && echo "propeller is running"
+# Confirm it is running
+propeller status
 
 # Stop the daemon cleanly
 propeller stop
@@ -59,11 +59,11 @@ releases all resources, and removes the socket file before exiting.
 
 ### Checking liveness
 
-The daemon's presence is indicated by a connectable Unix socket at `/tmp/propeller.sock`:
-
 ```sh
-nc -U /tmp/propeller.sock </dev/null && echo "running" || echo "not running"
+propeller status
 ```
+
+Prints a human-readable message and exits with code 0 if the daemon is running, or a non-zero code if it is not. Suitable for use in scripts.
 
 ### Configuring the socket path
 
@@ -89,6 +89,7 @@ Diagnostic output is written to:
 - **Single-instance guard** — rejects a second `start` if the daemon is already running.
 - **Stale socket recovery** — detects and removes leftover socket files from a previous crash, then starts fresh.
 - **Graceful shutdown** — handles both the `stop` command and SIGTERM; unlinks the socket on exit.
+- **Status check** — `propeller status` reports whether the daemon is running; exits 0 if running, non-zero if not.
 - **Structured logging** — writes to stderr and to the platform log file using `tracing`.
 
 ## Contributing
