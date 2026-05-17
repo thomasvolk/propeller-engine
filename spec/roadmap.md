@@ -76,7 +76,7 @@ The engine plays back the active project in a continuous loop.
 - Notes are played on their designated MIDI channel and instrument at the position defined in the project.
 - Tempo and time signature are read from the project header.
 - Changing the BPM in the project header takes effect on the running loop.
-- The loop must run precisely in time; timing drift is not acceptable.
+- The loop must run precisely in time; no delays allowed and timing drift is not acceptable.
 - There must be no timing gap when the project repeats from the end back to the start.
 - There must be no timing gap when the active project is updated (see EP-2 F-13, NF-3).
 - Timing precision is the highest-priority requirement; all other concerns are secondary to it.

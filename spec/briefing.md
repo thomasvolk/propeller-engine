@@ -44,10 +44,11 @@ The upper numeral indicates how many such note values constitute a bar.
 
 # Important requirements
 
-This tool is for life performances.
+This tool is for life performances. If the following requirements can not be fulfilled, this tool makes no sense.
 
-- A project will be repeated endlessly
-- The loop has to run precisely in time
+- The loop has to run precisely in time - no delays allowed 
 - There must be no timing gap if the project repeats
 - There must be no timing gap when the project gets updated
+- A project will be repeated endlessly
+
 
