@@ -277,6 +277,70 @@ fn sigterm_causes_graceful_shutdown() {
     assert!(socket_gone, "socket should be gone after SIGTERM");
 }
 
+// ── T-14 : idle resource usage (AC-9) ─────────────────────────────────────
+
+/// T-14: idle CPU below 1 % and memory below 50 MB after a stable period (AC-9)
+///
+/// Marked ignore because it is slow and environment-sensitive; run explicitly
+/// with `cargo test -- --ignored` on a quiet machine.
+#[test]
+#[ignore]
+fn idle_resource_usage_within_limits() {
+    let sock = unique_sock_path();
+    let _guard = DaemonGuard::start(sock.clone());
+
+    // Let the daemon settle for a second
+    std::thread::sleep(Duration::from_secs(1));
+
+    // Find the PID(s) listening on the socket via lsof
+    let lsof_out = Command::new("lsof")
+        .args(["-t", &sock.to_string_lossy()])
+        .output()
+        .expect("lsof not available");
+
+    let pids: Vec<u32> = String::from_utf8_lossy(&lsof_out.stdout)
+        .lines()
+        .filter_map(|l| l.trim().parse().ok())
+        .collect();
+
+    assert!(!pids.is_empty(), "could not find daemon PID via lsof");
+
+    let pid = pids[0];
+
+    // Read RSS from /proc/<pid>/status (Linux) or `ps` (macOS)
+    let ps_out = Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid.to_string()])
+        .output()
+        .expect("ps not available");
+
+    let rss_kb: u64 = String::from_utf8_lossy(&ps_out.stdout)
+        .trim()
+        .parse()
+        .expect("could not parse RSS from ps");
+
+    let rss_mb = rss_kb / 1024;
+    assert!(
+        rss_mb < 50,
+        "idle RSS {rss_mb} MB exceeds 50 MB limit"
+    );
+
+    // CPU: sample with `ps` twice and take the reported %CPU (approximate)
+    let cpu_out = Command::new("ps")
+        .args(["-o", "%cpu=", "-p", &pid.to_string()])
+        .output()
+        .expect("ps not available");
+
+    let cpu: f64 = String::from_utf8_lossy(&cpu_out.stdout)
+        .trim()
+        .parse()
+        .expect("could not parse %CPU from ps");
+
+    assert!(
+        cpu < 1.0,
+        "idle CPU {cpu:.2}% exceeds 1% limit"
+    );
+}
+
 // ── T-20 : PROPELLER_SOCK env var routes to custom path ───────────────────
 
 /// T-20: setting PROPELLER_SOCK env var routes daemon and CLI to custom socket path
@@ -300,4 +364,53 @@ fn propeller_sock_env_var_uses_custom_path() {
             "default socket should not be in use when custom path is set"
         );
     }
+}
+
+// ── T-22 / T-23 : status subcommand (AC-11, AC-12) ────────────────────────
+
+/// T-22: `propeller status` exits 0 and reports running when daemon is up (AC-11)
+#[test]
+fn status_exits_zero_and_reports_running_when_daemon_is_up() {
+    let sock = unique_sock_path();
+    let _guard = DaemonGuard::start(sock.clone());
+
+    let output = Command::new(propeller_bin())
+        .arg("status")
+        .env("PROPELLER_SOCK", &sock)
+        .output()
+        .expect("failed to run propeller status");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "status should exit 0 when daemon is running, got {:?}",
+        output.status.code()
+    );
+    assert!(
+        !stdout.trim().is_empty(),
+        "status should print a non-empty message"
+    );
+}
+
+/// T-23: `propeller status` exits non-zero and reports not running when daemon is down (AC-12)
+#[test]
+fn status_exits_nonzero_and_reports_not_running_when_daemon_is_down() {
+    let sock = unique_sock_path();
+
+    let output = Command::new(propeller_bin())
+        .arg("status")
+        .env("PROPELLER_SOCK", &sock)
+        .output()
+        .expect("failed to run propeller status");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "status should exit non-zero when daemon is not running"
+    );
+    assert!(
+        !stdout.trim().is_empty() || !stderr.trim().is_empty(),
+        "status should print a non-empty message"
+    );
 }

@@ -4,7 +4,7 @@
 
 The engine runs as a long-lived background process. It starts on demand, remains running without further interaction, and shuts down cleanly when explicitly stopped. All subsequent epics depend on this foundation.
 
-**Confidence Level:** 92% — PRD is complete. NF-4 is intentionally qualitative (SIGKILL cannot be intercepted; "as gracefully as possible" is the correct bound for a PRD).
+**Confidence Level:** 95% — PRD is complete. NF-4 is intentionally qualitative (SIGKILL cannot be intercepted; "as gracefully as possible" is the correct bound for a PRD).
 
 ---
 
@@ -21,6 +21,10 @@ After a performance the performer stops the engine. The engine finishes any in-p
 ### UJ-3 · Attempting to start a second instance
 
 The performer accidentally tries to start the engine while it is already running. The second start attempt is rejected with a clear indication that an instance is already active. The running instance is unaffected.
+
+### UJ-6 · Checking whether the engine is running
+
+A performer wants to confirm the engine is active before starting a session. They run `propeller status`. The command reports the daemon's state in human-readable output and exits with a code that allows scripted checks.
 
 ### UJ-4 · Engine encounters an unexpected error
 
@@ -46,6 +50,7 @@ The engine crashes mid-session, leaving a stale socket file at `/tmp/propeller.s
 | F-8 | The engine opens a Unix domain socket at `/tmp/propeller.sock` on startup and removes it on clean shutdown. The presence of a connectable socket at that path serves as the liveness indicator. |
 | F-9 | On an internal error, the engine writes diagnostic information to stderr and to a user-specific log file (e.g. `$HOME/.local/share/propeller/propeller.log` or the platform-appropriate equivalent). |
 | F-10 | On startup, if `/tmp/propeller.sock` already exists, the engine attempts to connect to it. If the connection is refused, the stale file is removed and startup proceeds. If the connection succeeds, the start attempt is rejected (F-5). |
+| F-11 | A `status` CLI subcommand reports whether the daemon is currently running. It produces human-readable output and exits with code 0 if the daemon is running and a non-zero code if it is not. |
 
 ---
 
@@ -74,6 +79,8 @@ The engine crashes mid-session, leaving a stale socket file at `/tmp/propeller.s
 | AC-8 | The engine is not running | I start the engine and time from invocation to socket ready | Elapsed time is under 1 second |
 | AC-9 | The engine is running with no active project | CPU and memory are sampled after a stable period | CPU is below 1% and memory is below 50 MB |
 | AC-10 | The engine has crashed, leaving a stale `/tmp/propeller.sock` | I run the start command | The engine removes the stale file, starts successfully, and the socket is connectable |
+| AC-11 | The engine is running | I run `propeller status` | The output indicates the daemon is running and the command exits with code 0 |
+| AC-12 | The engine is not running | I run `propeller status` | The output indicates the daemon is not running and the command exits with a non-zero code |
 
 ---
 
@@ -100,3 +107,7 @@ No open questions.
 ### Cycle 4 — Confidence: 92%
 - Reconciled: Q-7 → F-10 (stale socket recovery) + UJ-5 (crash restart journey) + AC-10
 - Added: none — PRD is complete
+
+### Cycle 5 — Confidence: 95%
+- Reconciled: none
+- Added: F-11 (status subcommand with exit code), UJ-6 (checking daemon state), AC-11/AC-12

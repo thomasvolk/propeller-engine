@@ -4,13 +4,13 @@
 
 This epic establishes the foundational daemon infrastructure for the propeller-engine. The engine starts on demand via a CLI `start` command, daemonises itself using a double-fork, opens a Unix domain socket at a configurable path (defaulting to `/tmp/propeller.sock`) as its liveness indicator and IPC endpoint, and shuts down cleanly when a `stop` command is received or SIGTERM arrives. All subsequent epics build on top of this socket-based foundation.
 
-**Confidence Level:** 92% — All questions answered and decisions resolved; every PRD item has a task, TDD ordering is maintained, and concrete crates are named throughout; residual uncertainty is only in integration-test infrastructure details (invoking and cleaning up the daemon binary from `cargo test`).
+**Confidence Level:** 95% — All questions answered and decisions resolved; every PRD item including the new `status` subcommand (F-11, AC-11, AC-12) has a task; TDD ordering is maintained throughout.
 
 ---
 
 ## Architecture Overview
 
-The system has two runtime roles: the **CLI process** (short-lived) and the **daemon process** (long-lived). The CLI is written in Rust using `clap` (derive API) for argument parsing. The CLI's `start` subcommand performs a POSIX double-fork using the `daemonize` crate (which calls `fork()`, `setsid()`, and a second `fork()` internally, redirects stdio, and returns in the grandchild), so the grandchild process is fully detached from the calling shell, which returns immediately. The CLI's `stop` subcommand connects to the Unix socket and sends a stop message, then waits for the connection to close as confirmation of shutdown.
+The system has two runtime roles: the **CLI process** (short-lived) and the **daemon process** (long-lived). The CLI is written in Rust using `clap` (derive API) for argument parsing. The CLI's `start` subcommand performs a POSIX double-fork using the `daemonize` crate (which calls `fork()`, `setsid()`, and a second `fork()` internally, redirects stdio, and returns in the grandchild), so the grandchild process is fully detached from the calling shell, which returns immediately. The CLI's `stop` subcommand connects to the Unix socket and sends a stop message, then waits for the connection to close as confirmation of shutdown. The CLI's `status` subcommand attempts to connect to the resolved socket path: a successful connection means the daemon is running (prints a running message, exits 0); a failed connection means it is not running (prints a not-running message, exits non-zero). The `status` command reuses the same connect-or-fail logic as the startup guard but never modifies any file.
 
 The socket path is resolved at startup from the `PROPELLER_SOCK` environment variable, falling back to `/tmp/propeller.sock`. This allows integration tests to use unique socket paths without port conflicts by setting the env var per test.
 
@@ -30,6 +30,7 @@ Parses `start` and `stop` subcommands using `clap` (derive API) and forwards to 
 
 - `start`: runs the startup guard, performs double-fork via the `daemonize` crate, parent exits immediately (AC-1).
 - `stop`: connects to the resolved socket path, sends `{"type":"stop"}\n`, blocks until the connection closes (AC-2).
+- `status`: attempts to connect to the resolved socket path; prints a human-readable running/not-running message and exits 0 or non-zero accordingly (F-11, AC-11, AC-12). Does not send any IPC message and does not modify the socket file.
 
 ### Startup Guard
 
@@ -106,6 +107,9 @@ Tasks are ordered TDD-first: every test task must appear before the impl task it
 | T-19 | Impl: `tokio::signal::unix` SIGTERM handler integrated into main `select!` loop | impl | NF-4 | T-18 |
 | T-20 | Write test: setting `PROPELLER_SOCK` env var routes daemon and CLI to a custom socket path | test | F-8 | — |
 | T-21 | Impl: resolve socket path from `PROPELLER_SOCK` env var at startup, defaulting to `/tmp/propeller.sock` | impl | F-8 | T-20 |
+| T-22 | Write test: `propeller status` exits 0 and prints a running message when daemon is up (AC-11) | test | F-11, AC-11 | — |
+| T-23 | Write test: `propeller status` exits non-zero and prints a not-running message when daemon is down (AC-12) | test | F-11, AC-12 | — |
+| T-24 | Impl: CLI `status` subcommand — connect to resolved socket path, print state, exit with code 0 (running) or 1 (not running) | impl | F-11 | T-22, T-23 |
 
 ---
 
@@ -146,3 +150,7 @@ All decisions resolved and reconciled into the specification.
 ### Cycle 5 — Confidence: 92%
 - Reconciled: Q-6 → architecture + `SocketPath` data model updated (`PROPELLER_SOCK` env var, defaults to `/tmp/propeller.sock`); T-20/T-21 added for env-var override; Q-7 → Logger component updated (`tracing` + `tracing-subscriber` two-layer registry, `tracing_appender`); T-3 updated; D-1/D-2/D-3 formally reconciled and Open Decisions section closed
 - Added: none — specification is complete at 92%
+
+### Cycle 6 — Confidence: 95%
+- Reconciled: none
+- Added: T-22/T-23 (status tests for AC-11/AC-12), T-24 (status impl for F-11); architecture overview and CLI component updated to describe `status` subcommand

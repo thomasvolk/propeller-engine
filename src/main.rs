@@ -20,6 +20,8 @@ enum Commands {
     Start,
     /// Stop the running daemon
     Stop,
+    /// Check whether the daemon is running
+    Status,
 }
 
 fn main() {
@@ -27,6 +29,7 @@ fn main() {
     match cli.command {
         Commands::Start => cmd_start(),
         Commands::Stop => cmd_stop(),
+        Commands::Status => cmd_status(),
     }
 }
 
@@ -79,4 +82,17 @@ fn cmd_stop() {
         let mut buf = Vec::new();
         let _ = stream.read_to_end(&mut buf).await;
     });
+}
+
+fn cmd_status() {
+    let sock_path = socket_path::resolve();
+    match std::os::unix::net::UnixStream::connect(&sock_path) {
+        Ok(_) => {
+            println!("propeller is running");
+        }
+        Err(_) => {
+            println!("propeller is not running");
+            std::process::exit(1);
+        }
+    }
 }
