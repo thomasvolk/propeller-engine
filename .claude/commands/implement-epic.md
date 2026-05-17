@@ -1,11 +1,11 @@
 ---
-description: Implement an epic from its technical specification using TDD. Reads the spec, writes tests, implements requirements, runs tests, fixes issues until all pass, and reports AC coverage.
+description: Implement an epic from its technical specification using TDD. Reads the spec, writes tests, implements requirements, runs tests, fixes issues until all pass, then delegates final QA to /verify-epic.
 argument-hint: <epic-id>
 ---
 
 You are running /implement-epic for epic **$ARGUMENTS**.
 
-Work through the steps below **in order**. Do not skip any step. This is an agentic loop — you must keep iterating on fixes until all tests pass before reporting done.
+Work through the steps below **in order**. Do not skip any step.
 
 ---
 
@@ -33,7 +33,7 @@ Before writing any code, build a complete mental model of what you are about to 
 1. Read the **Architecture Overview** and **Components** sections. Understand the component boundaries and interactions.
 2. Read the **Data Model**. Note every type, its fields, and its role.
 3. Read the **Implementation Tasks** table. Group tasks into TDD pairs: each `test` task with the `impl` task that follows it. Note the dependency chain.
-4. Read all **AC-x** rows in the PRD. You will map each AC to test results in Step 6.
+4. Read all **AC-x** rows in the PRD so you understand the expected behaviour before writing code.
 
 Do not proceed until you can answer: what does this epic build, how does it work, and in what order will you implement it?
 
@@ -106,53 +106,17 @@ Fix any regressions before moving on to the next TDD pair. Do not accumulate bro
 
 ---
 
-## Step 5 — Full test suite pass
+## Step 5 — QA: invoke /verify-epic
 
-After all TDD pairs are implemented, run the complete test suite one final time:
+With all TDD pairs complete, hand off to the verify-epic skill to run the full test suite and produce the AC coverage report:
 
-```
-cargo test   # or equivalent
-```
+Invoke `/verify-epic $ARGUMENTS`.
 
-If any tests fail:
+verify-epic will:
+1. Run the complete test suite.
+2. Map every passing and failing test to the epic's acceptance criteria.
+3. Output the Verification Report.
 
-1. Read the failure output carefully.
-2. Identify the root cause (logic error, missing edge case, wrong assumption).
-3. Fix the code — do not modify the tests to make them pass artificially.
-4. Re-run `cargo test`.
-5. Repeat until the exit code is 0 and all tests are green.
+**If verify-epic reports failing tests**, fix the code — do not modify tests to make them pass artificially — then invoke `/verify-epic $ARGUMENTS` again. Repeat until no tests are failing.
 
-You must not proceed to Step 6 while any test is failing.
-
----
-
-## Step 6 — Generate AC coverage report
-
-Map the test results to the acceptance criteria from `spec/$ARGUMENTS.md`. For each AC-x row:
-
-- **done** — at least one passing test directly exercises this AC's Given/When/Then scenario.
-- **partly** — the AC is partially covered: the happy path passes but an edge case or assertion is missing.
-- **not done** — no passing test covers this AC.
-
-Output the report in this exact format:
-
-```
-## Implementation Report — $ARGUMENTS
-
-### Test suite result
-All N tests passing.
-
-### AC Coverage
-
-| AC | Status | Notes |
-|----|--------|-------|
-| AC-1 | done | Covered by <test name> |
-| AC-2 | done | Covered by <test name> |
-| AC-3 | partly | Happy path passes; idle-resource sampling test is excluded from CI |
-| AC-4 | not done | No test for this scenario |
-
-### Notes
-{Any caveats, known limitations, or follow-up tasks worth recording.}
-```
-
-If any AC is `partly` or `not done`, explain what would be needed to complete coverage.
+The implementation is complete when verify-epic produces its Verification Report with no failing tests.
