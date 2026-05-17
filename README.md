@@ -13,7 +13,7 @@ mid-performance. propeller-engine is that process.
 propeller start
 
 # Confirm it is running (socket is connectable)
-nc -zU /tmp/propeller.sock && echo "propeller is running"
+nc -U /tmp/propeller.sock </dev/null && echo "propeller is running"
 
 # Stop the daemon cleanly
 propeller stop
@@ -62,7 +62,7 @@ releases all resources, and removes the socket file before exiting.
 The daemon's presence is indicated by a connectable Unix socket at `/tmp/propeller.sock`:
 
 ```sh
-nc -zU /tmp/propeller.sock && echo "running" || echo "not running"
+nc -U /tmp/propeller.sock </dev/null && echo "running" || echo "not running"
 ```
 
 ### Configuring the socket path
