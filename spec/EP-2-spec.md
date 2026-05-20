@@ -57,7 +57,7 @@ Zero-track projects pass validation (F-19). Under-filled bars (note sum < bar le
 
 Holds `active: Option<Project>` and `pending: Option<Project>`. Provides three operations:
 
-- `set_pending(project: Project) -> Result<(), ValidationError>` — validates the project; on success stores it as `pending` (replacing any previous pending); on failure leaves both slots unchanged (NF-1).
+- `set_pending(project: Project) -> Result<(), ValidationError>` — validates the project; on success stores it as `pending` (replacing any previous pending); on failure leaves both slots unchanged (NF-1). Because the argument is a complete `Project` — header (including time signature) and all tracks (including bars) — any time signature change is always accompanied by new bars, structurally satisfying F-23.
 - `commit_pending() -> bool` — moves `pending` into `active` and clears `pending`; returns `true` if a swap occurred, `false` if there was no pending project (F-13, NF-3).
 - `active() -> Option<&Project>` — returns a shared reference to the active project.
 
@@ -74,13 +74,13 @@ The store is memory-only; it is not serialised or written to disk (NF-5).
 | `PPQN` | `u32` constant = `480` | Pulses per quarter note; smallest schedulable time unit (F-16, F-20) |
 | `Project` | `header: Header`, `tracks: Vec<Track>` | Root domain type; zero-length `tracks` is valid (F-1, F-19) |
 | `Header` | `bpm: u32`, `time_signature: TimeSignature` | `bpm` is integer 20–300; `u32` enforces non-negative and non-fractional by construction (F-2, F-21, AC-14) |
-| `TimeSignature` | `numerator: u32`, `denominator: u32` | `numerator` ≥ 1; `denominator` ∈ {2, 4, 8, 16}; `bar_ticks()` method returns `numerator × (480 × 4 / denominator)` (F-5, F-9, F-10, F-20) |
+| `TimeSignature` | `numerator: u32`, `denominator: u32` | `numerator` ≥ 1; `denominator` ∈ {2, 4, 8, 16}; `bar_ticks()` method returns `numerator × (480 × 4 / denominator)`; cannot be changed independently of bars (F-5, F-9, F-10, F-20, F-23) |
 | `Track` | `name: String`, `channel: u8`, `instrument: u8`, `bars: Vec<Bar>` | `channel`: 1–16; `instrument`: 0–127; `bars` must be non-empty for any accepted project (Q-1: A); no mute or solo field (F-3, F-18) |
 | `Bar` | `notes: Vec<Note>` | May be empty or partial; sum of note durations may be less than `bar_ticks` — remainder is implicit silence (F-4, F-17) |
 | `Note` | `event: NoteEvent`, `duration_ticks: u32` | `duration_ticks`: 1..=`bar_ticks`; enforced by validator (F-7) |
 | `NoteEvent` | `Note { pitch: u8, velocity: u8 }` \| `Rest` | `pitch` and `velocity`: 0–127; `Rest` produces no MIDI note-on (F-6, F-8) |
 | `ValidationError` | enum | Variants: `BpmOutOfRange { actual: u32 }`, `InvalidTimeSignatureNumerator`, `InvalidTimeSignatureDenominator { actual: u32 }`, `InvalidMidiChannel { track: usize, actual: u8 }`, `InvalidMidiInstrument { track: usize, actual: u8 }`, `EmptyTrackBars { track: usize }`, `NoteDurationZero { track: usize, bar: usize, note: usize }`, `NoteDurationExceedsBar { track: usize, bar: usize, note: usize, duration: u32, bar_ticks: u32 }` (F-15, Q-1) |
-| `ProjectStore` | `active: Option<Project>`, `pending: Option<Project>` | Two-slot store; wrapped as `Arc<std::sync::RwLock<ProjectStore>>` at daemon level (D-2) (F-13, F-14, NF-3, NF-5) |
+| `ProjectStore` | `active: Option<Project>`, `pending: Option<Project>` | Two-slot store; wrapped as `Arc<std::sync::RwLock<ProjectStore>>` at daemon level (D-2); `set_pending()` accepts only a complete `Project`, ensuring time signature and bars are always updated together (F-13, F-14, F-23, NF-3, NF-5) |
 
 ---
 
@@ -150,3 +150,12 @@ All decisions resolved and reconciled into the specification.
 ### Cycle 3 — Confidence: 93%
 - Reconciled: Q-1 → Validator constraint 5 added (EmptyTrackBars); ValidationError enum updated (EmptyTrackBars variant); Track data model row updated (bars must be non-empty); Track::bar_at() precondition firmed up; T-29 added (test for EmptyTrackBars); T-16 depends-on updated to include T-29
 - Added: none — confidence 93%, specification is complete
+
+### Cycle 4 — Alignment with PRD F-23
+- Updated: `set_pending()` description notes that accepting a complete `Project` structurally satisfies F-23 (time signature and bars always updated together)
+- Updated: `TimeSignature` and `ProjectStore` data model rows reference F-23
+- No new tasks required: F-23 is enforced by the existing API shape, not by additional logic.
+
+### Cycle 5 — Confidence: 93%
+- Reconciled: none (no open questions)
+- Added: none — full PRD trace confirmed: all F-1–F-23, NF-1–NF-5, and AC-1–AC-14 have task or design coverage; F-23 is compile-time enforced by `set_pending(Project)` API shape; confidence unchanged at 93%

@@ -2,9 +2,9 @@
 
 ## Overview
 
-A protocol allows external clients to send commands to and query status from the engine at runtime, without restarting the daemon. The protocol runs over the Unix domain socket established by EP-1 and remains available for the full lifetime of the daemon. Commands and responses are newline-terminated JSON objects exchanged in a one-command-per-connection model. Each request carries a `"command"` field that identifies the command type; responses carry a `"status"` field of `"ok"` or `"error"`. Supported commands cover project management, BPM and time signature control, loop start/stop, mode switching, and status queries.
+A protocol allows external clients to send commands to and query status from the engine at runtime, without restarting the daemon. The protocol runs over the Unix domain socket established by EP-1 and remains available for the full lifetime of the daemon. Commands and responses are newline-terminated JSON objects exchanged in a one-command-per-connection model. Each request carries a `"command"` field that identifies the command type; responses carry a `"status"` field of `"ok"` or `"error"`. Supported commands cover project management, BPM control, loop start/stop, mode switching, and status queries. Time signature changes are not available as a standalone command; they must be submitted as part of a full project update (per EP-2 F-23).
 
-**Confidence Level:** 92% — All roadmap requirements are covered and all open questions are reconciled. The PRD is complete. The fine-grained command string naming convention and status response field names are intentionally deferred to the technical specification.
+**Confidence Level:** 92% — All roadmap requirements are covered and all open questions are reconciled. The PRD is complete. The fine-grained command string naming convention and status response field names are intentionally deferred to the technical specification. The standalone set-time-signature command has been removed (briefing: time signature and bars must be updated atomically via a full project update).
 
 ---
 
@@ -21,10 +21,6 @@ While the loop is playing, a performer sends a modify-project command containing
 ### UJ-3 · Setting BPM via the runtime interface
 
 A performer sends a set-BPM command with a new integer value in range 20–300. The engine updates the BPM, returns `{"status": "ok"}`, and the running loop adjusts its tempo immediately (per EP-3 F-11).
-
-### UJ-4 · Setting time signature via the runtime interface
-
-A performer sends a set-time-signature command. The engine validates and updates the time signature and returns a success or structured error response.
 
 ### UJ-5 · Setting operating mode via the runtime interface
 
@@ -54,7 +50,6 @@ A performer loads a project and then sends a loop-start command. The loop begins
 | F-4 | The engine accepts a create-project command that defines the full project (header and tracks). |
 | F-5 | The engine accepts a modify-project command that replaces the entire active project with a complete new project definition; partial updates to individual tracks, bars, or notes are not supported. |
 | F-6 | The engine accepts a set-BPM command. |
-| F-7 | The engine accepts a set-time-signature command. |
 | F-8 | The engine accepts a set-mode command. |
 | F-9 | The engine accepts a status query command and responds with at minimum: the current operating mode, current BPM, current time signature, clock state, and whether an active project is present. |
 | F-10 | The engine validates every incoming command and rejects invalid commands with a structured error response without affecting the running daemon state. |
@@ -87,7 +82,6 @@ A performer loads a project and then sends a loop-start command. The loop begins
 | AC-1 | The engine is running | a valid create-project command is sent | the engine accepts the project, stores it as the active project, and returns `{"status": "ok"}` |
 | AC-2 | The engine has an active project | a valid modify-project command is sent | the engine returns `{"status": "ok"}` and the replacement project takes effect at the next bar boundary |
 | AC-3 | The engine is running | a set-BPM command with a valid value is sent | the engine updates the BPM and returns `{"status": "ok"}` |
-| AC-4 | The engine is running | a set-time-signature command with a valid value is sent | the engine updates the time signature and returns `{"status": "ok"}` |
 | AC-5 | The engine is running | a set-mode command is sent | the engine transitions to the specified mode and returns `{"status": "ok"}` |
 | AC-6 | The engine is running | a status query is sent | the engine returns a JSON object with the current mode, BPM, time signature, clock state, and project presence |
 | AC-7 | The engine is running | a malformed or semantically invalid command is sent | the engine returns a structured error response and continues running normally |
@@ -124,3 +118,8 @@ No open questions. All questions have been reconciled.
 ### Cycle 3 — Confidence: 92%
 - Reconciled: Q-6 → F-16/F-17 (loop-start and loop-stop commands), UJ-8, AC-14/AC-15; Q-7 → F-18 ("command" field envelope), F-19 (success shape), F-20 (error shape), AC-16/AC-17/AC-18
 - Added: none — confidence 92%, PRD is complete
+
+### Cycle 4 — Alignment with briefing Run-time behavior
+- Removed: F-7 (set-time-signature command), UJ-4 (set time signature journey), AC-4 (set time signature criterion)
+- Reason: briefing states time signature and bars "can only be updated in an atomic operation"; a standalone set-time-signature command violates this invariant. Time signature changes must be submitted as part of a complete project update (create-project or modify-project), which always carries new bars alongside the new time signature (EP-2 F-23).
+- Updated: overview text and confidence note.

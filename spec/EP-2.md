@@ -54,6 +54,7 @@ A musician creates a project with two tracks: a bass track with 2 bars and a mel
 | F-20 | The engine's fixed PPQN constant is 480. The tick length of the note value indicated by the time signature's lower numeral D is `480 × 4 / D` ticks. The tick length of one bar for a time signature N/D is `N × (480 × 4 / D)` ticks. |
 | F-21 | The BPM value in the project header must be a whole number (integer) in the range 20–300 inclusive. |
 | F-22 | Tracks within a project may have different numbers of bars. The project's total length is the bar count of the track with the most bars. When a track exhausts its bars before the project cycle ends, it restarts from its first bar on the next bar boundary and continues until the project cycle completes. |
+| F-23 | The time signature and the bars of a project are interdependent and may only be changed together in a single atomic operation. A time signature change cannot be submitted independently; it must be part of a complete project update (create or modify) that also provides the corresponding bars. |
 
 ---
 
@@ -117,3 +118,7 @@ None. All questions have been reconciled.
 ### Cycle 5 — Confidence: 92%
 - Reconciled: Q9 → F-21 updated (BPM must be a whole number integer), AC-14 (non-integer BPM rejected)
 - Added: none — confidence 92%, PRD is complete
+
+### Cycle 6 — Alignment with briefing Run-time behavior
+- Added: F-23 (time signature and bars must be updated atomically; no standalone time signature change is supported)
+- Reason: briefing explicitly states the time signature and bars "can only be updated in an atomic operation". This complements EP-4's removal of the set-time-signature command.

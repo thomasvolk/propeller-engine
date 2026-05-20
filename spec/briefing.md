@@ -37,10 +37,17 @@ A note has a pitch (MIDI standard), a velocity (MIDI) and a duration depending o
 A note can also be a rest. The duration can be smaller than the note value defined by the time signature but not bigger then the duration of a bar.
 
 ## time signature
+
 Most time signatures consist of two numerals, one stacked above the other:
 
 The lower numeral indicates the note value that the signature is counting. This number is always a power of 2 (unless the time signature is irrational), usually 2, 4 or 8, but less often 16 is also used, usually in Baroque music. 2 corresponds to the half note (minim), 4 to the quarter note (crotchet), 8 to the eighth note (quaver), 16 to the sixteenth note (semiquaver).
 The upper numeral indicates how many such note values constitute a bar.
+
+# Run-time behavior
+
+The time signature and the bars of a project depend on each other and can only be updated in a atomic operation.
+
+BPM can be changed within a project update and also as single parameter.
 
 # Important requirements
 
