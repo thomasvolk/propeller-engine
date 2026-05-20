@@ -49,6 +49,11 @@ The time signature and the bars of a project depend on each other and can only b
 
 BPM can be changed within a project update and also as single parameter.
 
+# Client interface
+
+The client interface accepts all the commands and project data. I contrast to the propeller-engine a propeller client
+do not have this strict latency requirements because the loop is executed and controlled by the propeller-engine.
+
 # Important requirements
 
 This tool is for life performances. If the following requirements can not be fulfilled, this tool makes no sense.
