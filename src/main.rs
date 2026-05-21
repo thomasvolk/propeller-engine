@@ -1,4 +1,5 @@
 mod daemon;
+mod domain;
 mod ipc;
 mod logger;
 mod socket_path;
