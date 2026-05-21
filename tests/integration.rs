@@ -366,6 +366,50 @@ fn propeller_sock_env_var_uses_custom_path() {
     }
 }
 
+// ── T-33 : runtime command protocol over live socket ──────────────────────
+
+fn send_command(sock: &std::path::Path, cmd: &str) -> serde_json::Value {
+    use std::io::{BufRead, BufReader, Write};
+    let mut stream = UnixStream::connect(sock).expect("connect failed");
+    stream.write_all((cmd.to_string() + "\n").as_bytes()).unwrap();
+    stream.flush().unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    serde_json::from_str(line.trim()).expect("response not valid JSON")
+}
+
+/// T-33: create-project → loop-start → status (running) → loop-stop → status (stopped)
+#[test]
+fn runtime_protocol_create_start_status_stop() {
+    let sock = unique_sock_path();
+    let _guard = DaemonGuard::start(sock.clone());
+
+    let create = send_command(&sock,
+        r#"{"command":"create-project","header":{"bpm":120,"time_signature":{"numerator":4,"denominator":4}},"tracks":[{"name":"piano","channel":1,"instrument":0,"bars":[{"notes":[{"pitch":60,"velocity":80,"duration_ticks":480}]}]}]}"#);
+    assert_eq!(create["status"], "ok", "create-project failed");
+
+    let start = send_command(&sock, r#"{"command":"loop-start"}"#);
+    assert_eq!(start["status"], "ok", "loop-start failed");
+
+    std::thread::sleep(Duration::from_millis(100));
+
+    let status = send_command(&sock, r#"{"command":"status"}"#);
+    assert_eq!(status["status"], "ok");
+    assert_eq!(status["clock_state"], "started");
+    assert_eq!(status["project_present"], true);
+    let resp_str = serde_json::to_string(&status).unwrap();
+    assert!(resp_str.contains("mode"), "status missing mode field");
+
+    let stop = send_command(&sock, r#"{"command":"loop-stop"}"#);
+    assert_eq!(stop["status"], "ok", "loop-stop failed");
+
+    std::thread::sleep(Duration::from_millis(100));
+
+    let status2 = send_command(&sock, r#"{"command":"status"}"#);
+    assert_eq!(status2["clock_state"], "stopped");
+}
+
 // ── T-22 / T-23 : status subcommand (AC-11, AC-12) ────────────────────────
 
 /// T-22: `propeller status` exits 0 and reports running when daemon is up (AC-11)

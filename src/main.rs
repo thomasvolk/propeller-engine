@@ -1,6 +1,7 @@
 mod daemon;
 mod domain;
 mod ipc;
+mod loop_engine;
 mod logger;
 mod socket_path;
 mod startup_guard;
@@ -48,8 +49,6 @@ fn cmd_start() {
         startup_guard::StartupOutcome::Started => {}
     }
 
-    // Double-fork via `daemonize`; this returns only in the grandchild.
-    // Fork must happen before tokio runtime is created (fork in multithreaded context is unsafe).
     match daemonize::Daemonize::new().start() {
         Ok(_) => {}
         Err(e) => {
@@ -58,7 +57,6 @@ fn cmd_start() {
         }
     }
 
-    // --- grandchild process starts here ---
     let log_path = logger::platform_log_path();
     let _guard = logger::init(&log_path);
 
@@ -77,9 +75,8 @@ fn cmd_stop() {
                 std::process::exit(1);
             }
         };
-        let msg = serde_json::to_string(&ipc::IpcMessage::Stop).unwrap() + "\n";
+        let msg = r#"{"command":"stop"}"#.to_string() + "\n";
         stream.write_all(msg.as_bytes()).await.unwrap();
-        // Wait for connection close as confirmation of shutdown
         let mut buf = Vec::new();
         let _ = stream.read_to_end(&mut buf).await;
     });
@@ -87,13 +84,28 @@ fn cmd_stop() {
 
 fn cmd_status() {
     let sock_path = socket_path::resolve();
-    match std::os::unix::net::UnixStream::connect(&sock_path) {
-        Ok(_) => {
-            println!("propeller is running");
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    rt.block_on(async {
+        match tokio::net::UnixStream::connect(&sock_path).await {
+            Ok(mut stream) => {
+                let msg = r#"{"command":"status"}"#.to_string() + "\n";
+                stream.write_all(msg.as_bytes()).await.unwrap();
+                let mut buf = String::new();
+                stream.read_to_string(&mut buf).await.unwrap();
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(buf.trim()) {
+                    println!("propeller is running");
+                    if let Some(mode) = v.get("mode") { println!("  mode: {mode}"); }
+                    if let Some(bpm) = v.get("bpm") { println!("  bpm: {bpm}"); }
+                    if let Some(cs) = v.get("clock_state") { println!("  clock: {cs}"); }
+                    if let Some(pp) = v.get("project_present") { println!("  project: {pp}"); }
+                } else {
+                    println!("propeller is running");
+                }
+            }
+            Err(_) => {
+                println!("propeller is not running");
+                std::process::exit(1);
+            }
         }
-        Err(_) => {
-            println!("propeller is not running");
-            std::process::exit(1);
-        }
-    }
+    });
 }
