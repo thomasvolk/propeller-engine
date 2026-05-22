@@ -283,6 +283,7 @@ fn validation_error_response(e: ValidationError) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::loop_engine::midi::MockMidiOutput;
     use std::sync::{Arc, Mutex, RwLock};
     use tokio::io::AsyncReadExt;
     use tokio::net::UnixStream;
@@ -295,9 +296,11 @@ mod tests {
         Arc<Mutex<Option<oneshot::Sender<()>>>>,
     ) {
         let (tx, _rx) = oneshot::channel();
+        let store = Arc::new(RwLock::new(ProjectStore::new()));
+        let engine = Arc::new(LoopEngine::new(Arc::clone(&store), Box::new(MockMidiOutput::new())));
         (
-            Arc::new(RwLock::new(ProjectStore::new())),
-            Arc::new(LoopEngine::new()),
+            store,
+            engine,
             Arc::new(Mutex::new(EngineSettings::new())),
             Arc::new(Mutex::new(Some(tx))),
         )

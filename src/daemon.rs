@@ -7,7 +7,7 @@ use tracing::info;
 
 use crate::domain::ProjectStore;
 use crate::ipc::{run_ipc_server, EngineSettings};
-use crate::loop_engine::LoopEngine;
+use crate::loop_engine::{LoopEngine, midi::MockMidiOutput};
 
 pub async fn run(sock_path: PathBuf) {
     let listener = match UnixListener::bind(&sock_path) {
@@ -21,7 +21,7 @@ pub async fn run(sock_path: PathBuf) {
     info!("daemon started, listening on {sock_path:?}");
 
     let store = Arc::new(RwLock::new(ProjectStore::new()));
-    let engine = Arc::new(LoopEngine::new());
+    let engine = Arc::new(LoopEngine::new(Arc::clone(&store), Box::new(MockMidiOutput::new())));
     let settings = Arc::new(Mutex::new(EngineSettings::new()));
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
