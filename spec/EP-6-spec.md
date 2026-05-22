@@ -205,29 +205,7 @@ No open questions. All questions have been reconciled.
 
 ## Open Decisions
 
-High-impact architecture and technology choices. Check your preferred option for each decision, then re-run /create-spec to reconcile.
-
-### D-1 · MIDI input library
-
-Which crate to use for opening a MIDI input port and receiving bytes. No MIDI input crate is currently in `Cargo.toml`. This choice is load-bearing for T-10 and T-26 and must be resolved before any implementation begins.
-
-- [x] A. `midir` — most popular Rust MIDI I/O crate; cross-platform (ALSA/CoreMIDI/WinMM); callback-based with internal thread management; has port enumeration *(recommended — proven for this exact use case; integrates cleanly via a channel bridge)*
-- [ ] B. `portmidi` — Rust bindings to the PortMidi C library; stable but requires a C dependency and PortMidi to be installed on the host
-- [ ] C. `midi-control` + raw platform APIs — message parsing only; would require writing platform-specific I/O for ALSA and CoreMIDI separately; maximum control, minimum portability
-
-### D-2 · Mid-bar BPM update timing
-
-When `SyncBpmUpdate(bpm)` arrives mid-bar, when should the new tempo take effect?
-
-- [x] A. At the next bar boundary — consistent with EP-3's existing BPM-change logic; simplest; at most one bar (~2 s at 120 BPM) of lag before the engine syncs to a new tempo *(recommended — avoids redesigning the bar-event-list walk; acceptable for most live-performance use cases)*
-- [ ] B. Immediately mid-bar by adjusting the scheduler anchor — recalculate remaining event deadlines using the new rate; tighter sync; requires `sleep_until_with_poll` to check for `SyncBpmUpdate` and rebase its anchor on receipt
-
-### D-3 · Port identification at startup
-
-How should the user specify the MIDI input port on the command line? This affects `--sync-port` in T-40.
-
-- [x] A. Port name string (`--sync-port "My Device"`) — human-readable; requires exact string match against `list_midi_input_ports()` output *(recommended — consistent with how `list-ports` output is presented; copy-paste friendly)*
-- [ ] B. Port index integer (`--sync-port 0`) — immune to name changes; harder to use without running `list-ports` first
+No open decisions. All decisions have been reconciled.
 
 ---
 
@@ -244,3 +222,7 @@ How should the user specify the MIDI input port on the command line? This affect
 ### Cycle 3 — Confidence: 90%
 - Reconciled: Q-1 (answer: A) → architecture updated (SetMode guard added; set-mode sync rejected when no receiver); MidiClockReceiver component updated (--sync-port sets mode=Sync at startup); T-40 updated (explicit mode-setting step); T-41 (test: set-mode sync rejected without receiver), T-42 (impl: guard in handle_set_mode) added
 - Added: none — confidence 90%, specification is complete
+
+### Cycle 4 — Confidence: 90%
+- Reconciled: D-1 (midir), D-2 (bar-boundary BPM), D-3 (port name string) — decision blocks removed; implications already reflected in spec text since Cycle 2
+- Added: none — no open decisions remain; specification is complete

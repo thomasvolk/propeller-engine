@@ -4,7 +4,7 @@
 
 This epic implements the loop engine: the component that reads the active project from the `ProjectStore` (EP-2), converts tick positions to wall-clock time using BPM and PPQN, and emits MIDI events continuously in a seamless loop. The engine runs on a dedicated OS thread decoupled from the tokio async runtime, receives start/stop commands via a synchronous channel, detects BPM and instrument changes at every bar boundary, and prevents stuck notes by tracking all sounding notes and flushing them on stop.
 
-**Confidence Level:** 90% — All PRD items and acceptance criteria have tasks, TDD ordering is maintained, all five open decisions and all five open questions are now reconciled; residual uncertainty is limited to integration-test infrastructure details that surface only during implementation.
+**Confidence Level:** 92% — All PRD items and acceptance criteria have tasks, TDD ordering is maintained, all five open decisions are now formally reconciled and removed; residual uncertainty is limited to integration-test infrastructure details that surface only during implementation.
 
 ---
 
@@ -192,56 +192,7 @@ No open questions. All questions have been reconciled.
 
 ## Open Decisions
 
-High-impact architecture and technology choices. Check your preferred option for each decision, then re-run `/create-spec EP-3` to reconcile.
-
-### D-1 · Module layout
-
-Where does the loop engine code live? This affects how imports are structured in other modules.
-
-- [ ] A. Single file `src/loop_engine.rs` — simple to start; may grow large
-- [x] B. Directory `src/loop_engine/` with `mod.rs`, `scheduler.rs`, `midi.rs`, `player.rs` — matches EP-2 pattern *(recommended — consistent with domain module layout; separates concerns cleanly)*
-
-Answer: B.
-
-### D-2 · MidiOutput abstraction
-
-How should MIDI device access be structured for testability and portability?
-
-- [x] A. `MidiOutput` trait in `src/loop_engine/midi.rs`; concrete hardware impl injected at daemon startup *(recommended — enables unit tests without hardware; defers crate selection to runtime wiring in EP-4)*
-- [ ] B. Direct use of `midir` crate throughout the loop engine — fewer abstractions but tightly coupled to hardware
-- [ ] C. `wmidi` for message types + `midir` for I/O — two crates with explicit typing; higher ceremony
-
-Answer: A.
-
-### D-3 · Thread model for the loop engine
-
-Which thread primitive should the loop engine use to ensure timing precision without blocking the tokio executor?
-
-- [x] A. `std::thread::spawn` — dedicated OS thread; scheduler sleeps without affecting tokio *(recommended — matches NF-1 and NF-4; no async executor overhead)*
-- [ ] B. `tokio::task::spawn_blocking` — reuses tokio's blocking thread pool; slightly less explicit
-- [ ] C. Tokio async task with `tokio::time::sleep` — simplest but async timer resolution is typically 1 ms, making the < 5 ms jitter target harder to guarantee
-
-Answer: A.
-
-### D-4 · Command channel between tokio IPC handler and loop thread
-
-How should the async IPC handler send start/stop commands to the synchronous loop thread?
-
-- [x] A. `std::sync::mpsc::channel`; `Sender` stored in `LoopEngine`, `Receiver` owned by loop thread; non-blocking `try_recv()` between events *(recommended — simple, no cross-runtime bridging)*
-- [ ] B. `Arc<Mutex<LoopState>>` + `Arc<Condvar>` — allows immediate wakeup from `Stopped`; more complex
-- [ ] C. `tokio::sync::mpsc` with `blocking_recv()` in loop thread — mixes async and sync runtimes without benefit
-
-Answer: A.
-
-### D-5 · Timing strategy for < 5 ms jitter
-
-How should `Scheduler::sleep_until` achieve the jitter target (NF-3)?
-
-- [ ] A. `std::thread::sleep` only — simplest; may exceed 5 ms jitter on a loaded system
-- [x] B. Hybrid: `thread::sleep(remaining − 500 μs)` then spin on `Instant::now()` — predictable wakeup with bounded CPU overhead *(recommended — achieves < 5 ms reliably on Linux without platform-specific APIs)*
-- [ ] C. Platform-specific high-resolution timers (e.g. ALSA `hrtimer` on Linux) — best precision; not portable
-
-Answer: B.
+All decisions resolved and reconciled.
 
 ---
 
@@ -266,3 +217,7 @@ Answer: B.
 ### Cycle 5 — Confidence: 90%
 - Reconciled: none (no open questions)
 - Added: none — specification is complete at 90%; no further questions needed
+
+### Cycle 6 — Confidence: 92%
+- Reconciled: D-1 B → module layout already reflected in components and architecture (no body changes needed); D-2 A → MidiOutput trait already in components and architecture; D-3 A → dedicated OS thread already in architecture; D-4 A → std::sync::mpsc already in architecture; D-5 B → hybrid sleep already in Scheduler component and T-8; all five decision blocks removed from Open Decisions
+- Added: none — specification is complete

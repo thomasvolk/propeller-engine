@@ -4,7 +4,7 @@
 
 This epic adds MIDI clock output capability to the daemon by extending the existing `LoopEngine` (EP-3) and IPC layer (EP-4). Four new IPC commands (`clock-start`, `clock-pause`, `clock-resume`, `clock-stop`) are wired through new `LoopCommand` variants to the player loop thread. The `MidiOutput` trait gains four transport-message methods. MIDI timing clock pulses (0xF8, every 20 internal ticks) are inserted as `BarEvent::ClockPulse` entries in the per-bar event list. A new `Paused` engine state enables mid-bar position retention for seamless MIDI Continue resumes. The daemon's graceful-shutdown path sends a MIDI Stop before removing the socket.
 
-**Confidence Level:** 93% — All F-x and AC-x are covered by tasks, TDD ordering is maintained, architecture and data model are complete. No open questions or unchecked decisions remain.
+**Confidence Level:** 95% — All F-x and AC-x are covered by tasks, TDD ordering is maintained, architecture and data model are complete. All decisions reconciled; no open questions or decisions remain.
 
 ---
 
@@ -171,46 +171,7 @@ No open questions. All questions have been reconciled.
 
 ## Open Decisions
 
-High-impact architecture and technology choices. Check your preferred option for each decision, then re-run `/create-spec EP-5` to reconcile.
-
-### D-1 · MidiOutput trait extension approach
-
-Whether the four new clock methods are required or have default no-op implementations affects testability and compile-time safety.
-
-- [x] A. Required methods (no defaults) — compile error if any implementor omits them; tests cannot skip clock assertion without an explicit stub *(recommended — prevents accidental silent clock-less hardware implementations)*
-- [ ] B. Default no-op implementations — existing `MockMidiOutput` compiles without changes; clock events silently dropped unless overridden
-- [ ] C. Separate `ClockOutput` trait alongside `MidiOutput` — player loop holds two `Box<dyn>` handles; more flexible but higher ceremony
-
-### D-2 · ClockPulse scheduling strategy
-
-Whether clock pulses share the bar event list with note events, or run on a separate timer.
-
-- [x] A. Insert `BarEvent::ClockPulse` every 20 ticks into the existing sorted event list — single scheduling path, same jitter guarantees as notes, no extra synchronisation *(recommended — simplest, consistent with NF-1)*
-- [ ] B. Separate high-priority spin thread for clock pulses, signalling the player loop — lower latency but adds cross-thread coordination and risk of double-scheduling at bar boundaries
-
-### D-3 · PauseContext representation
-
-How the retained position is stored when transitioning to `Paused`.
-
-- [x] A. `PauseContext { remaining_events: Vec<(u64, BarEvent)>, bar_index: usize }` — stores the unprocessed suffix of the current bar event list and the bar index; self-contained *(recommended — avoids re-building the event list on resume)*
-- [ ] B. `PauseContext { bar_index: usize, event_index: usize }` — stores indices only; resume must re-build the bar event list and skip the first `event_index` entries
-- [ ] C. `PauseContext { tick_offset: u64, bar_index: usize }` — stores the tick position; resume rebuilds and filters events by tick ≥ `tick_offset`
-
-### D-4 · Clock-mode detection in player loop
-
-How the player loop knows to emit `ClockPulse` events (i.e. which command started it).
-
-- [x] A. Separate `Running` sub-flag: `is_clock_mode: bool` local variable in the loop, set `true` on `ClockStart` and `false` on `Start` *(recommended — explicit, minimal change to existing `Running` state logic)*
-- [ ] B. Check `EngineMode` from shared `settings: Arc<Mutex<EngineSettings>>` — couples player loop to IPC settings; the loop thread would need a reference to settings
-- [ ] C. Always emit `ClockPulse` events regardless of start command — simplifies the event list builder but sends unwanted clock pulses in standalone mode
-
-### D-5 · Daemon shutdown MIDI Stop wiring
-
-How `engine.clock_stop_on_shutdown()` is invoked during the shutdown sequence.
-
-- [x] A. Explicit call in `daemon.rs` after tokio select exits, before `fs::remove_file` — NF-2 ordering guaranteed; simple to test *(recommended — deterministic, no hidden Drop-based side effects)*
-- [ ] B. `LoopEngine::Drop` sends MIDI Stop if state is `Running` or `Paused` — automatic but timing relative to socket removal is harder to guarantee
-- [ ] C. tokio select additional arm waits for a `clock_stop_done` oneshot before shutdown completes — complex; adds a synchronous handshake across async/sync boundary
+No open decisions remain. All decisions have been reconciled.
 
 ---
 
@@ -228,3 +189,7 @@ How `engine.clock_stop_on_shutdown()` is invoked during the shutdown sequence.
 ### Cycle 3 — Confidence: 93%
 - Reconciled: Q-1 (option A) → architecture updated (hardware MidiOutput section added); MidiOutput trait component updated to reference `MidiPortOutput`; added T-31 (test clock byte helpers on `MidiPortOutput`) and T-32 (impl clock methods on `MidiPortOutput`, covers F-15/AC-13)
 - Added: none — confidence 93%, specification is complete
+
+### Cycle 4 — Confidence: 95%
+- Reconciled: D-1 (A) → required methods on MidiOutput confirmed in spec; D-2 (A) → ClockPulse inserted every 20 ticks in shared event list confirmed; D-3 (A) → PauseContext with remaining_events and bar_index confirmed in data model; D-4 (A) → is_clock_mode bool flag confirmed in player loop component; D-5 (A) → explicit clock_stop_on_shutdown call in daemon.rs confirmed in architecture — all five decision blocks removed from Open Decisions
+- Added: none — confidence 95%, specification is complete
