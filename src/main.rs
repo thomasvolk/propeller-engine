@@ -3,6 +3,7 @@ mod domain;
 mod ipc;
 mod loop_engine;
 mod logger;
+mod midi_port;
 mod socket_path;
 mod startup_guard;
 
@@ -49,6 +50,23 @@ fn cmd_start() {
         startup_guard::StartupOutcome::Started => {}
     }
 
+    // Validate PROPELLER_MIDI_PORT before daemonize so errors are visible in the terminal.
+    // The actual connection is opened after daemonize (in the child) to avoid CoreMIDI
+    // fork-safety issues.
+    let midi_port_name: Option<String> = std::env::var("PROPELLER_MIDI_PORT").ok();
+    if let Some(ref name) = midi_port_name {
+        let ports = midi_port::list_ports();
+        let names: Vec<String> = ports.iter().map(|p| p.name.clone()).collect();
+        if midi_port::find_port_by_name(&names, name).is_none() {
+            eprintln!(
+                "propeller: MIDI port {:?} not found; available ports: [{}]",
+                name,
+                names.join(", ")
+            );
+            std::process::exit(1);
+        }
+    }
+
     match daemonize::Daemonize::new().start() {
         Ok(_) => {}
         Err(e) => {
@@ -57,11 +75,29 @@ fn cmd_start() {
         }
     }
 
+    // Open the MIDI connection after daemonize (in the child process).
+    let midi_out: Box<dyn loop_engine::midi::MidiOutput> = match midi_port_name {
+        Some(ref name) => match midi_port::open_port(name) {
+            Ok(out) => Box::new(out),
+            Err(e) => {
+                eprintln!("propeller: failed to open MIDI port after daemonize: {e}");
+                std::process::exit(1);
+            }
+        },
+        None => match midi_port::open_virtual() {
+            Ok(out) => Box::new(out),
+            Err(e) => {
+                eprintln!("propeller: failed to open virtual MIDI port: {e}");
+                std::process::exit(1);
+            }
+        },
+    };
+
     let log_path = logger::platform_log_path();
     let _guard = logger::init(&log_path);
 
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    rt.block_on(daemon::run(sock_path));
+    rt.block_on(daemon::run(sock_path, midi_out));
 }
 
 fn cmd_stop() {

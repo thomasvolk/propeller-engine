@@ -436,6 +436,30 @@ fn status_exits_zero_and_reports_running_when_daemon_is_up() {
     );
 }
 
+// ── EP-8 T-23 : nonexistent PROPELLER_MIDI_PORT causes non-zero exit ─────────
+
+/// EP-8 T-23: start with PROPELLER_MIDI_PORT=nonexistent_xyz → non-zero exit, stderr names the port
+#[test]
+fn start_with_nonexistent_midi_port_exits_nonzero() {
+    let sock = unique_sock_path();
+    let output = Command::new(propeller_bin())
+        .arg("start")
+        .env("PROPELLER_SOCK", &sock)
+        .env("PROPELLER_MIDI_PORT", "nonexistent_xyz_port_name")
+        .output()
+        .expect("failed to run propeller start");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "start should exit non-zero when PROPELLER_MIDI_PORT names a non-existent port"
+    );
+    assert!(
+        stderr.contains("nonexistent_xyz_port_name"),
+        "stderr should contain the requested port name, got: {stderr}"
+    );
+}
+
 /// T-23: `propeller status` exits non-zero and reports not running when daemon is down (AC-12)
 #[test]
 fn status_exits_nonzero_and_reports_not_running_when_daemon_is_down() {

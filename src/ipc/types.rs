@@ -10,6 +10,7 @@ pub enum Command {
     SetMode { mode: String },
     LoopStart,
     LoopStop,
+    ListMidiPorts,
     Status,
     Stop,
 }
@@ -124,6 +125,13 @@ mod tests {
     fn deserialize_unknown_command_fails() {
         let result: Result<Command, _> = serde_json::from_str(r#"{"command":"unknownxyz"}"#);
         assert!(result.is_err());
+    }
+
+    // T-12: list-midi-ports deserialises to Command::ListMidiPorts
+    #[test]
+    fn deserialize_list_midi_ports() {
+        let cmd: Command = serde_json::from_str(r#"{"command":"list-midi-ports"}"#).unwrap();
+        assert!(matches!(cmd, Command::ListMidiPorts));
     }
 
     // T-5: response helpers serialise correctly

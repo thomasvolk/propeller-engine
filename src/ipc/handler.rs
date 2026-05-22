@@ -91,6 +91,10 @@ async fn dispatch(
             engine.stop();
             ok_response()
         }
+        Command::ListMidiPorts => {
+            let ports = crate::midi_port::list_ports();
+            json!({"status": "ok", "ports": ports})
+        }
         Command::Status => handle_status(store, engine, settings),
         Command::Stop => ok_response(),
     }
@@ -637,6 +641,15 @@ mod tests {
         assert_eq!(v["project_present"], false);
         assert!(v["time_signature"].is_null());
         assert_eq!(v["bpm"], 99);
+    }
+
+    // T-15: list-midi-ports over live socket → {"status":"ok","ports":[...]}
+    #[tokio::test]
+    async fn list_midi_ports_returns_ok_with_ports_array() {
+        let response = send_command_get_response(r#"{"command":"list-midi-ports"}"#).await;
+        let v: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+        assert_eq!(v["status"], "ok");
+        assert!(v["ports"].is_array(), "ports should be a JSON array");
     }
 
     // T-35: stop command → ok response, shutdown_tx receives signal
