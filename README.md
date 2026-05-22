@@ -12,7 +12,13 @@ mid-performance. propeller-engine is that process.
 # Start the daemon — returns immediately; engine runs in the background
 propeller start
 
-# Confirm it is running
+# Create a project and start the loop via the runtime interface
+printf '{"command":"create-project","header":{"bpm":120,"time_signature":{"numerator":4,"denominator":4}},"tracks":[{"name":"piano","channel":1,"instrument":0,"bars":[{"notes":[{"pitch":60,"velocity":80,"duration_ticks":480}]}]}]}\n' \
+  | nc -U /tmp/propeller.sock
+
+printf '{"command":"loop-start"}\n' | nc -U /tmp/propeller.sock
+
+# Check engine status
 propeller status
 
 # Stop the daemon cleanly
@@ -82,15 +88,136 @@ Diagnostic output is written to:
 - **macOS:** `~/Library/Logs/propeller/propeller.log`
 - **Linux:** `~/.local/share/propeller/propeller.log`
 
+### Runtime interface
+
+All commands are sent as a single-line JSON object to the Unix socket (`/tmp/propeller.sock` by default, overridden by `PROPELLER_SOCK`). Each connection carries exactly one request and receives one JSON response.
+
+Use `nc -U` or `socat` to send commands from the shell:
+
+```sh
+printf '{"command":"loop-start"}\n' | nc -U /tmp/propeller.sock
+```
+
+#### create-project
+
+Creates and immediately activates a project. A project must be loaded before the loop can play.
+
+```json
+{
+  "command": "create-project",
+  "header": {
+    "bpm": 120,
+    "time_signature": { "numerator": 4, "denominator": 4 }
+  },
+  "tracks": [
+    {
+      "name": "piano",
+      "channel": 1,
+      "instrument": 0,
+      "bars": [
+        {
+          "notes": [
+            { "pitch": 60, "velocity": 80, "duration_ticks": 480 },
+            { "rest": true, "duration_ticks": 480 }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+Field notes:
+
+- `bpm` — whole number, 20–300.
+- `time_signature.denominator` — must be 2, 4, 8, or 16.
+- `channel` — MIDI channel, 1–16.
+- `instrument` — MIDI program number, 0–127.
+- `duration_ticks` — 480 ticks equals one quarter note. Must be greater than 0 and cannot exceed a full bar.
+- Set `"rest": true` on a note to occupy duration without producing sound.
+
+#### modify-project
+
+Queues a new project definition; the change takes effect at the next bar boundary so the current bar always plays to completion. Same structure as `create-project`.
+
+#### loop-start and loop-stop
+
+```json
+{"command": "loop-start"}
+{"command": "loop-stop"}
+```
+
+`loop-start` with no active project transitions the engine to a waiting state; playback begins automatically once a project is loaded.
+
+#### set-bpm
+
+Changes tempo while the loop is playing. The new BPM is applied at the next bar boundary.
+
+```json
+{"command": "set-bpm", "bpm": 140}
+```
+
+#### set-mode
+
+Switches the operating mode at runtime.
+
+```json
+{"command": "set-mode", "mode": "standalone"}
+```
+
+Valid modes: `standalone`, `clock`, `sync`. The engine starts in `standalone` mode.
+
+#### status
+
+Returns the current engine state.
+
+```json
+{"command": "status"}
+```
+
+Example response:
+
+```json
+{
+  "status": "ok",
+  "mode": "standalone",
+  "bpm": 120,
+  "time_signature": { "numerator": 4, "denominator": 4 },
+  "clock_state": "stopped",
+  "project_present": true
+}
+```
+
+`clock_state` is `"started"` while the loop is playing, `"stopped"` otherwise.
+
+#### Response format
+
+Every command returns a JSON object. On success:
+
+```json
+{"status": "ok"}
+```
+
+On error:
+
+```json
+{"status": "error", "code": "bpm_out_of_range", "message": "BPM must be between 20 and 300"}
+```
+
 ## Features
 
 - **Daemon lifecycle** — starts, stays running indefinitely, stops cleanly on command or SIGTERM.
-- **Unix socket IPC** — connects over `/tmp/propeller.sock`; socket path is configurable via environment variable.
+- **Unix socket IPC** — communicates over `/tmp/propeller.sock`; socket path is configurable via `PROPELLER_SOCK`.
 - **Single-instance guard** — rejects a second `start` if the daemon is already running.
 - **Stale socket recovery** — detects and removes leftover socket files from a previous crash, then starts fresh.
 - **Graceful shutdown** — handles both the `stop` command and SIGTERM; unlinks the socket on exit.
 - **Status check** — `propeller status` reports whether the daemon is running; exits 0 if running, non-zero if not.
-- **Structured logging** — writes to stderr and to the platform log file using `tracing`.
+- **Structured logging** — writes to the platform log file using `tracing`.
+- **Project model** — a project defines a header (BPM, time signature) and tracks (MIDI channel, instrument, bars of notes). Notes carry pitch, velocity, and duration in ticks; a note can be a rest.
+- **Continuous loop playback** — repeats the project endlessly with no timing gap between repetitions.
+- **Bar-boundary updates** — pending project changes take effect at the next bar boundary; the current bar always plays to completion.
+- **Runtime JSON interface** — load projects, control playback, adjust BPM and mode, and query status over the socket without restarting the engine.
+- **Operating modes** — `standalone`, `clock`, and `sync` modes are supported and switchable at runtime via `set-mode`.
 
 ## Contributing
 
