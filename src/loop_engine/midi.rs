@@ -8,6 +8,7 @@ pub trait MidiOutput: Send + 'static {
     fn clock_stop(&mut self);
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum MidiEvent {
     NoteOn { channel: u8, pitch: u8, velocity: u8 },
@@ -19,16 +20,19 @@ pub enum MidiEvent {
     ClockStop,
 }
 
+#[cfg(test)]
 pub struct MockMidiOutput {
     pub events: Vec<MidiEvent>,
 }
 
+#[cfg(test)]
 impl MockMidiOutput {
     pub fn new() -> MockMidiOutput {
         MockMidiOutput { events: Vec::new() }
     }
 }
 
+#[cfg(test)]
 impl MidiOutput for MockMidiOutput {
     fn note_on(&mut self, channel: u8, pitch: u8, velocity: u8) {
         self.events.push(MidiEvent::NoteOn { channel, pitch, velocity });

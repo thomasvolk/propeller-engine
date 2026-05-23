@@ -25,6 +25,7 @@ pub enum SyncClockState {
 }
 
 pub struct MidiClockReceiver {
+    #[cfg(test)]
     state: Arc<Mutex<SyncClockState>>,
 }
 
@@ -38,9 +39,13 @@ impl MidiClockReceiver {
         std::thread::spawn(move || {
             run_receiver_loop(rx, engine, state_clone);
         });
-        MidiClockReceiver { state }
+        MidiClockReceiver {
+            #[cfg(test)]
+            state,
+        }
     }
 
+    #[cfg(test)]
     pub fn sync_clock_state(&self) -> SyncClockState {
         self.state.lock().unwrap().clone()
     }
@@ -162,11 +167,6 @@ mod tests {
     use crate::domain::{Bar, Header, Note, NoteEvent, Project, ProjectStore, TimeSignature, Track};
     use crate::loop_engine::{EngineState, LoopEngine, midi::MockMidiOutput};
     use std::sync::{Arc, RwLock};
-
-    fn make_engine() -> Arc<LoopEngine> {
-        let store = Arc::new(RwLock::new(ProjectStore::new()));
-        Arc::new(LoopEngine::new(store, Box::new(MockMidiOutput::new())))
-    }
 
     fn make_engine_with_project() -> Arc<LoopEngine> {
         let store = Arc::new(RwLock::new(ProjectStore::new()));

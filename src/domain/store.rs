@@ -30,6 +30,7 @@ impl ProjectStore {
         }
     }
 
+    #[cfg(test)]
     pub fn clear(&mut self) {
         self.active = None;
         self.pending = None;
