@@ -12,11 +12,9 @@ mid-performance. propeller-engine is that process.
 # Start the daemon — returns immediately; engine runs in the background
 propeller start
 
-# Create a project and start the loop via the runtime interface
-printf '{"command":"create-project","header":{"bpm":120,"time_signature":{"numerator":4,"denominator":4}},"tracks":[{"name":"piano","channel":1,"instrument":0,"bars":[{"notes":[{"pitch":60,"velocity":80,"duration_ticks":480}]}]}]}\n' \
-  | nc -U /tmp/propeller.sock
-
-printf '{"command":"loop-start"}\n' | nc -U /tmp/propeller.sock
+# Load the bundled example project and start the loop
+propeller project create examples/myproject.json
+propeller loop start
 
 # Check engine status
 propeller status
@@ -24,6 +22,8 @@ propeller status
 # Stop the daemon cleanly
 propeller stop
 ```
+
+A ready-to-use starter project lives in `examples/myproject.json`.
 
 ## Installation
 
@@ -71,6 +71,35 @@ propeller status
 
 Prints a human-readable message and exits with code 0 if the daemon is running, or a non-zero code if it is not. Suitable for use in scripts.
 
+### Managing projects
+
+Load a project from a file:
+
+```sh
+propeller project create examples/myproject.json
+```
+
+Read from stdin (useful when generating projects dynamically):
+
+```sh
+generate-project.sh | propeller project create
+```
+
+The project file must be a JSON object with `header` and `tracks` fields — no `"command"` field; the CLI adds that automatically. See `examples/myproject.json` for a working example, and the Runtime interface section for the full field reference.
+
+Update a running project (change takes effect at the next bar boundary):
+
+```sh
+propeller project modify examples/myproject.json
+```
+
+### Controlling loop playback
+
+```sh
+propeller loop start
+propeller loop stop
+```
+
 ### Configuring the socket path
 
 Set `PROPELLER_SOCK` to override the default socket location:
@@ -79,7 +108,17 @@ Set `PROPELLER_SOCK` to override the default socket location:
 PROPELLER_SOCK=/run/user/1000/propeller.sock propeller start
 ```
 
-Both `start` and `stop` read this variable, so set it consistently.
+All subcommands read this variable, so set it consistently.
+
+### Selecting a MIDI output port
+
+By default the daemon opens a virtual MIDI port named `propeller`. To route to a real MIDI device instead, set `PROPELLER_MIDI_PORT` to the port name before starting:
+
+```sh
+PROPELLER_MIDI_PORT="IAC Driver Bus 1" propeller start
+```
+
+If the named port is not found, `start` prints the available port names and exits with a non-zero code. List available ports in advance using your OS MIDI utilities (e.g. `system_profiler SPMIDIDataType` on macOS).
 
 ### Log files
 
@@ -206,6 +245,7 @@ On error:
 
 ## Features
 
+- **CLI convenience commands** — `propeller project create/modify` and `propeller loop start/stop` wrap common socket operations; file or stdin input, no manual JSON construction required.
 - **Daemon lifecycle** — starts, stays running indefinitely, stops cleanly on command or SIGTERM.
 - **Unix socket IPC** — communicates over `/tmp/propeller.sock`; socket path is configurable via `PROPELLER_SOCK`.
 - **Single-instance guard** — rejects a second `start` if the daemon is already running.

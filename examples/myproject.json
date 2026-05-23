@@ -1,0 +1,13 @@
+{
+  "header": { "bpm": 120, "time_signature": { "numerator": 4, "denominator": 4 } },
+  "tracks": [
+    {
+      "name": "piano",
+      "channel": 1,
+      "instrument": 0,
+      "bars": [
+        { "notes": [{ "pitch": 60, "velocity": 80, "duration_ticks": 480 }] }
+      ]
+    }
+  ]
+}

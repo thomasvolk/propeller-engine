@@ -1,6 +1,8 @@
-use std::os::unix::net::UnixStream;
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 // ── helpers ────────────────────────────────────────────────────────────────
@@ -480,5 +482,247 @@ fn status_exits_nonzero_and_reports_not_running_when_daemon_is_down() {
     assert!(
         !stdout.trim().is_empty() || !stderr.trim().is_empty(),
         "status should print a non-empty message"
+    );
+}
+
+// ── EP-9: CLI convenience commands ─────────────────────────────────────────
+
+const EP9_PROJECT_JSON: &str = r#"{"header":{"bpm":120,"time_signature":{"numerator":4,"denominator":4}},"tracks":[]}"#;
+
+/// Binds a UnixListener on `sock_path`, spawns a thread that accepts one
+/// connection, records the first line received, sends `response`, then exits.
+/// Returns a Receiver that yields the recorded line (trimmed).
+fn spawn_cli_mock(sock_path: &Path, response: &str) -> mpsc::Receiver<String> {
+    let listener = UnixListener::bind(sock_path).expect("bind mock server");
+    let response = response.to_string();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("mock accept");
+        let mut reader = BufReader::new(&stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("mock read_line");
+        tx.send(line.trim().to_string()).ok();
+        stream
+            .write_all((response + "\n").as_bytes())
+            .expect("mock write response");
+    });
+    rx
+}
+
+/// T-10: `propeller project create <file>` — daemon receives create-project, exits 0, no output
+#[test]
+fn ep9_project_create_from_file() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let sock = dir.path().join("test.sock");
+    let file_path = dir.path().join("project.json");
+    std::fs::write(&file_path, EP9_PROJECT_JSON).unwrap();
+
+    let rx = spawn_cli_mock(&sock, r#"{"status":"ok"}"#);
+
+    let output = Command::new(propeller_bin())
+        .args(["project", "create", file_path.to_str().unwrap()])
+        .env("PROPELLER_SOCK", &sock)
+        .output()
+        .expect("run propeller project create");
+
+    assert!(output.status.success(), "expected exit 0, got {:?}", output.status.code());
+    assert!(output.stdout.is_empty(), "expected no stdout");
+    assert!(output.stderr.is_empty(), "expected no stderr");
+
+    let received = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&received).unwrap();
+    assert_eq!(parsed["command"], "create-project", "wrong command field");
+    assert!(parsed.get("header").is_some(), "missing header");
+    assert!(parsed.get("tracks").is_some(), "missing tracks");
+}
+
+/// T-11: `propeller project create` with stdin — daemon receives create-project, exits 0
+#[test]
+fn ep9_project_create_from_stdin() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let sock = dir.path().join("test.sock");
+    let file_path = dir.path().join("project.json");
+    std::fs::write(&file_path, EP9_PROJECT_JSON).unwrap();
+
+    let rx = spawn_cli_mock(&sock, r#"{"status":"ok"}"#);
+
+    let output = Command::new(propeller_bin())
+        .args(["project", "create"])
+        .env("PROPELLER_SOCK", &sock)
+        .stdin(std::process::Stdio::from(
+            std::fs::File::open(&file_path).unwrap(),
+        ))
+        .output()
+        .expect("run propeller project create (stdin)");
+
+    assert!(output.status.success(), "expected exit 0, got {:?}", output.status.code());
+    assert!(output.stdout.is_empty(), "expected no stdout");
+    assert!(output.stderr.is_empty(), "expected no stderr");
+
+    let received = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&received).unwrap();
+    assert_eq!(parsed["command"], "create-project");
+}
+
+/// T-13: `propeller project modify <file>` — daemon receives modify-project, exits 0, no output
+#[test]
+fn ep9_project_modify_from_file() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let sock = dir.path().join("test.sock");
+    let file_path = dir.path().join("project.json");
+    std::fs::write(&file_path, EP9_PROJECT_JSON).unwrap();
+
+    let rx = spawn_cli_mock(&sock, r#"{"status":"ok"}"#);
+
+    let output = Command::new(propeller_bin())
+        .args(["project", "modify", file_path.to_str().unwrap()])
+        .env("PROPELLER_SOCK", &sock)
+        .output()
+        .expect("run propeller project modify");
+
+    assert!(output.status.success(), "expected exit 0, got {:?}", output.status.code());
+    assert!(output.stdout.is_empty(), "expected no stdout");
+    assert!(output.stderr.is_empty(), "expected no stderr");
+
+    let received = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&received).unwrap();
+    assert_eq!(parsed["command"], "modify-project", "wrong command field");
+    assert!(parsed.get("header").is_some(), "missing header");
+    assert!(parsed.get("tracks").is_some(), "missing tracks");
+}
+
+/// T-14: `propeller project modify` with stdin — daemon receives modify-project, exits 0
+#[test]
+fn ep9_project_modify_from_stdin() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let sock = dir.path().join("test.sock");
+    let file_path = dir.path().join("project.json");
+    std::fs::write(&file_path, EP9_PROJECT_JSON).unwrap();
+
+    let rx = spawn_cli_mock(&sock, r#"{"status":"ok"}"#);
+
+    let output = Command::new(propeller_bin())
+        .args(["project", "modify"])
+        .env("PROPELLER_SOCK", &sock)
+        .stdin(std::process::Stdio::from(
+            std::fs::File::open(&file_path).unwrap(),
+        ))
+        .output()
+        .expect("run propeller project modify (stdin)");
+
+    assert!(output.status.success(), "expected exit 0, got {:?}", output.status.code());
+    assert!(output.stdout.is_empty(), "expected no stdout");
+    assert!(output.stderr.is_empty(), "expected no stderr");
+
+    let received = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&received).unwrap();
+    assert_eq!(parsed["command"], "modify-project");
+}
+
+/// T-16: `propeller loop start` — daemon receives loop-start, exits 0, no output
+#[test]
+fn ep9_loop_start() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let sock = dir.path().join("test.sock");
+    let rx = spawn_cli_mock(&sock, r#"{"status":"ok"}"#);
+
+    let output = Command::new(propeller_bin())
+        .args(["loop", "start"])
+        .env("PROPELLER_SOCK", &sock)
+        .output()
+        .expect("run propeller loop start");
+
+    assert!(output.status.success(), "expected exit 0, got {:?}", output.status.code());
+    assert!(output.stdout.is_empty(), "expected no stdout");
+    assert!(output.stderr.is_empty(), "expected no stderr");
+
+    let received = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&received).unwrap();
+    assert_eq!(parsed["command"], "loop-start");
+}
+
+/// T-18: `propeller loop stop` — daemon receives loop-stop, exits 0, no output
+#[test]
+fn ep9_loop_stop() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let sock = dir.path().join("test.sock");
+    let rx = spawn_cli_mock(&sock, r#"{"status":"ok"}"#);
+
+    let output = Command::new(propeller_bin())
+        .args(["loop", "stop"])
+        .env("PROPELLER_SOCK", &sock)
+        .output()
+        .expect("run propeller loop stop");
+
+    assert!(output.status.success(), "expected exit 0, got {:?}", output.status.code());
+    assert!(output.stdout.is_empty(), "expected no stdout");
+    assert!(output.stderr.is_empty(), "expected no stderr");
+
+    let received = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&received).unwrap();
+    assert_eq!(parsed["command"], "loop-stop");
+}
+
+/// T-20: PROPELLER_SOCK env var — CLI connects to the custom path, not the default
+#[test]
+fn ep9_custom_sock_path_via_env() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let sock = dir.path().join("custom.sock");
+    let rx = spawn_cli_mock(&sock, r#"{"status":"ok"}"#);
+
+    let output = Command::new(propeller_bin())
+        .args(["loop", "start"])
+        .env("PROPELLER_SOCK", &sock)
+        .output()
+        .expect("run propeller loop start");
+
+    assert!(output.status.success(), "expected exit 0");
+    let received = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&received).unwrap();
+    assert_eq!(parsed["command"], "loop-start");
+}
+
+/// T-22: daemon not running — CLI writes human-readable error to stderr, exits non-zero
+#[test]
+fn ep9_error_when_daemon_not_running() {
+    let sock = PathBuf::from(format!(
+        "/tmp/propeller_ep9_no_daemon_{}.sock",
+        std::process::id()
+    ));
+
+    let output = Command::new(propeller_bin())
+        .args(["loop", "start"])
+        .env("PROPELLER_SOCK", &sock)
+        .output()
+        .expect("run propeller loop start");
+
+    assert!(!output.status.success(), "expected non-zero exit");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.is_empty(), "expected error message in stderr");
+    assert!(
+        stderr.contains("propeller"),
+        "stderr should contain 'propeller', got: {stderr}"
+    );
+}
+
+/// T-24: daemon returns error — CLI writes message to stderr, exits non-zero
+#[test]
+fn ep9_error_when_daemon_returns_error() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let sock = dir.path().join("test.sock");
+    spawn_cli_mock(&sock, r#"{"status":"error","message":"intentional test error"}"#);
+
+    let output = Command::new(propeller_bin())
+        .args(["loop", "start"])
+        .env("PROPELLER_SOCK", &sock)
+        .output()
+        .expect("run propeller loop start");
+
+    assert!(!output.status.success(), "expected non-zero exit");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.is_empty(), "expected error message in stderr");
+    assert!(
+        stderr.contains("intentional test error") || stderr.contains("propeller"),
+        "stderr should mention the error, got: {stderr}"
     );
 }

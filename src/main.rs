@@ -1,3 +1,4 @@
+mod client;
 mod daemon;
 mod domain;
 mod ipc;
@@ -7,6 +8,7 @@ mod midi_port;
 mod socket_path;
 mod startup_guard;
 
+use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -25,6 +27,38 @@ enum Commands {
     Stop,
     /// Check whether the daemon is running
     Status,
+    /// Manage projects
+    Project {
+        #[command(subcommand)]
+        command: ProjectCommand,
+    },
+    /// Control loop playback
+    Loop {
+        #[command(subcommand)]
+        command: LoopCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProjectCommand {
+    /// Send a create-project command to the daemon (reads file or stdin)
+    Create {
+        /// Path to the project JSON file; reads from stdin if omitted
+        filename: Option<PathBuf>,
+    },
+    /// Send a modify-project command to the daemon (reads file or stdin)
+    Modify {
+        /// Path to the project JSON file; reads from stdin if omitted
+        filename: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum LoopCommand {
+    /// Send a loop-start command to the daemon
+    Start,
+    /// Send a loop-stop command to the daemon
+    Stop,
 }
 
 fn main() {
@@ -33,6 +67,14 @@ fn main() {
         Commands::Start => cmd_start(),
         Commands::Stop => cmd_stop(),
         Commands::Status => cmd_status(),
+        Commands::Project { command } => match command {
+            ProjectCommand::Create { filename } => cmd_project_create(filename),
+            ProjectCommand::Modify { filename } => cmd_project_modify(filename),
+        },
+        Commands::Loop { command } => match command {
+            LoopCommand::Start => cmd_loop_start(),
+            LoopCommand::Stop => cmd_loop_stop(),
+        },
     }
 }
 
@@ -116,6 +158,63 @@ fn cmd_stop() {
         let mut buf = Vec::new();
         let _ = stream.read_to_end(&mut buf).await;
     });
+}
+
+fn handle_client_error(e: client::ClientError, sock_path: &std::path::Path) -> ! {
+    match e {
+        client::ClientError::Connect(err) => {
+            eprintln!("propeller: cannot connect to {sock_path:?}: {err}");
+            std::process::exit(1);
+        }
+        client::ClientError::Daemon { message } => {
+            eprintln!("propeller: daemon error: {message}");
+            std::process::exit(1);
+        }
+        client::ClientError::Input(msg) => {
+            eprintln!("propeller: {msg}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn cmd_project_create(filename: Option<PathBuf>) {
+    let sock_path = socket_path::resolve();
+    let mut project = match client::read_project_input(filename) {
+        Ok(v) => v,
+        Err(e) => handle_client_error(e, &sock_path),
+    };
+    project["command"] = serde_json::json!("create-project");
+    if let Err(e) = client::send_command(&sock_path, project) {
+        handle_client_error(e, &sock_path);
+    }
+}
+
+fn cmd_project_modify(filename: Option<PathBuf>) {
+    let sock_path = socket_path::resolve();
+    let mut project = match client::read_project_input(filename) {
+        Ok(v) => v,
+        Err(e) => handle_client_error(e, &sock_path),
+    };
+    project["command"] = serde_json::json!("modify-project");
+    if let Err(e) = client::send_command(&sock_path, project) {
+        handle_client_error(e, &sock_path);
+    }
+}
+
+fn cmd_loop_start() {
+    let sock_path = socket_path::resolve();
+    if let Err(e) = client::send_command(&sock_path, serde_json::json!({"command": "loop-start"}))
+    {
+        handle_client_error(e, &sock_path);
+    }
+}
+
+fn cmd_loop_stop() {
+    let sock_path = socket_path::resolve();
+    if let Err(e) = client::send_command(&sock_path, serde_json::json!({"command": "loop-stop"}))
+    {
+        handle_client_error(e, &sock_path);
+    }
 }
 
 fn cmd_status() {
