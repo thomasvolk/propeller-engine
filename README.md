@@ -118,7 +118,25 @@ By default the daemon opens a virtual MIDI port named `propeller`. To route to a
 PROPELLER_MIDI_PORT="IAC Driver Bus 1" propeller start
 ```
 
-If the named port is not found, `start` prints the available port names and exits with a non-zero code. List available ports in advance using your OS MIDI utilities (e.g. `system_profiler SPMIDIDataType` on macOS).
+If the named port is not found, `start` prints the available port names and exits with a non-zero code. List available output ports using your OS MIDI utilities (e.g. `system_profiler SPMIDIDataType` on macOS).
+
+### Listing MIDI input ports
+
+To see MIDI input ports available for clock sync:
+
+```sh
+propeller list-ports
+```
+
+### Starting in sync mode
+
+Pass `--sync-port` to receive an external MIDI clock signal instead of generating one internally. The loop starts automatically when the first clock pulse arrives and a project is loaded:
+
+```sh
+propeller start --sync-port "IAC Driver Bus 1"
+```
+
+If the named input port is not found, `start` prints the available port names (as shown by `propeller list-ports`) and exits with a non-zero code.
 
 ### Log files
 
