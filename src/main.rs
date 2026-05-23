@@ -4,11 +4,14 @@ mod domain;
 mod ipc;
 mod loop_engine;
 mod logger;
+mod midi_clock;
 mod midi_port;
 mod socket_path;
 mod startup_guard;
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::sync::mpsc;
 use clap::{Parser, Subcommand};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -22,11 +25,17 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Start the daemon
-    Start,
+    Start {
+        /// MIDI input port name for external clock sync
+        #[arg(long)]
+        sync_port: Option<String>,
+    },
     /// Stop the running daemon
     Stop,
     /// Check whether the daemon is running
     Status,
+    /// List available MIDI input ports
+    ListPorts,
     /// Manage projects
     Project {
         #[command(subcommand)]
@@ -64,9 +73,10 @@ enum LoopCommand {
 fn main() {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Start => cmd_start(),
+        Commands::Start { sync_port } => cmd_start(sync_port),
         Commands::Stop => cmd_stop(),
         Commands::Status => cmd_status(),
+        Commands::ListPorts => cmd_list_ports(),
         Commands::Project { command } => match command {
             ProjectCommand::Create { filename } => cmd_project_create(filename),
             ProjectCommand::Modify { filename } => cmd_project_modify(filename),
@@ -78,7 +88,7 @@ fn main() {
     }
 }
 
-fn cmd_start() {
+fn cmd_start(sync_port: Option<String>) {
     let sock_path = socket_path::resolve();
 
     match startup_guard::check(&sock_path) {
@@ -109,6 +119,19 @@ fn cmd_start() {
         }
     }
 
+    // Validate --sync-port before daemonize
+    if let Some(ref name) = sync_port {
+        let ports = midi_clock::list_midi_input_ports();
+        if !ports.iter().any(|p| p == name) {
+            eprintln!(
+                "propeller: sync MIDI port {:?} not found; available ports: [{}]",
+                name,
+                ports.join(", ")
+            );
+            std::process::exit(1);
+        }
+    }
+
     match daemonize::Daemonize::new().start() {
         Ok(_) => {}
         Err(e) => {
@@ -117,7 +140,7 @@ fn cmd_start() {
         }
     }
 
-    // Open the MIDI connection after daemonize (in the child process).
+    // Open the MIDI output connection after daemonize (in the child process).
     let midi_out: Box<dyn loop_engine::midi::MidiOutput> = match midi_port_name {
         Some(ref name) => match midi_port::open_port(name) {
             Ok(out) => Box::new(out),
@@ -138,8 +161,37 @@ fn cmd_start() {
     let log_path = logger::platform_log_path();
     let _guard = logger::init(&log_path);
 
+    // Open sync clock input if --sync-port was given.
+    // The MidiInputBridge is kept alive by _bridge_guard until block_on returns.
+    let _bridge_guard: Option<midi_clock::MidiInputBridge>;
+    let clock_rx: Option<mpsc::Receiver<midi_clock::ClockMessage>>;
+    let sync_clock_state: Option<Arc<Mutex<midi_clock::SyncClockState>>>;
+
+    if let Some(ref name) = sync_port {
+        let (tx, rx) = mpsc::channel();
+        let state = Arc::new(Mutex::new(midi_clock::SyncClockState::Waiting));
+        let bridge = midi_clock::MidiInputBridge::open(name, tx).unwrap_or_else(|e| {
+            eprintln!("propeller: failed to open sync MIDI port: {e}");
+            std::process::exit(1);
+        });
+        _bridge_guard = Some(bridge);
+        clock_rx = Some(rx);
+        sync_clock_state = Some(state);
+    } else {
+        _bridge_guard = None;
+        clock_rx = None;
+        sync_clock_state = None;
+    }
+
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    rt.block_on(daemon::run(sock_path, midi_out));
+    rt.block_on(daemon::run(sock_path, midi_out, clock_rx, sync_clock_state));
+}
+
+fn cmd_list_ports() {
+    let ports = midi_clock::list_midi_input_ports();
+    for p in &ports {
+        println!("{p}");
+    }
 }
 
 fn cmd_stop() {

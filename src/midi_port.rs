@@ -50,6 +50,11 @@ impl MidiOutput for MidiPortOutput {
         let bytes = program_change_bytes(channel, program);
         let _ = self.0.send(&bytes);
     }
+
+    fn clock_tick(&mut self) { let _ = self.0.send(&clock_tick_bytes()); }
+    fn clock_start(&mut self) { let _ = self.0.send(&clock_start_bytes()); }
+    fn clock_continue(&mut self) { let _ = self.0.send(&clock_continue_bytes()); }
+    fn clock_stop(&mut self) { let _ = self.0.send(&clock_stop_bytes()); }
 }
 
 pub fn find_port_by_name(names: &[String], target: &str) -> Option<usize> {
@@ -67,6 +72,11 @@ fn note_off_bytes(channel: u8, pitch: u8) -> [u8; 3] {
 fn program_change_bytes(channel: u8, program: u8) -> [u8; 2] {
     [0xC0 | (channel - 1), program]
 }
+
+fn clock_tick_bytes() -> [u8; 1] { [0xF8] }
+fn clock_start_bytes() -> [u8; 1] { [0xFA] }
+fn clock_continue_bytes() -> [u8; 1] { [0xFB] }
+fn clock_stop_bytes() -> [u8; 1] { [0xFC] }
 
 pub fn list_ports() -> Vec<MidiPortInfo> {
     let output = match midir::MidiOutput::new("propeller-list") {
@@ -174,6 +184,27 @@ mod tests {
     #[test]
     fn program_change_bytes_ch2() {
         assert_eq!(program_change_bytes(2, 0), [0xC1, 0]);
+    }
+
+    // T-31 (EP-5): clock byte helpers return correct single-byte MIDI status values
+    #[test]
+    fn clock_tick_byte() {
+        assert_eq!(clock_tick_bytes(), [0xF8]);
+    }
+
+    #[test]
+    fn clock_start_byte() {
+        assert_eq!(clock_start_bytes(), [0xFA]);
+    }
+
+    #[test]
+    fn clock_continue_byte() {
+        assert_eq!(clock_continue_bytes(), [0xFB]);
+    }
+
+    #[test]
+    fn clock_stop_byte() {
+        assert_eq!(clock_stop_bytes(), [0xFC]);
     }
 
     // T-10: MidiPortInfo serialises to {"index":0,"name":"Surge XT"}

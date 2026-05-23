@@ -9,6 +9,7 @@ use crate::domain::{
     Bar, Header, Note, NoteEvent, Project, ProjectStore, TimeSignature, Track, ValidationError,
 };
 use crate::loop_engine::{EngineState, LoopEngine};
+use crate::midi_clock::SyncClockState;
 
 use super::types::{
     Command, EngineMode, EngineSettings, WireBar, WireHeader, WireNote, WireTrack,
@@ -21,6 +22,7 @@ pub async fn connection_handler(
     engine: Arc<LoopEngine>,
     settings: Arc<Mutex<EngineSettings>>,
     shutdown_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+    sync_clock_state: Option<Arc<Mutex<SyncClockState>>>,
 ) {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
@@ -31,7 +33,7 @@ pub async fn connection_handler(
         Err(_) => return,
     }
 
-    let response = dispatch(&line.trim_end_matches('\n'), &store, &engine, &settings).await;
+    let response = dispatch(&line.trim_end_matches('\n'), &store, &engine, &settings, sync_clock_state.as_ref()).await;
 
     let mut stream = reader.into_inner();
 
@@ -60,6 +62,7 @@ async fn dispatch(
     store: &Arc<RwLock<ProjectStore>>,
     engine: &Arc<LoopEngine>,
     settings: &Arc<Mutex<EngineSettings>>,
+    sync_clock_state: Option<&Arc<Mutex<SyncClockState>>>,
 ) -> Value {
     let parsed: serde_json::Result<Value> = serde_json::from_str(line);
 
@@ -82,7 +85,7 @@ async fn dispatch(
         Command::CreateProject { header, tracks } => handle_create_project(header, tracks, store),
         Command::ModifyProject { header, tracks } => handle_project(header, tracks, store),
         Command::SetBpm { bpm } => handle_set_bpm(bpm, store, settings),
-        Command::SetMode { mode } => handle_set_mode(&mode, settings),
+        Command::SetMode { mode } => handle_set_mode(&mode, settings, sync_clock_state),
         Command::LoopStart => {
             engine.start();
             ok_response()
@@ -91,11 +94,31 @@ async fn dispatch(
             engine.stop();
             ok_response()
         }
+        // T-12 (EP-5): clock IPC commands
+        Command::ClockStart => {
+            if store.read().unwrap().active().is_none() {
+                return error_response("no_project", "clock-start requires an active project");
+            }
+            engine.clock_start();
+            ok_response()
+        }
+        Command::ClockPause => {
+            engine.clock_pause();
+            ok_response()
+        }
+        Command::ClockResume => {
+            engine.clock_resume();
+            ok_response()
+        }
+        Command::ClockStop => {
+            engine.clock_stop();
+            ok_response()
+        }
         Command::ListMidiPorts => {
             let ports = crate::midi_port::list_ports();
             json!({"status": "ok", "ports": ports})
         }
-        Command::Status => handle_status(store, engine, settings),
+        Command::Status => handle_status(store, engine, settings, sync_clock_state),
         Command::Stop => ok_response(),
     }
 }
@@ -156,6 +179,9 @@ fn handle_set_bpm(
     store: &Arc<RwLock<ProjectStore>>,
     settings: &Arc<Mutex<EngineSettings>>,
 ) -> Value {
+    if settings.lock().unwrap().mode == EngineMode::Sync {
+        return error_response("sync_mode_active", "cannot change BPM in sync mode");
+    }
     if bpm.fract() != 0.0 {
         return error_response("bpm_non_integer", "BPM must be a whole number");
     }
@@ -196,8 +222,15 @@ fn handle_set_bpm(
     ok_response()
 }
 
-fn handle_set_mode(mode_str: &str, settings: &Arc<Mutex<EngineSettings>>) -> Value {
+fn handle_set_mode(
+    mode_str: &str,
+    settings: &Arc<Mutex<EngineSettings>>,
+    sync_clock_state: Option<&Arc<Mutex<SyncClockState>>>,
+) -> Value {
     match EngineMode::from_str(mode_str) {
+        Some(EngineMode::Sync) if sync_clock_state.is_none() => {
+            error_response("sync_requires_port", "sync mode requires --sync-port at startup")
+        }
         Some(mode) => {
             settings.lock().unwrap().mode = mode;
             ok_response()
@@ -210,13 +243,14 @@ fn handle_status(
     store: &Arc<RwLock<ProjectStore>>,
     engine: &Arc<LoopEngine>,
     settings: &Arc<Mutex<EngineSettings>>,
+    sync_clock_state: Option<&Arc<Mutex<SyncClockState>>>,
 ) -> Value {
     let store_read = store.read().unwrap();
     let active = store_read.active();
     let settings_guard = settings.lock().unwrap();
 
     let clock_state = match engine.state() {
-        EngineState::Running | EngineState::Waiting => "started",
+        EngineState::Running | EngineState::Waiting | EngineState::Paused => "started",
         EngineState::Stopped => "stopped",
     };
 
@@ -231,14 +265,27 @@ fn handle_status(
         })
     });
 
-    json!({
+    let mut resp = json!({
         "status": "ok",
         "mode": settings_guard.mode.as_str(),
         "bpm": bpm,
         "time_signature": time_signature,
         "clock_state": clock_state,
         "project_present": active.is_some(),
-    })
+    });
+
+    if settings_guard.mode == EngineMode::Sync {
+        if let Some(state_arc) = sync_clock_state {
+            let state_str = match *state_arc.lock().unwrap() {
+                SyncClockState::Waiting => "waiting",
+                SyncClockState::Tracking => "tracking",
+                SyncClockState::Lost => "lost",
+            };
+            resp["sync_clock_state"] = json!(state_str);
+        }
+    }
+
+    resp
 }
 
 fn wire_track_to_domain(t: WireTrack) -> Track {
@@ -316,7 +363,7 @@ mod tests {
         let cmd = command_json.to_string() + "\n";
 
         tokio::spawn(async move {
-            connection_handler(server, store, engine, settings, shutdown_tx).await;
+            connection_handler(server, store, engine, settings, shutdown_tx, None).await;
         });
 
         let mut client = client;
@@ -344,7 +391,7 @@ mod tests {
         let (client, server) = UnixStream::pair().unwrap();
 
         tokio::spawn(async move {
-            connection_handler(server, store, engine, settings, shutdown_tx).await;
+            connection_handler(server, store, engine, settings, shutdown_tx, None).await;
         });
 
         drop(client); // close without sending anything — handler should return silently
@@ -376,7 +423,7 @@ mod tests {
 
         let store_clone = Arc::clone(&store);
         tokio::spawn(async move {
-            connection_handler(server, store_clone, engine, settings, shutdown_tx).await;
+            connection_handler(server, store_clone, engine, settings, shutdown_tx, None).await;
         });
 
         let cmd = r#"{"command":"create-project","header":{"bpm":120,"time_signature":{"numerator":4,"denominator":4}},"tracks":[{"name":"piano","channel":1,"instrument":0,"bars":[{"notes":[{"pitch":60,"velocity":80,"duration_ticks":480}]}]}]}"# .to_string() + "\n";
@@ -431,7 +478,7 @@ mod tests {
         let settings_clone = Arc::clone(&settings);
 
         tokio::spawn(async move {
-            connection_handler(server, store, engine, settings_clone, shutdown_tx).await;
+            connection_handler(server, store, engine, settings_clone, shutdown_tx, None).await;
         });
 
         let cmd = r#"{"command":"set-bpm","bpm":150}"#.to_string() + "\n";
@@ -470,7 +517,7 @@ mod tests {
         let settings_clone = Arc::clone(&settings);
 
         tokio::spawn(async move {
-            connection_handler(server, store, engine, settings_clone, shutdown_tx).await;
+            connection_handler(server, store, engine, settings_clone, shutdown_tx, None).await;
         });
 
         let cmd = r#"{"command":"set-mode","mode":"clock"}"#.to_string() + "\n";
@@ -501,7 +548,7 @@ mod tests {
         let engine_clone = Arc::clone(&engine);
 
         tokio::spawn(async move {
-            connection_handler(server, store, engine_clone, settings, shutdown_tx).await;
+            connection_handler(server, store, engine_clone, settings, shutdown_tx, None).await;
         });
 
         let cmd = r#"{"command":"loop-start"}"#.to_string() + "\n";
@@ -530,7 +577,7 @@ mod tests {
         let (client, server) = UnixStream::pair().unwrap();
 
         tokio::spawn(async move {
-            connection_handler(server, store, engine_clone, settings, shutdown_tx).await;
+            connection_handler(server, store, engine_clone, settings, shutdown_tx, None).await;
         });
 
         let cmd = r#"{"command":"loop-stop"}"#.to_string() + "\n";
@@ -569,7 +616,7 @@ mod tests {
         let settings_clone = Arc::clone(&settings);
 
         tokio::spawn(async move {
-            connection_handler(server, store_clone, engine_clone, settings_clone, shutdown_tx).await;
+            connection_handler(server, store_clone, engine_clone, settings_clone, shutdown_tx, None).await;
         });
 
         let cmd = r#"{"command":"status"}"#.to_string() + "\n";
@@ -601,7 +648,7 @@ mod tests {
         let settings_clone = Arc::clone(&settings);
 
         tokio::spawn(async move {
-            connection_handler(server, store_clone, engine_clone, settings_clone, shutdown_tx).await;
+            connection_handler(server, store_clone, engine_clone, settings_clone, shutdown_tx, None).await;
         });
 
         let cmd = r#"{"command":"status"}"#.to_string() + "\n";
@@ -627,7 +674,7 @@ mod tests {
         let settings_clone = Arc::clone(&settings);
 
         tokio::spawn(async move {
-            connection_handler(server, store_clone, engine_clone, settings_clone, shutdown_tx).await;
+            connection_handler(server, store_clone, engine_clone, settings_clone, shutdown_tx, None).await;
         });
 
         let cmd = r#"{"command":"status"}"#.to_string() + "\n";
@@ -652,6 +699,49 @@ mod tests {
         assert!(v["ports"].is_array(), "ports should be a JSON array");
     }
 
+    // T-11 (EP-5): clock-start with no active project → error no_project; engine stays Stopped
+    #[tokio::test]
+    async fn clock_start_without_project_returns_no_project_error() {
+        let response = send_command_get_response(r#"{"command":"clock-start"}"#).await;
+        let v: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+        assert_eq!(v["status"], "error");
+        assert_eq!(v["code"], "no_project");
+    }
+
+    // T-11 variant: clock-start with active project → ok
+    #[tokio::test]
+    async fn clock_start_with_project_returns_ok() {
+        let (store, engine, settings, shutdown_tx) = make_shared_state();
+        {
+            use crate::domain::*;
+            let project = Project {
+                header: Header { bpm: 120, time_signature: TimeSignature { numerator: 4, denominator: 4 } },
+                tracks: vec![Track {
+                    name: "t".to_string(), channel: 1, instrument: 0,
+                    bars: vec![Bar { notes: vec![Note {
+                        event: NoteEvent::Note { pitch: 60, velocity: 80 }, duration_ticks: 480,
+                    }] }],
+                }],
+            };
+            store.write().unwrap().set_pending(project).unwrap();
+            store.write().unwrap().commit_pending();
+        }
+
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            connection_handler(server, store, engine, settings, shutdown_tx, None).await;
+        });
+
+        let cmd = r#"{"command":"clock-start"}"#.to_string() + "\n";
+        let mut client = client;
+        use tokio::io::AsyncWriteExt;
+        client.write_all(cmd.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        client.read_to_string(&mut resp).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
+        assert_eq!(v["status"], "ok");
+    }
+
     // T-35: stop command → ok response, shutdown_tx receives signal
     #[tokio::test]
     async fn stop_command_signals_shutdown() {
@@ -661,7 +751,7 @@ mod tests {
 
         let (client, server) = UnixStream::pair().unwrap();
         tokio::spawn(async move {
-            connection_handler(server, store, engine, settings, shutdown_tx).await;
+            connection_handler(server, store, engine, settings, shutdown_tx, None).await;
         });
 
         let cmd = r#"{"command":"stop"}"#.to_string() + "\n";
@@ -674,5 +764,90 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
         assert_eq!(v["status"], "ok");
         assert!(shutdown_rx.try_recv().is_ok());
+    }
+
+    // T-23 (EP-6): set-bpm in sync mode → sync_mode_active error
+    #[tokio::test]
+    async fn set_bpm_in_sync_mode_returns_error() {
+        let (store, engine, settings, shutdown_tx) = make_shared_state();
+        settings.lock().unwrap().mode = EngineMode::Sync;
+        let settings_clone = Arc::clone(&settings);
+
+        let (client, server) = UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            connection_handler(server, store, engine, settings_clone, shutdown_tx, None).await;
+        });
+
+        let cmd = r#"{"command":"set-bpm","bpm":140}"#.to_string() + "\n";
+        let mut client = client;
+        use tokio::io::AsyncWriteExt;
+        client.write_all(cmd.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        client.read_to_string(&mut resp).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
+        assert_eq!(v["status"], "error");
+        assert_eq!(v["code"], "sync_mode_active");
+        // BPM must not be changed
+        assert_eq!(settings.lock().unwrap().bpm, 120);
+    }
+
+    // T-37 (EP-6): status with mode=Sync and SyncClockState → response has sync_clock_state field
+    #[tokio::test]
+    async fn status_sync_mode_includes_sync_clock_state() {
+        let (store, engine, settings, shutdown_tx) = make_shared_state();
+        settings.lock().unwrap().mode = EngineMode::Sync;
+        let settings_clone = Arc::clone(&settings);
+
+        let sync_state = Arc::new(Mutex::new(SyncClockState::Tracking));
+        let sync_state_clone = Arc::clone(&sync_state);
+
+        let (client, server) = UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            connection_handler(server, store, engine, settings_clone, shutdown_tx, Some(sync_state_clone)).await;
+        });
+
+        let cmd = r#"{"command":"status"}"#.to_string() + "\n";
+        let mut client = client;
+        use tokio::io::AsyncWriteExt;
+        client.write_all(cmd.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        client.read_to_string(&mut resp).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
+        assert_eq!(v["sync_clock_state"], "tracking");
+
+        // Also test with Lost state
+        *sync_state.lock().unwrap() = SyncClockState::Lost;
+        let (store2, engine2, settings2, shutdown_tx2) = make_shared_state();
+        settings2.lock().unwrap().mode = EngineMode::Sync;
+        let sync_state2 = Arc::clone(&sync_state);
+        let (client2, server2) = UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            connection_handler(server2, store2, engine2, settings2, shutdown_tx2, Some(sync_state2)).await;
+        });
+        let mut client2 = client2;
+        client2.write_all((r#"{"command":"status"}"#.to_string() + "\n").as_bytes()).await.unwrap();
+        let mut resp2 = String::new();
+        client2.read_to_string(&mut resp2).await.unwrap();
+        let v2: serde_json::Value = serde_json::from_str(resp2.trim()).unwrap();
+        assert_eq!(v2["sync_clock_state"], "lost");
+    }
+
+    // T-39 (EP-6): status with mode=Standalone → no sync_clock_state field
+    #[tokio::test]
+    async fn status_standalone_mode_no_sync_clock_state() {
+        let response = send_command_get_response(r#"{"command":"status"}"#).await;
+        let v: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+        assert_eq!(v["status"], "ok");
+        assert!(v.get("sync_clock_state").is_none(), "sync_clock_state should not be present in standalone mode");
+    }
+
+    // T-41 (EP-6): set-mode sync without sync_clock_state → sync_requires_port error
+    #[tokio::test]
+    async fn set_mode_sync_without_receiver_returns_error() {
+        // No sync_clock_state (None) → should return error
+        let response = send_command_get_response(r#"{"command":"set-mode","mode":"sync"}"#).await;
+        let v: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+        assert_eq!(v["status"], "error");
+        assert_eq!(v["code"], "sync_requires_port");
     }
 }

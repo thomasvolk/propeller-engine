@@ -10,6 +10,10 @@ pub enum Command {
     SetMode { mode: String },
     LoopStart,
     LoopStop,
+    ClockStart,
+    ClockPause,
+    ClockResume,
+    ClockStop,
     ListMidiPorts,
     Status,
     Stop,
@@ -132,6 +136,31 @@ mod tests {
     fn deserialize_list_midi_ports() {
         let cmd: Command = serde_json::from_str(r#"{"command":"list-midi-ports"}"#).unwrap();
         assert!(matches!(cmd, Command::ListMidiPorts));
+    }
+
+    // T-11 (EP-5): clock command variants deserialise correctly
+    #[test]
+    fn deserialize_clock_start() {
+        let cmd: Command = serde_json::from_str(r#"{"command":"clock-start"}"#).unwrap();
+        assert!(matches!(cmd, Command::ClockStart));
+    }
+
+    #[test]
+    fn deserialize_clock_pause() {
+        let cmd: Command = serde_json::from_str(r#"{"command":"clock-pause"}"#).unwrap();
+        assert!(matches!(cmd, Command::ClockPause));
+    }
+
+    #[test]
+    fn deserialize_clock_resume() {
+        let cmd: Command = serde_json::from_str(r#"{"command":"clock-resume"}"#).unwrap();
+        assert!(matches!(cmd, Command::ClockResume));
+    }
+
+    #[test]
+    fn deserialize_clock_stop() {
+        let cmd: Command = serde_json::from_str(r#"{"command":"clock-stop"}"#).unwrap();
+        assert!(matches!(cmd, Command::ClockStop));
     }
 
     // T-5: response helpers serialise correctly
