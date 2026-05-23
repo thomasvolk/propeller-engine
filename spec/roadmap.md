@@ -16,8 +16,9 @@ EP-1: Daemon Process
   │           ├── EP-6: Clock Sync Mode
   │           └── EP-8: Real MIDI Output
   └── EP-4: Runtime Interface
-              └── EP-7: Mode Management
-                    (also depends on EP-5 and EP-6)
+              ├── EP-7: Mode Management
+              │     (also depends on EP-5 and EP-6)
+              └── EP-9: CLI Convenience Commands
 ```
 
 ## Phases
@@ -29,6 +30,7 @@ EP-1: Daemon Process
 | 3 | EP-3 | — |
 | 4 | EP-5, EP-6, EP-8 | yes |
 | 5 | EP-7 | — |
+| 6 | EP-9 | — |
 
 ---
 
@@ -172,3 +174,20 @@ The engine supports three mutually exclusive operating modes and allows switchin
 - The loop continues playing through a mode switch without interruption where possible.
 
 **Dependencies:** EP-4, EP-5, EP-6
+
+---
+
+### EP-9 · CLI Convenience Commands
+
+A `propeller` CLI binary provides ergonomic subcommands for the most common runtime operations, replacing the need to manually construct JSON and pipe it through `nc -U /tmp/propeller.sock`.
+
+**Requirements**
+- `propeller project create [<filename>]` sends a `create-project` command to the daemon; reads from stdin when no filename is given.
+- `propeller project modify [<filename>]` sends a `modify-project` command to the daemon (update takes effect at the next bar boundary); reads from stdin when no filename is given.
+- The input format for both subcommands is `{"header": {...}, "tracks": [...]}` (no command wrapper); the CLI constructs the protocol envelope.
+- `propeller loop start` sends a loop-start command to the running daemon.
+- `propeller loop stop` sends a loop-stop command to the running daemon.
+- The CLI connects via the Unix-domain socket (`PROPELLER_SOCK` env var, defaulting to `/tmp/propeller.sock`).
+- When the daemon is unreachable or returns an error, the CLI reports the problem to stderr and exits with a non-zero code.
+
+**Dependencies:** EP-4
