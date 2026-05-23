@@ -85,7 +85,7 @@ async fn dispatch(
         Command::CreateProject { header, tracks } => handle_create_project(header, tracks, store),
         Command::ModifyProject { header, tracks } => handle_project(header, tracks, store),
         Command::SetBpm { bpm } => handle_set_bpm(bpm, store, settings),
-        Command::SetMode { mode } => handle_set_mode(&mode, settings, sync_clock_state),
+        Command::SetMode { mode } => handle_set_mode(&mode, settings, engine, sync_clock_state),
         Command::LoopStart => {
             engine.start();
             ok_response()
@@ -225,14 +225,28 @@ fn handle_set_bpm(
 fn handle_set_mode(
     mode_str: &str,
     settings: &Arc<Mutex<EngineSettings>>,
+    engine: &Arc<LoopEngine>,
     sync_clock_state: Option<&Arc<Mutex<SyncClockState>>>,
 ) -> Value {
     match EngineMode::from_str(mode_str) {
         Some(EngineMode::Sync) if sync_clock_state.is_none() => {
             error_response("sync_requires_port", "sync mode requires --sync-port at startup")
         }
-        Some(mode) => {
-            settings.lock().unwrap().mode = mode;
+        Some(new_mode) => {
+            let current_mode = settings.lock().unwrap().mode.clone();
+            let engine_state = engine.state();
+
+            if current_mode == EngineMode::Clock && new_mode != EngineMode::Clock {
+                if engine_state == EngineState::Running || engine_state == EngineState::Paused {
+                    engine.clock_stop();
+                }
+            } else if new_mode == EngineMode::Sync && current_mode != EngineMode::Sync {
+                if engine_state == EngineState::Running || engine_state == EngineState::Paused {
+                    engine.stop();
+                }
+            }
+
+            settings.lock().unwrap().mode = new_mode;
             ok_response()
         }
         None => error_response("invalid_mode", "unrecognised mode; use standalone, clock, or sync"),
@@ -849,5 +863,270 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
         assert_eq!(v["status"], "error");
         assert_eq!(v["code"], "sync_requires_port");
+    }
+
+    // T-3 (EP-7): status response includes "mode" field (F-2, AC-2)
+    #[tokio::test]
+    async fn status_response_includes_mode_field() {
+        let response = send_command_get_response(r#"{"command":"status"}"#).await;
+        let v: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+        assert_eq!(v["status"], "ok");
+        assert!(v.get("mode").is_some(), "status response must include mode field");
+        assert_eq!(v["mode"], "standalone");
+    }
+
+    // T-9 (EP-7): set-mode clock while standalone with loop Running → engine stays Running (F-6, F-11, AC-3)
+    #[tokio::test]
+    async fn set_mode_clock_while_loop_running_does_not_stop_engine() {
+        let (store, engine, settings, shutdown_tx) = make_shared_state();
+        let engine_clone = Arc::clone(&engine);
+        engine_clone.start();
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+
+        let (client, server) = UnixStream::pair().unwrap();
+        let s = Arc::clone(&store);
+        let e = Arc::clone(&engine);
+        let se = Arc::clone(&settings);
+        let st = Arc::clone(&shutdown_tx);
+        tokio::spawn(async move {
+            connection_handler(server, s, e, se, st, None).await;
+        });
+
+        let cmd = r#"{"command":"set-mode","mode":"clock"}"#.to_string() + "\n";
+        let mut client = client;
+        use tokio::io::AsyncWriteExt;
+        client.write_all(cmd.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        client.read_to_string(&mut resp).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
+        assert_eq!(v["status"], "ok");
+
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        let state = engine_clone.state();
+        assert!(
+            state == EngineState::Running || state == EngineState::Waiting,
+            "loop must remain running after standalone→clock switch, got {:?}", state
+        );
+        engine_clone.stop();
+    }
+
+    // T-11 (EP-7): set-mode standalone from clock while Running → engine.clock_stop() called (F-12, AC-9)
+    #[tokio::test]
+    async fn set_mode_standalone_from_clock_while_running_calls_clock_stop() {
+        let (store, engine, settings, shutdown_tx) = make_shared_state();
+        {
+            use crate::domain::*;
+            let project = Project {
+                header: Header { bpm: 300, time_signature: TimeSignature { numerator: 1, denominator: 4 } },
+                tracks: vec![Track {
+                    name: "t".to_string(), channel: 1, instrument: 0,
+                    bars: vec![Bar { notes: vec![Note { event: NoteEvent::Note { pitch: 60, velocity: 80 }, duration_ticks: 480 }] }],
+                }],
+            };
+            store.write().unwrap().set_pending(project).unwrap();
+            store.write().unwrap().commit_pending();
+        }
+        engine.clock_start();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(engine.state(), EngineState::Running);
+        settings.lock().unwrap().mode = EngineMode::Clock;
+
+        let (client, server) = UnixStream::pair().unwrap();
+        let s = Arc::clone(&store);
+        let e = Arc::clone(&engine);
+        let se = Arc::clone(&settings);
+        let st = Arc::clone(&shutdown_tx);
+        tokio::spawn(async move {
+            connection_handler(server, s, e, se, st, None).await;
+        });
+
+        let cmd = r#"{"command":"set-mode","mode":"standalone"}"#.to_string() + "\n";
+        let mut client = client;
+        use tokio::io::AsyncWriteExt;
+        client.write_all(cmd.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        client.read_to_string(&mut resp).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
+        assert_eq!(v["status"], "ok");
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(engine.state(), EngineState::Stopped, "clock_stop must be called on clock→standalone transition");
+        assert_eq!(settings.lock().unwrap().mode, EngineMode::Standalone);
+    }
+
+    // T-13 (EP-7): set-mode sync from standalone while Running → engine.stop() called; mode = Sync (F-14, AC-11)
+    #[tokio::test]
+    async fn set_mode_sync_from_standalone_while_running_calls_stop() {
+        let (store, engine, settings, shutdown_tx) = make_shared_state();
+        {
+            use crate::domain::*;
+            let project = Project {
+                header: Header { bpm: 300, time_signature: TimeSignature { numerator: 1, denominator: 4 } },
+                tracks: vec![Track {
+                    name: "t".to_string(), channel: 1, instrument: 0,
+                    bars: vec![Bar { notes: vec![Note { event: NoteEvent::Note { pitch: 60, velocity: 80 }, duration_ticks: 480 }] }],
+                }],
+            };
+            store.write().unwrap().set_pending(project).unwrap();
+            store.write().unwrap().commit_pending();
+        }
+        engine.start();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(engine.state(), EngineState::Running);
+
+        let sync_state = Arc::new(Mutex::new(crate::midi_clock::SyncClockState::Waiting));
+        let (client, server) = UnixStream::pair().unwrap();
+        let s = Arc::clone(&store);
+        let e = Arc::clone(&engine);
+        let se = Arc::clone(&settings);
+        let st = Arc::clone(&shutdown_tx);
+        let sync_c = Arc::clone(&sync_state);
+        tokio::spawn(async move {
+            connection_handler(server, s, e, se, st, Some(sync_c)).await;
+        });
+
+        let cmd = r#"{"command":"set-mode","mode":"sync"}"#.to_string() + "\n";
+        let mut client = client;
+        use tokio::io::AsyncWriteExt;
+        client.write_all(cmd.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        client.read_to_string(&mut resp).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
+        assert_eq!(v["status"], "ok");
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(engine.state(), EngineState::Stopped, "stop must be called on standalone→sync transition");
+        assert_eq!(settings.lock().unwrap().mode, EngineMode::Sync);
+    }
+
+    // T-15 (EP-7): set-mode sync from clock while Running → engine.clock_stop() called; mode = Sync (F-12, F-14, AC-9, AC-11)
+    #[tokio::test]
+    async fn set_mode_sync_from_clock_while_running_uses_clock_stop() {
+        let (store, engine, settings, shutdown_tx) = make_shared_state();
+        {
+            use crate::domain::*;
+            let project = Project {
+                header: Header { bpm: 300, time_signature: TimeSignature { numerator: 1, denominator: 4 } },
+                tracks: vec![Track {
+                    name: "t".to_string(), channel: 1, instrument: 0,
+                    bars: vec![Bar { notes: vec![Note { event: NoteEvent::Note { pitch: 60, velocity: 80 }, duration_ticks: 480 }] }],
+                }],
+            };
+            store.write().unwrap().set_pending(project).unwrap();
+            store.write().unwrap().commit_pending();
+        }
+        engine.clock_start();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(engine.state(), EngineState::Running);
+        settings.lock().unwrap().mode = EngineMode::Clock;
+
+        let sync_state = Arc::new(Mutex::new(crate::midi_clock::SyncClockState::Waiting));
+        let (client, server) = UnixStream::pair().unwrap();
+        let s = Arc::clone(&store);
+        let e = Arc::clone(&engine);
+        let se = Arc::clone(&settings);
+        let st = Arc::clone(&shutdown_tx);
+        let sync_c = Arc::clone(&sync_state);
+        tokio::spawn(async move {
+            connection_handler(server, s, e, se, st, Some(sync_c)).await;
+        });
+
+        let cmd = r#"{"command":"set-mode","mode":"sync"}"#.to_string() + "\n";
+        let mut client = client;
+        use tokio::io::AsyncWriteExt;
+        client.write_all(cmd.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        client.read_to_string(&mut resp).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
+        assert_eq!(v["status"], "ok");
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(engine.state(), EngineState::Stopped, "clock_stop must be called on clock→sync transition");
+        assert_eq!(settings.lock().unwrap().mode, EngineMode::Sync);
+    }
+
+    // T-17 (EP-7): set-mode sync while already in sync with loop Running → no stop; mode stays Sync (F-9, AC-10)
+    #[tokio::test]
+    async fn set_mode_sync_while_already_sync_does_not_stop_engine() {
+        let (store, engine, settings, shutdown_tx) = make_shared_state();
+        engine.start();
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        settings.lock().unwrap().mode = EngineMode::Sync;
+
+        let sync_state = Arc::new(Mutex::new(crate::midi_clock::SyncClockState::Waiting));
+        let (client, server) = UnixStream::pair().unwrap();
+        let s = Arc::clone(&store);
+        let e = Arc::clone(&engine);
+        let se = Arc::clone(&settings);
+        let st = Arc::clone(&shutdown_tx);
+        let sync_c = Arc::clone(&sync_state);
+        tokio::spawn(async move {
+            connection_handler(server, s, e, se, st, Some(sync_c)).await;
+        });
+
+        let cmd = r#"{"command":"set-mode","mode":"sync"}"#.to_string() + "\n";
+        let mut client = client;
+        use tokio::io::AsyncWriteExt;
+        client.write_all(cmd.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        client.read_to_string(&mut resp).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
+        assert_eq!(v["status"], "ok");
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let state = engine.state();
+        assert!(
+            state == EngineState::Running || state == EngineState::Waiting,
+            "sync→sync must not stop the engine, got {:?}", state
+        );
+        assert_eq!(settings.lock().unwrap().mode, EngineMode::Sync);
+        engine.stop();
+    }
+
+    // T-21 (EP-7): set-mode standalone from sync, then set-bpm → BPM updated (F-5, AC-5)
+    #[tokio::test]
+    async fn set_mode_standalone_from_sync_re_enables_bpm() {
+        let (store, engine, settings, shutdown_tx) = make_shared_state();
+        settings.lock().unwrap().mode = EngineMode::Sync;
+
+        // First IPC call: set-mode standalone
+        {
+            let (client, server) = UnixStream::pair().unwrap();
+            let s = Arc::clone(&store);
+            let e = Arc::clone(&engine);
+            let se = Arc::clone(&settings);
+            let st = Arc::clone(&shutdown_tx);
+            tokio::spawn(async move {
+                connection_handler(server, s, e, se, st, None).await;
+            });
+            let mut client = client;
+            use tokio::io::AsyncWriteExt;
+            client.write_all((r#"{"command":"set-mode","mode":"standalone"}"#.to_string() + "\n").as_bytes()).await.unwrap();
+            let mut resp = String::new();
+            client.read_to_string(&mut resp).await.unwrap();
+            let v: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
+            assert_eq!(v["status"], "ok");
+        }
+        assert_eq!(settings.lock().unwrap().mode, EngineMode::Standalone);
+
+        // Second IPC call: set-bpm → must succeed since sync mode is no longer active
+        {
+            let (client, server) = UnixStream::pair().unwrap();
+            let s = Arc::clone(&store);
+            let e = Arc::clone(&engine);
+            let se = Arc::clone(&settings);
+            let st = Arc::clone(&shutdown_tx);
+            tokio::spawn(async move {
+                connection_handler(server, s, e, se, st, None).await;
+            });
+            let mut client = client;
+            use tokio::io::AsyncWriteExt;
+            client.write_all((r#"{"command":"set-bpm","bpm":150}"#.to_string() + "\n").as_bytes()).await.unwrap();
+            let mut resp = String::new();
+            client.read_to_string(&mut resp).await.unwrap();
+            let v: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
+            assert_eq!(v["status"], "ok");
+        }
+        assert_eq!(settings.lock().unwrap().bpm, 150);
     }
 }

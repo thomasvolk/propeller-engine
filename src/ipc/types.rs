@@ -163,6 +163,13 @@ mod tests {
         assert!(matches!(cmd, Command::ClockStop));
     }
 
+    // T-1 (EP-7): EngineSettings::new() defaults to Standalone mode (F-1, F-10, AC-1)
+    #[test]
+    fn engine_settings_new_default_mode_is_standalone() {
+        let settings = EngineSettings::new();
+        assert_eq!(settings.mode, EngineMode::Standalone);
+    }
+
     // T-5: response helpers serialise correctly
     #[test]
     fn ok_response_shape() {
