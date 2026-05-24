@@ -10,6 +10,10 @@ A protocol allows external clients to send commands to and query status from the
 
 ## User Journeys
 
+### UJ-9 · Starting the daemon in clock mode
+
+A performer starts the daemon with `propeller start --clock`. The engine launches with its operating mode already set to `clock` rather than the default `standalone`. No separate set-mode command is required.
+
 ### UJ-1 · Creating a project via the runtime interface
 
 A performer connects a client to the engine's socket and sends a create-project command as a newline-terminated JSON object. The engine validates and accepts the project, stores it as the active project, and returns `{"status": "ok"}`. The connection is then closed.
@@ -51,6 +55,7 @@ A performer loads a project and then sends a loop-start command. The loop begins
 | F-5 | The engine accepts a modify-project command that replaces the entire active project with a complete new project definition; partial updates to individual tracks, bars, or notes are not supported. |
 | F-6 | The engine accepts a set-BPM command. |
 | F-8 | The engine accepts a set-mode command. |
+| F-21 | The `propeller start` CLI command accepts a `--clock` flag. When present, the daemon starts with operating mode `clock` instead of the default `standalone`. If `--sync-port` is also provided, `sync` mode takes precedence over `--clock`. |
 | F-9 | The engine accepts a status query command and responds with at minimum: the current operating mode, current BPM, current time signature, clock state, and whether an active project is present. |
 | F-10 | The engine validates every incoming command and rejects invalid commands with a structured error response without affecting the running daemon state. |
 | F-11 | The structured error response identifies the type of error and provides a human-readable description. This format is the one referenced by EP-2 F-15. |
@@ -96,6 +101,8 @@ A performer loads a project and then sends a loop-start command. The loop begins
 | AC-16 | A valid command is processed | the engine sends its response | the JSON response object contains `"status": "ok"` |
 | AC-17 | An invalid command is processed | the engine sends its response | the JSON response object contains `"status": "error"`, a `"code"` field, and a `"message"` field |
 | AC-18 | A request JSON object is received with no `"command"` field | the engine processes it | the engine returns an error response |
+| AC-19 | The daemon is started with `propeller start --clock` | the daemon starts | the operating mode is `clock`; a status query returns `"mode": "clock"` |
+| AC-20 | The daemon is started with `propeller start` (no flags) | the daemon starts | the operating mode is `standalone`; a status query returns `"mode": "standalone"` |
 
 ---
 

@@ -14,6 +14,8 @@ EP-4 is an async layer inserted between the existing socket server (EP-1) and th
 
 **Wire protocol** (F-12, F-13, F-15, F-18): Each connection carries exactly one command — an ASCII JSON object terminated by `\n`. The handler reads bytes until the first `\n`, deserialises to `Command`, dispatches to the relevant subsystem, serialises a `Response`, writes it followed by `\n`, then drops the connection. No unsolicited data is ever sent. The `"command"` field is the serde tag discriminant. EP-1's previous `{"type":"stop"}` format is superseded; the daemon shutdown command becomes `{"command":"stop"}`.
 
+**CLI startup mode** (F-21): `propeller start` accepts `--clock` (bool flag). In `main.rs`, the `Start` subcommand carries a `clock: bool` field. Before calling `daemon::run()`, the CLI computes `initial_mode = if clock { EngineMode::Clock } else { EngineMode::Standalone }` and passes it as a parameter. Inside `daemon::run()`, `settings.mode` is set to `initial_mode` immediately after `EngineSettings::new()`; the `--sync-port` wiring block then overwrites it with `EngineMode::Sync` if applicable, preserving the existing precedence rule.
+
 **Shared state** — four `Arc`-wrapped values are created at daemon startup and cloned into each connection task:
 
 | Value | Type | Purpose |
@@ -168,6 +170,8 @@ Tasks are ordered TDD-first: every test task must appear before the impl task it
 | T-35 | Write test: `{"command":"stop"}` → response is `{"status":"ok"}\n`; `shutdown_tx` receives a signal after the response is written | test | F-19, AC-16 | — |
 | T-36 | Impl: `Stop` handler — write `{"status":"ok"}\n`, call `AsyncWriteExt::flush()`, then take and send on `shutdown_tx`; flush must complete before shutdown is signalled | impl | F-1 | T-11, T-35 |
 | T-34 | Impl: wire shared state at daemon startup — create `ProjectStore`, `LoopEngine`, `EngineSettings`, `shutdown_tx`; pass Arcs to `run_ipc_server()`; integrate with EP-1's `tokio::select!` event loop | impl | F-1, F-3 | T-12, T-32, T-33, T-36 |
+| T-37 | Write test: `propeller start --clock` integration — daemon starts with mode `clock`; status query returns `"mode": "clock"` | test | F-21, AC-19 | T-34 |
+| T-38 | Impl: add `--clock` flag to `Commands::Start` in `main.rs`; compute `initial_mode` in `cmd_start()`; extend `daemon::run()` signature with `initial_mode: EngineMode`; set `settings.mode = initial_mode` before the sync-port wiring block | impl | F-21 | T-37 |
 
 ---
 

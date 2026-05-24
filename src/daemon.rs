@@ -15,6 +15,7 @@ pub async fn run(
     midi_output: Box<dyn MidiOutput>,
     clock_rx: Option<mpsc::Receiver<ClockMessage>>,
     sync_clock_state: Option<Arc<Mutex<SyncClockState>>>,
+    initial_mode: EngineMode,
 ) {
     let listener = match UnixListener::bind(&sock_path) {
         Ok(l) => l,
@@ -30,8 +31,9 @@ pub async fn run(
     let engine = Arc::new(LoopEngine::new(Arc::clone(&store), midi_output));
     let engine_for_shutdown = Arc::clone(&engine);
     let settings = Arc::new(Mutex::new(EngineSettings::new()));
+    settings.lock().unwrap().mode = initial_mode;
 
-    // Wire up sync clock receiver if --sync-port was provided
+    // Wire up sync clock receiver if --sync-port was provided (overrides initial_mode)
     if let (Some(rx), Some(ref state)) = (clock_rx, sync_clock_state.clone()) {
         settings.lock().unwrap().mode = EngineMode::Sync;
         MidiClockReceiver::new(rx, Arc::clone(&engine), Arc::clone(state));

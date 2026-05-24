@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc;
 use clap::{Parser, Subcommand};
+use ipc::EngineMode;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[derive(Parser)]
@@ -29,6 +30,9 @@ enum Commands {
         /// MIDI input port name for external clock sync
         #[arg(long)]
         sync_port: Option<String>,
+        /// Start in clock mode (overrides the default standalone mode)
+        #[arg(long)]
+        clock: bool,
     },
     /// Stop the running daemon
     Stop,
@@ -73,7 +77,7 @@ enum LoopCommand {
 fn main() {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Start { sync_port } => cmd_start(sync_port),
+        Commands::Start { sync_port, clock } => cmd_start(sync_port, clock),
         Commands::Stop => cmd_stop(),
         Commands::Status => cmd_status(),
         Commands::ListPorts => cmd_list_ports(),
@@ -88,7 +92,7 @@ fn main() {
     }
 }
 
-fn cmd_start(sync_port: Option<String>) {
+fn cmd_start(sync_port: Option<String>, clock: bool) {
     let sock_path = socket_path::resolve();
 
     match startup_guard::check(&sock_path) {
@@ -183,8 +187,10 @@ fn cmd_start(sync_port: Option<String>) {
         sync_clock_state = None;
     }
 
+    let initial_mode = if clock { EngineMode::Clock } else { EngineMode::Standalone };
+
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    rt.block_on(daemon::run(sock_path, midi_out, clock_rx, sync_clock_state));
+    rt.block_on(daemon::run(sock_path, midi_out, clock_rx, sync_clock_state, initial_mode));
 }
 
 fn cmd_list_ports() {
