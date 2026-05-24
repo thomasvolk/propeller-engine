@@ -16,6 +16,10 @@ EP-4 is an async layer inserted between the existing socket server (EP-1) and th
 
 **CLI startup mode** (F-21): `propeller start` accepts `--clock` (bool flag). In `main.rs`, the `Start` subcommand carries a `clock: bool` field. Before calling `daemon::run()`, the CLI computes `initial_mode = if clock { EngineMode::Clock } else { EngineMode::Standalone }` and passes it as a parameter. Inside `daemon::run()`, `settings.mode` is set to `initial_mode` immediately after `EngineSettings::new()`; the `--sync-port` wiring block then overwrites it with `EngineMode::Sync` if applicable, preserving the existing precedence rule.
 
+**Blocking start** (F-22): `propeller start` must return only after the socket is connectable. The `daemonize` crate is not usable here because its `start()` makes the original process exit before the socket is bound. Instead, `cmd_start` uses a **self-spawn** approach: it spawns a child process running the hidden `daemon-run` subcommand via `std::process::Command`, then polls `std::os::unix::net::UnixStream::connect(&sock_path)` in a loop with 50 ms sleep intervals until connection succeeds or a 10 s timeout is reached. The child is detached from the terminal by passing `process_group(0)` (which calls `setpgid(0,0)` in the child, creating a new process group) and redirecting all stdio to `/dev/null`. This replaces the `daemonize` crate dependency entirely.
+
+**Blocking stop** (F-23): After `cmd_stop` receives the `{"status":"ok"}` response from the stop command, it polls `!sock_path.exists()` with 50 ms sleep intervals until the socket file is gone or a 10 s timeout is reached. The daemon removes the socket file as the last step of `daemon::run()`, so its absence guarantees clean shutdown.
+
 **Shared state** — four `Arc`-wrapped values are created at daemon startup and cloned into each connection task:
 
 | Value | Type | Purpose |
@@ -172,6 +176,11 @@ Tasks are ordered TDD-first: every test task must appear before the impl task it
 | T-34 | Impl: wire shared state at daemon startup — create `ProjectStore`, `LoopEngine`, `EngineSettings`, `shutdown_tx`; pass Arcs to `run_ipc_server()`; integrate with EP-1's `tokio::select!` event loop | impl | F-1, F-3 | T-12, T-32, T-33, T-36 |
 | T-37 | Write test: `propeller start --clock` integration — daemon starts with mode `clock`; status query returns `"mode": "clock"` | test | F-21, AC-19 | T-34 |
 | T-38 | Impl: add `--clock` flag to `Commands::Start` in `main.rs`; compute `initial_mode` in `cmd_start()`; extend `daemon::run()` signature with `initial_mode: EngineMode`; set `settings.mode = initial_mode` before the sync-port wiring block | impl | F-21 | T-37 |
+| T-39 | Write test: after `propeller start` returns exit 0, `UnixStream::connect(&sock_path)` succeeds without any additional sleep | test | F-22, AC-21 | T-38 |
+| T-40 | Impl: replace `daemonize` crate usage in `cmd_start` with self-spawn via `std::process::Command` using hidden `daemon-run` subcommand; add `process_group(0)` and `Stdio::null()` on all three stdio streams; poll `UnixStream::connect` with 50 ms interval up to 10 s timeout | impl | F-22 | T-38 |
+| T-41 | Impl: extract `cmd_daemon_run(sync_port, clock)` from `cmd_start` (the code that previously ran after `daemonize.start()`); add hidden `Commands::DaemonRun { sync_port, clock }` subcommand wired to `cmd_daemon_run`; remove `daemonize` from `Cargo.toml` | impl | F-22 | T-40 |
+| T-42 | Write test: after `propeller stop` returns exit 0, the socket file no longer exists at the configured path | test | F-23, AC-23 | T-41 |
+| T-43 | Impl: in `cmd_stop`, after the stop-command response is received, poll `!sock_path.exists()` with 50 ms interval up to 10 s timeout; exit non-zero with error message on timeout | impl | F-23 | T-42 |
 
 ---
 
@@ -202,6 +211,11 @@ All decisions resolved and reconciled.
 ### Cycle 4 — Confidence: 88%
 - Reconciled: Q-4 → CommandHandler Stop sequence updated (explicit AsyncWriteExt::flush() before shutdown_tx send); T-36 description updated; Open Questions cleared
 - Added: none — no genuine ambiguities remain; run `/create-spec EP-4` to formally reconcile D-1–D-4 and reach 90%+
+
+### Cycle 6 — Blocking start / stop (F-22, F-23)
+- Added: "Blocking start" and "Blocking stop" sections to Architecture Overview
+- Added: T-39–T-43 covering self-spawn approach for `cmd_start`, `cmd_daemon_run` extraction, `daemonize` removal, and `cmd_stop` socket-removal polling
+- Removed: `daemonize` crate dependency (replaced by `std::process::Command` self-spawn)
 
 ### Cycle 5 — Confidence: 92%
 - Reconciled: D-1 → Response data model row updated (serde_json::Value via json! macro; no dedicated serde type); Types component Response description updated; T-6 rewritten (ok_response/error_response helpers with json! macro); D-2 → confirmed (EngineSettings.bpm already fully reflected); D-3 → confirmed (WireHeader/WireTrack/WireBar/WireNote already in data model and Types component); D-4 → confirmed (Arc<std::sync::Mutex<EngineSettings>> already in shared state table and data model); all D-N blocks removed from Open Decisions

@@ -9,7 +9,6 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-daemonize = "0.5"
 midir = "0.10"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }

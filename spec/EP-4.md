@@ -12,7 +12,15 @@ A protocol allows external clients to send commands to and query status from the
 
 ### UJ-9 · Starting the daemon in clock mode
 
-A performer starts the daemon with `propeller start --clock`. The engine launches with its operating mode already set to `clock` rather than the default `standalone`. No separate set-mode command is required.
+A performer starts the daemon with `propeller start --clock`. The command blocks until the socket is connectable, then returns with exit code 0. The engine is already listening with operating mode `clock` rather than the default `standalone`. No separate set-mode command is required.
+
+### UJ-10 · Waiting for the daemon to be ready after start
+
+A performer runs `propeller start` in a shell script, then immediately issues a `propeller project create` command on the next line. Because `propeller start` blocks until the socket is connectable, the second command succeeds without any sleep or retry loop in the script.
+
+### UJ-11 · Waiting for clean shutdown after stop
+
+A performer runs `propeller stop` and, once it returns, is certain the socket has been removed and the daemon has fully shut down. A subsequent `propeller start` can run immediately without finding a stale socket.
 
 ### UJ-1 · Creating a project via the runtime interface
 
@@ -56,6 +64,8 @@ A performer loads a project and then sends a loop-start command. The loop begins
 | F-6 | The engine accepts a set-BPM command. |
 | F-8 | The engine accepts a set-mode command. |
 | F-21 | The `propeller start` CLI command accepts a `--clock` flag. When present, the daemon starts with operating mode `clock` instead of the default `standalone`. If `--sync-port` is also provided, `sync` mode takes precedence over `--clock`. |
+| F-22 | The `propeller start` CLI command blocks until the Unix domain socket is bound and connectable by a client. The command returns with exit code 0 only after a successful connection probe succeeds. If the socket is not connectable within 10 seconds, the command exits with a non-zero status and an error message. |
+| F-23 | The `propeller stop` CLI command blocks until the Unix domain socket file has been removed. The command returns with exit code 0 only after confirming the socket file no longer exists at the expected path. If the file is still present after 10 seconds, the command exits with a non-zero status and an error message. |
 | F-9 | The engine accepts a status query command and responds with at minimum: the current operating mode, current BPM, current time signature, clock state, and whether an active project is present. |
 | F-10 | The engine validates every incoming command and rejects invalid commands with a structured error response without affecting the running daemon state. |
 | F-11 | The structured error response identifies the type of error and provides a human-readable description. This format is the one referenced by EP-2 F-15. |
@@ -103,6 +113,10 @@ A performer loads a project and then sends a loop-start command. The loop begins
 | AC-18 | A request JSON object is received with no `"command"` field | the engine processes it | the engine returns an error response |
 | AC-19 | The daemon is started with `propeller start --clock` | the daemon starts | the operating mode is `clock`; a status query returns `"mode": "clock"` |
 | AC-20 | The daemon is started with `propeller start` (no flags) | the daemon starts | the operating mode is `standalone`; a status query returns `"mode": "standalone"` |
+| AC-21 | `propeller start` is run | the command returns with exit code 0 | the socket at the configured path is connectable by a client without any additional waiting |
+| AC-22 | `propeller start` is run but the daemon fails to bind the socket within 10 seconds | the timeout elapses | the command exits with a non-zero status and an error message |
+| AC-23 | `propeller stop` is run | the command returns with exit code 0 | the socket file no longer exists at the configured path |
+| AC-24 | `propeller stop` is run but the daemon fails to remove the socket within 10 seconds | the timeout elapses | the command exits with a non-zero status and an error message |
 
 ---
 
@@ -125,6 +139,13 @@ No open questions. All questions have been reconciled.
 ### Cycle 3 — Confidence: 92%
 - Reconciled: Q-6 → F-16/F-17 (loop-start and loop-stop commands), UJ-8, AC-14/AC-15; Q-7 → F-18 ("command" field envelope), F-19 (success shape), F-20 (error shape), AC-16/AC-17/AC-18
 - Added: none — confidence 92%, PRD is complete
+
+### Cycle 5 — Blocking start and stop
+
+- Added: F-22 (`propeller start` blocks until socket connectable, 10 s timeout), F-23 (`propeller stop` blocks until socket removed, 10 s timeout)
+- Added: UJ-10 (script-friendly start), UJ-11 (clean shutdown guarantee)
+- Added: AC-21, AC-22, AC-23, AC-24 covering the new blocking semantics
+- Updated: UJ-9 to reflect that `propeller start --clock` now blocks until the socket is connectable
 
 ### Cycle 4 — Alignment with briefing Run-time behavior
 - Removed: F-7 (set-time-signature command), UJ-4 (set time signature journey), AC-4 (set time signature criterion)

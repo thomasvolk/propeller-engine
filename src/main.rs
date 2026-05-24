@@ -50,6 +50,13 @@ enum Commands {
         #[command(subcommand)]
         command: LoopCommand,
     },
+    #[command(hide = true)]
+    DaemonRun {
+        #[arg(long)]
+        sync_port: Option<String>,
+        #[arg(long)]
+        clock: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -89,6 +96,7 @@ fn main() {
             LoopCommand::Start => cmd_loop_start(),
             LoopCommand::Stop => cmd_loop_stop(),
         },
+        Commands::DaemonRun { sync_port, clock } => cmd_daemon_run(sync_port, clock),
     }
 }
 
@@ -106,9 +114,7 @@ fn cmd_start(sync_port: Option<String>, clock: bool) {
         startup_guard::StartupOutcome::Started => {}
     }
 
-    // Validate PROPELLER_MIDI_PORT before daemonize so errors are visible in the terminal.
-    // The actual connection is opened after daemonize (in the child) to avoid CoreMIDI
-    // fork-safety issues.
+    // Validate PROPELLER_MIDI_PORT before spawning so errors are visible in the terminal.
     let midi_port_name: Option<String> = std::env::var("PROPELLER_MIDI_PORT").ok();
     if let Some(ref name) = midi_port_name {
         let ports = midi_port::list_ports();
@@ -123,7 +129,7 @@ fn cmd_start(sync_port: Option<String>, clock: bool) {
         }
     }
 
-    // Validate --sync-port before daemonize
+    // Validate --sync-port before spawning
     if let Some(ref name) = sync_port {
         let ports = midi_clock::list_midi_input_ports();
         if !ports.iter().any(|p| p == name) {
@@ -136,20 +142,56 @@ fn cmd_start(sync_port: Option<String>, clock: bool) {
         }
     }
 
-    match daemonize::Daemonize::new().start() {
-        Ok(_) => {}
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
         Err(e) => {
-            eprintln!("propeller: daemonize failed: {e}");
+            eprintln!("propeller: cannot determine executable path: {e}");
             std::process::exit(1);
         }
+    };
+
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.arg("daemon-run");
+    if let Some(ref port) = sync_port {
+        cmd.arg("--sync-port").arg(port);
+    }
+    if clock {
+        cmd.arg("--clock");
+    }
+    use std::os::unix::process::CommandExt;
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .process_group(0);
+
+    if let Err(e) = cmd.spawn() {
+        eprintln!("propeller: failed to start daemon: {e}");
+        std::process::exit(1);
     }
 
-    // Open the MIDI output connection after daemonize (in the child process).
+    // Block until the socket is connectable (F-22)
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if std::os::unix::net::UnixStream::connect(&sock_path).is_ok() {
+            return;
+        }
+        if std::time::Instant::now() >= deadline {
+            eprintln!("propeller: timed out waiting for daemon to become ready");
+            std::process::exit(1);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+fn cmd_daemon_run(sync_port: Option<String>, clock: bool) {
+    let sock_path = socket_path::resolve();
+
+    let midi_port_name: Option<String> = std::env::var("PROPELLER_MIDI_PORT").ok();
     let midi_out: Box<dyn loop_engine::midi::MidiOutput> = match midi_port_name {
         Some(ref name) => match midi_port::open_port(name) {
             Ok(out) => Box::new(out),
             Err(e) => {
-                eprintln!("propeller: failed to open MIDI port after daemonize: {e}");
+                eprintln!("propeller: failed to open MIDI port: {e}");
                 std::process::exit(1);
             }
         },
@@ -216,6 +258,19 @@ fn cmd_stop() {
         let mut buf = Vec::new();
         let _ = stream.read_to_end(&mut buf).await;
     });
+
+    // Block until the socket file is removed (daemon has fully shut down) (F-23)
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if !sock_path.exists() {
+            return;
+        }
+        if std::time::Instant::now() >= deadline {
+            eprintln!("propeller: timed out waiting for daemon to stop");
+            std::process::exit(1);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
 
 fn handle_client_error(e: client::ClientError, sock_path: &std::path::Path) -> ! {
