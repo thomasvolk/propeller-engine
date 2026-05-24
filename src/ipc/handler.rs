@@ -87,11 +87,26 @@ async fn dispatch(
         Command::SetBpm { bpm } => handle_set_bpm(bpm, store, settings),
         Command::SetMode { mode } => handle_set_mode(&mode, settings, engine, sync_clock_state),
         Command::LoopStart => {
-            engine.start();
+            let mode = settings.lock().unwrap().mode.clone();
+            match mode {
+                EngineMode::Clock => {
+                    if store.read().unwrap().active().is_none() {
+                        return error_response("no_project", "clock-start requires an active project");
+                    }
+                    engine.clock_start();
+                }
+                _ => {
+                    engine.start();
+                }
+            }
             ok_response()
         }
         Command::LoopStop => {
-            engine.stop();
+            let mode = settings.lock().unwrap().mode.clone();
+            match mode {
+                EngineMode::Clock => engine.clock_stop(),
+                _ => engine.stop(),
+            }
             ok_response()
         }
         // T-12 (EP-5): clock IPC commands
