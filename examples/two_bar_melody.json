@@ -1,0 +1,28 @@
+{
+  "header": { "bpm": 100, "time_signature": { "numerator": 4, "denominator": 4 } },
+  "tracks": [
+    {
+      "name": "melody",
+      "channel": 1,
+      "instrument": 0,
+      "bars": [
+        {
+          "notes": [
+            { "pitch": 60, "velocity": 120, "duration_ticks": 480 },
+            { "pitch": 62, "velocity": 80, "duration_ticks": 480 },
+            { "pitch": 64, "velocity": 80, "duration_ticks": 480 },
+            { "pitch": 65, "velocity": 80, "duration_ticks": 480 }
+          ]
+        },
+        {
+          "notes": [
+            { "pitch": 67, "velocity": 120, "duration_ticks": 480 },
+            { "pitch": 65, "velocity": 80, "duration_ticks": 480 },
+            { "pitch": 64, "velocity": 80, "duration_ticks": 480 },
+            { "pitch": 62, "velocity": 80, "duration_ticks": 480 }
+          ]
+        }
+      ]
+    }
+  ]
+}
