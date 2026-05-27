@@ -42,8 +42,6 @@ enum SleepResult {
     Stop,
     ClockPause,
     ClockStop,
-    SyncStop,
-    SyncRestart,
     Disconnected,
 }
 
@@ -52,7 +50,6 @@ fn sleep_until_with_poll(
     deadline: Instant,
     receiver: &mpsc::Receiver<LoopCommand>,
     scheduler: &Scheduler,
-    pending_bpm: &mut Option<u32>,
 ) -> SleepResult {
     loop {
         let now = Instant::now();
@@ -66,11 +63,7 @@ fn sleep_until_with_poll(
                 Ok(LoopCommand::Stop) => return SleepResult::Stop,
                 Ok(LoopCommand::ClockStop) => return SleepResult::ClockStop,
                 Ok(LoopCommand::ClockPause) => return SleepResult::ClockPause,
-                Ok(LoopCommand::SyncStop) => return SleepResult::SyncStop,
-                Ok(LoopCommand::SyncStart) => return SleepResult::SyncRestart,
-                Ok(LoopCommand::SyncBpmUpdate(bpm)) => { *pending_bpm = Some(bpm); }
-                Ok(LoopCommand::Start | LoopCommand::ClockStart | LoopCommand::ClockResume
-                   | LoopCommand::SyncContinue) => {}
+                Ok(LoopCommand::Start | LoopCommand::ClockStart | LoopCommand::ClockResume) => {}
                 Err(mpsc::TryRecvError::Disconnected) => return SleepResult::Disconnected,
                 Err(mpsc::TryRecvError::Empty) => {}
             }
@@ -97,9 +90,6 @@ pub fn run_player_loop(
     let mut is_clock_mode = false;
     let mut pause_context: Option<PauseContext> = None;
     let mut last_bar_ticks: u64 = 480;
-    // EP-6 sync mode state
-    let mut pending_bpm: Option<u32> = None;
-    let mut active_sync_bpm: Option<u32> = None;
 
     loop {
         match state {
@@ -140,43 +130,6 @@ pub fn run_player_loop(
                         state = EngineState::Running;
                         *shared_state.lock().unwrap() = EngineState::Running;
                     }
-                    Ok(LoopCommand::SyncStart) => {
-                        bar_index = 0;
-                        last_instruments.clear();
-                        let has_project = store.read().unwrap().active().is_some();
-                        if has_project {
-                            {
-                                let store_r = store.read().unwrap();
-                                let project = store_r.active().unwrap();
-                                scheduler = Scheduler::new(project.header.bpm);
-                            }
-                            anchor = Instant::now();
-                            is_clock_mode = false;
-                            state = EngineState::Running;
-                            *shared_state.lock().unwrap() = EngineState::Running;
-                        } else {
-                            state = EngineState::Waiting;
-                            *shared_state.lock().unwrap() = EngineState::Waiting;
-                        }
-                    }
-                    Ok(LoopCommand::SyncContinue) => {
-                        let has_project = store.read().unwrap().active().is_some();
-                        if has_project {
-                            {
-                                let store_r = store.read().unwrap();
-                                let project = store_r.active().unwrap();
-                                scheduler = Scheduler::new(project.header.bpm);
-                            }
-                            anchor = Instant::now();
-                            is_clock_mode = false;
-                            state = EngineState::Running;
-                            *shared_state.lock().unwrap() = EngineState::Running;
-                        } else {
-                            state = EngineState::Waiting;
-                            *shared_state.lock().unwrap() = EngineState::Waiting;
-                        }
-                    }
-                    Ok(LoopCommand::SyncStop | LoopCommand::SyncBpmUpdate(_)) => {}
                     Ok(LoopCommand::Stop | LoopCommand::ClockStop
                         | LoopCommand::ClockPause | LoopCommand::ClockResume) => {}
                     Err(_) => return,
@@ -208,14 +161,10 @@ pub fn run_player_loop(
                     }
                 }
                 match receiver.try_recv() {
-                    Ok(LoopCommand::Stop | LoopCommand::SyncStop) => {
+                    Ok(LoopCommand::Stop) => {
                         state = EngineState::Stopped;
                         *shared_state.lock().unwrap() = EngineState::Stopped;
                     }
-                    Ok(LoopCommand::SyncStart) => {
-                        bar_index = 0;
-                    }
-                    Ok(LoopCommand::SyncBpmUpdate(bpm)) => { pending_bpm = Some(bpm); }
                     Ok(_) => {}
                     Err(mpsc::TryRecvError::Disconnected) => return,
                     Err(mpsc::TryRecvError::Empty) => {}
@@ -370,12 +319,11 @@ pub fn run_player_loop(
                 let n = events.len();
                 let mut i = 0;
 
-                let mut sync_restarted = false;
                 while i < n {
                     let (tick, event) = &events[i];
                     let deadline = scheduler.deadline_for_tick(anchor, *tick);
 
-                    match sleep_until_with_poll(deadline, &receiver, &scheduler, &mut pending_bpm) {
+                    match sleep_until_with_poll(deadline, &receiver, &scheduler) {
                         SleepResult::Elapsed => {}
                         SleepResult::Stop => {
                             flush_active_notes(&mut active_notes, &mut output);
@@ -393,22 +341,6 @@ pub fn run_player_loop(
                             state = EngineState::Stopped;
                             *shared_state.lock().unwrap() = EngineState::Stopped;
                             stopped = true;
-                            break;
-                        }
-                        SleepResult::SyncStop => {
-                            flush_active_notes(&mut active_notes, &mut output);
-                            active_sync_bpm = None;
-                            pending_bpm = None;
-                            state = EngineState::Stopped;
-                            *shared_state.lock().unwrap() = EngineState::Stopped;
-                            stopped = true;
-                            break;
-                        }
-                        SleepResult::SyncRestart => {
-                            flush_active_notes(&mut active_notes, &mut output);
-                            bar_index = 0;
-                            anchor = Instant::now();
-                            sync_restarted = true;
                             break;
                         }
                         // T-16 (EP-5): ClockPause — flush notes, capture remaining events
@@ -460,23 +392,6 @@ pub fn run_player_loop(
                             stopped = true;
                             break;
                         }
-                        Ok(LoopCommand::SyncStop) => {
-                            flush_active_notes(&mut active_notes, &mut output);
-                            active_sync_bpm = None;
-                            pending_bpm = None;
-                            state = EngineState::Stopped;
-                            *shared_state.lock().unwrap() = EngineState::Stopped;
-                            stopped = true;
-                            break;
-                        }
-                        Ok(LoopCommand::SyncStart) => {
-                            flush_active_notes(&mut active_notes, &mut output);
-                            bar_index = 0;
-                            anchor = Instant::now();
-                            sync_restarted = true;
-                            break;
-                        }
-                        Ok(LoopCommand::SyncBpmUpdate(bpm)) => { pending_bpm = Some(bpm); }
                         Ok(LoopCommand::ClockPause) => {
                             flush_active_notes(&mut active_notes, &mut output);
                             pause_context = Some(PauseContext {
@@ -489,8 +404,7 @@ pub fn run_player_loop(
                             paused = true;
                             break;
                         }
-                        Ok(LoopCommand::Start | LoopCommand::ClockStart | LoopCommand::ClockResume
-                           | LoopCommand::SyncContinue) => {}
+                        Ok(LoopCommand::Start | LoopCommand::ClockStart | LoopCommand::ClockResume) => {}
                         Err(mpsc::TryRecvError::Disconnected) => return,
                         Err(mpsc::TryRecvError::Empty) => {}
                     }
@@ -502,12 +416,6 @@ pub fn run_player_loop(
                     continue;
                 }
 
-                if sync_restarted {
-                    // SyncStart interrupted the bar; re-enter Running from bar 0 immediately
-                    last_instruments.clear();
-                    continue;
-                }
-
                 // Advance anchor to end of this bar
                 anchor = scheduler.deadline_for_tick(anchor, bar_ticks);
 
@@ -515,21 +423,7 @@ pub fn run_player_loop(
                 {
                     store.write().unwrap().commit_pending();
                     let store_r = store.read().unwrap();
-                    // pending_bpm from SyncBpmUpdate overrides project BPM and persists
-                    let sync_update = pending_bpm.take();
-                    if let Some(bpm) = sync_update {
-                        active_sync_bpm = Some(bpm);
-                        if bpm != scheduler.bpm() {
-                            scheduler.update_bpm(bpm);
-                            anchor = Instant::now();
-                        }
-                    } else if let Some(bpm) = active_sync_bpm {
-                        // Keep applying the last sync BPM so project BPM doesn't override
-                        if bpm != scheduler.bpm() {
-                            scheduler.update_bpm(bpm);
-                            anchor = Instant::now();
-                        }
-                    } else if let Some(project) = store_r.active() {
+                    if let Some(project) = store_r.active() {
                         let new_bpm = project.header.bpm;
                         if new_bpm != scheduler.bpm() {
                             scheduler.update_bpm(new_bpm);

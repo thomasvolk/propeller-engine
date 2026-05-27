@@ -120,24 +120,6 @@ PROPELLER_MIDI_PORT="IAC Driver Bus 1" propeller start
 
 If the named port is not found, `start` prints the available port names and exits with a non-zero code. List available output ports using your OS MIDI utilities (e.g. `system_profiler SPMIDIDataType` on macOS).
 
-### Listing MIDI input ports
-
-To see MIDI input ports available for clock sync:
-
-```sh
-propeller list-ports
-```
-
-### Starting in sync mode
-
-Pass `--sync-port` to receive an external MIDI clock signal instead of generating one internally. The loop starts automatically when the first clock pulse arrives and a project is loaded:
-
-```sh
-propeller start --sync-port "IAC Driver Bus 1"
-```
-
-If the named input port is not found, `start` prints the available port names (as shown by `propeller list-ports`) and exits with a non-zero code.
-
 ### Log files
 
 Diagnostic output is written to:
@@ -222,7 +204,7 @@ Switches the operating mode at runtime.
 {"command": "set-mode", "mode": "standalone"}
 ```
 
-Valid modes: `standalone`, `clock`, `sync`. The engine starts in `standalone` mode.
+Valid modes: `standalone`, `clock`. The engine starts in `standalone` mode.
 
 #### status
 
@@ -275,7 +257,7 @@ On error:
 - **Continuous loop playback** — repeats the project endlessly with no timing gap between repetitions.
 - **Bar-boundary updates** — pending project changes take effect at the next bar boundary; the current bar always plays to completion.
 - **Runtime JSON interface** — load projects, control playback, adjust BPM and mode, and query status over the socket without restarting the engine.
-- **Operating modes** — `standalone`, `clock`, and `sync` modes are supported and switchable at runtime via `set-mode`.
+- **Operating modes** — `standalone` and `clock` modes are supported and switchable at runtime via `set-mode`.
 
 ## Contributing
 

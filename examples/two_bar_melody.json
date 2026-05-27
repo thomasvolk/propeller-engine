@@ -3,7 +3,7 @@
   "tracks": [
     {
       "name": "melody",
-      "channel": 1,
+      "channel": 2,
       "instrument": 0,
       "bars": [
         {

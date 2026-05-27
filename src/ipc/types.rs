@@ -56,7 +56,6 @@ pub struct WireNote {
 pub enum EngineMode {
     Standalone,
     Clock,
-    Sync,
 }
 
 impl EngineMode {
@@ -64,7 +63,6 @@ impl EngineMode {
         match s {
             "standalone" => Some(EngineMode::Standalone),
             "clock" => Some(EngineMode::Clock),
-            "sync" => Some(EngineMode::Sync),
             _ => None,
         }
     }
@@ -73,7 +71,6 @@ impl EngineMode {
         match self {
             EngineMode::Standalone => "standalone",
             EngineMode::Clock => "clock",
-            EngineMode::Sync => "sync",
         }
     }
 }

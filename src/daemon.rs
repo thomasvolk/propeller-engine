@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, RwLock, mpsc};
+use std::sync::{Arc, Mutex, RwLock};
 
 use tokio::net::UnixListener;
 use tokio::sync::oneshot;
@@ -8,13 +8,10 @@ use tracing::info;
 use crate::domain::ProjectStore;
 use crate::ipc::{run_ipc_server, EngineMode, EngineSettings};
 use crate::loop_engine::{LoopEngine, midi::MidiOutput};
-use crate::midi_clock::{ClockMessage, MidiClockReceiver, SyncClockState};
 
 pub async fn run(
     sock_path: PathBuf,
     midi_output: Box<dyn MidiOutput>,
-    clock_rx: Option<mpsc::Receiver<ClockMessage>>,
-    sync_clock_state: Option<Arc<Mutex<SyncClockState>>>,
     initial_mode: EngineMode,
 ) {
     let listener = match UnixListener::bind(&sock_path) {
@@ -33,12 +30,6 @@ pub async fn run(
     let settings = Arc::new(Mutex::new(EngineSettings::new()));
     settings.lock().unwrap().mode = initial_mode;
 
-    // Wire up sync clock receiver if --sync-port was provided (overrides initial_mode)
-    if let (Some(rx), Some(ref state)) = (clock_rx, sync_clock_state.clone()) {
-        settings.lock().unwrap().mode = EngineMode::Sync;
-        MidiClockReceiver::new(rx, Arc::clone(&engine), Arc::clone(state));
-    }
-
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let shutdown_tx = Arc::new(Mutex::new(Some(shutdown_tx)));
 
@@ -46,7 +37,7 @@ pub async fn run(
         .expect("failed to install SIGTERM handler");
 
     tokio::select! {
-        _ = run_ipc_server(listener, store, engine, settings, shutdown_tx, sync_clock_state) => {}
+        _ = run_ipc_server(listener, store, engine, settings, shutdown_tx) => {}
         _ = shutdown_rx => {
             info!("stop command received, shutting down");
         }

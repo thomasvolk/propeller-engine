@@ -24,10 +24,6 @@ pub(crate) enum LoopCommand {
     ClockPause,
     ClockResume,
     ClockStop,
-    SyncStart,
-    SyncContinue,
-    SyncStop,
-    SyncBpmUpdate(u32),
 }
 
 pub struct LoopEngine {
@@ -77,22 +73,6 @@ impl LoopEngine {
         if s == EngineState::Running || s == EngineState::Paused {
             self.clock_stop();
         }
-    }
-
-    pub fn sync_start(&self) {
-        let _ = self.sender.send(LoopCommand::SyncStart);
-    }
-
-    pub fn sync_continue(&self) {
-        let _ = self.sender.send(LoopCommand::SyncContinue);
-    }
-
-    pub fn sync_stop(&self) {
-        let _ = self.sender.send(LoopCommand::SyncStop);
-    }
-
-    pub fn sync_bpm_update(&self, bpm: u32) {
-        let _ = self.sender.send(LoopCommand::SyncBpmUpdate(bpm));
     }
 
     pub fn state(&self) -> EngineState {
@@ -962,123 +942,4 @@ mod tests {
         assert!(!has_clock_stop, "clock_stop_on_shutdown should not emit ClockStop when already Stopped");
     }
 
-    // T-12 (EP-6): SyncStart with active project → state = Running
-    #[test]
-    fn sync_start_with_project_transitions_to_running() {
-        let (engine, _) = make_engine_with_project();
-        engine.sync_start();
-        wait_for_state(&engine, EngineState::Running, 500);
-        assert_eq!(engine.state(), EngineState::Running);
-        engine.sync_stop();
-        wait_for_state(&engine, EngineState::Stopped, 500);
-    }
-
-    // T-14 (EP-6): SyncStart while already Running → state stays Running (restarts from bar 0)
-    #[test]
-    fn sync_start_while_running_stays_running() {
-        let (engine, captured) = make_engine_with_project();
-        engine.sync_start();
-        wait_for_state(&engine, EngineState::Running, 500);
-        // Give a bar to play
-        std::thread::sleep(Duration::from_millis(100));
-        // Second SyncStart while running
-        engine.sync_start();
-        std::thread::sleep(Duration::from_millis(50));
-        assert_eq!(engine.state(), EngineState::Running, "should remain Running after second SyncStart");
-        engine.sync_stop();
-        wait_for_state(&engine, EngineState::Stopped, 500);
-        // Verify notes were emitted (engine played)
-        let events = captured.lock().unwrap().clone();
-        assert!(events.iter().any(|e| matches!(e, midi::MidiEvent::NoteOn { .. })));
-    }
-
-    // T-16 (EP-6): SyncContinue with active project → state = Running; bar_index unchanged
-    #[test]
-    fn sync_continue_with_project_transitions_to_running() {
-        let (engine, _) = make_engine_with_project();
-        engine.sync_continue();
-        wait_for_state(&engine, EngineState::Running, 500);
-        assert_eq!(engine.state(), EngineState::Running);
-        engine.sync_stop();
-        wait_for_state(&engine, EngineState::Stopped, 500);
-    }
-
-    // T-18 (EP-6): SyncStop while Running → state = Stopped; NoteOff for active notes
-    #[test]
-    fn sync_stop_while_running_sends_note_off() {
-        // Use a slow BPM with long note so note is sounding when we stop
-        let store = Arc::new(RwLock::new(ProjectStore::new()));
-        use crate::domain::*;
-        let project = Project {
-            header: Header { bpm: 60, time_signature: TimeSignature { numerator: 4, denominator: 4 } },
-            tracks: vec![Track {
-                name: "t".to_string(), channel: 1, instrument: 0,
-                bars: vec![Bar { notes: vec![Note {
-                    event: NoteEvent::Note { pitch: 60, velocity: 80 },
-                    duration_ticks: 1920,
-                }] }],
-            }],
-        };
-        store.write().unwrap().set_pending(project).unwrap();
-        store.write().unwrap().commit_pending();
-
-        let captured = Arc::new(Mutex::new(Vec::new()));
-        let output = CapturingOutput { captured: Arc::clone(&captured) };
-        let engine = LoopEngine::new(Arc::clone(&store), Box::new(output));
-
-        engine.sync_start();
-        wait_for_state(&engine, EngineState::Running, 500);
-        std::thread::sleep(Duration::from_millis(50)); // note is now sounding
-
-        engine.sync_stop();
-        wait_for_state(&engine, EngineState::Stopped, 500);
-
-        let events = captured.lock().unwrap().clone();
-        let has_note_on = events.iter().any(|e| matches!(e, midi::MidiEvent::NoteOn { .. }));
-        let has_note_off = events.iter().any(|e| matches!(e, midi::MidiEvent::NoteOff { .. }));
-        assert!(has_note_on, "expected NoteOn");
-        assert!(has_note_off, "expected NoteOff on SyncStop");
-    }
-
-    // T-20 (EP-6): SyncBpmUpdate(fast) while Running → bar duration shortens after bar boundary
-    #[test]
-    fn sync_bpm_update_changes_playback_speed() {
-        // Use BPM=300 (bar=200ms), send SyncBpmUpdate(1500) early.
-        // The current bar finishes at ~200ms, then BPM=1500 applies → bars at ~40ms each.
-        // After 500ms total, should see many bars worth of NoteOns.
-        let store = Arc::new(RwLock::new(ProjectStore::new()));
-        use crate::domain::*;
-        let project = Project {
-            header: Header { bpm: 300, time_signature: TimeSignature { numerator: 1, denominator: 4 } },
-            tracks: vec![Track {
-                name: "t".to_string(), channel: 1, instrument: 0,
-                bars: vec![Bar { notes: vec![Note {
-                    event: NoteEvent::Note { pitch: 60, velocity: 80 },
-                    duration_ticks: 480,
-                }] }],
-            }],
-        };
-        store.write().unwrap().set_pending(project).unwrap();
-        store.write().unwrap().commit_pending();
-
-        let captured = Arc::new(Mutex::new(Vec::new()));
-        let output = CapturingOutput { captured: Arc::clone(&captured) };
-        let engine = LoopEngine::new(Arc::clone(&store), Box::new(output));
-
-        engine.sync_start();
-        wait_for_state(&engine, EngineState::Running, 500);
-        // Send BPM update immediately; stored in pending_bpm, applied at next bar boundary (~200ms)
-        engine.sync_bpm_update(1500);
-
-        // Wait for the original bar (200ms) plus multiple fast bars at 1500 BPM (40ms each)
-        // After ~500ms total: ~1 slow bar + ~7 fast bars = ~8 NoteOn events
-        std::thread::sleep(Duration::from_millis(600));
-        engine.sync_stop();
-        wait_for_state(&engine, EngineState::Stopped, 500);
-
-        let count = captured.lock().unwrap().iter()
-            .filter(|e| matches!(e, midi::MidiEvent::NoteOn { .. })).count();
-        assert!(count >= 5,
-            "expected at least 5 NoteOn events after BPM increase to 1500, got {count}");
-    }
 }
