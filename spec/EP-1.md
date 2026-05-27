@@ -4,7 +4,7 @@
 
 The engine runs as a long-lived background process. It starts on demand, remains running without further interaction, and shuts down cleanly when explicitly stopped. All subsequent epics depend on this foundation.
 
-**Confidence Level:** 95% — PRD is complete. NF-4 is intentionally qualitative (SIGKILL cannot be intercepted; "as gracefully as possible" is the correct bound for a PRD).
+**Confidence Level:** 95% — PRD is complete. NF-4 is intentionally qualitative (SIGKILL cannot be intercepted; "as gracefully as possible" is the correct bound for a PRD). F-12/AC-13 added to capture the graceful player-thread shutdown requirement surfaced by the clock-stop race condition fix.
 
 ---
 
@@ -51,6 +51,7 @@ The engine crashes mid-session, leaving a stale socket file at `/tmp/propeller.s
 | F-9 | On an internal error, the engine writes diagnostic information to stderr and to a user-specific log file (e.g. `$HOME/.local/share/propeller/propeller.log` or the platform-appropriate equivalent). |
 | F-10 | On startup, if `/tmp/propeller.sock` already exists, the engine attempts to connect to it. If the connection is refused, the stale file is removed and startup proceeds. If the connection succeeds, the start attempt is rejected (F-5). |
 | F-11 | A `status` CLI subcommand reports whether the daemon is currently running. It produces human-readable output and exits with code 0 if the daemon is running and a non-zero code if it is not. |
+| F-12 | On stop, the daemon waits for the player thread to finish its in-flight work and reach a stopped state before the process exits. In-flight work includes flushing active notes and sending any required MIDI transport messages (e.g. MIDI Clock Stop). |
 
 ---
 
@@ -81,6 +82,7 @@ The engine crashes mid-session, leaving a stale socket file at `/tmp/propeller.s
 | AC-10 | The engine has crashed, leaving a stale `/tmp/propeller.sock` | I run the start command | The engine removes the stale file, starts successfully, and the socket is connectable |
 | AC-11 | The engine is running | I run `propeller status` | The output indicates the daemon is running and the command exits with code 0 |
 | AC-12 | The engine is not running | I run `propeller status` | The output indicates the daemon is not running and the command exits with a non-zero code |
+| AC-13 | The engine is running with active playback (notes or MIDI clock) | I send a stop command | The daemon blocks until the player thread has completed its in-flight work (all MIDI messages sent, all notes off) before the process exits |
 
 ---
 
@@ -111,3 +113,7 @@ No open questions.
 ### Cycle 5 — Confidence: 95%
 - Reconciled: none
 - Added: F-11 (status subcommand with exit code), UJ-6 (checking daemon state), AC-11/AC-12
+
+### Cycle 6 — Confidence: 95%
+- Reconciled: none
+- Added: F-12 (daemon waits for player thread graceful shutdown before process exit), AC-13 — motivated by clock-stop race condition where MIDI Clock Stop was not delivered when the daemon exited before the player thread processed the stop command

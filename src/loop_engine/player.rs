@@ -327,6 +327,10 @@ pub fn run_player_loop(
                         SleepResult::Elapsed => {}
                         SleepResult::Stop => {
                             flush_active_notes(&mut active_notes, &mut output);
+                            if is_clock_mode {
+                                output.clock_stop();
+                                is_clock_mode = false;
+                            }
                             bar_index = 0;
                             state = EngineState::Stopped;
                             *shared_state.lock().unwrap() = EngineState::Stopped;
@@ -376,6 +380,10 @@ pub fn run_player_loop(
                     match receiver.try_recv() {
                         Ok(LoopCommand::Stop) => {
                             flush_active_notes(&mut active_notes, &mut output);
+                            if is_clock_mode {
+                                output.clock_stop();
+                                is_clock_mode = false;
+                            }
                             bar_index = 0;
                             state = EngineState::Stopped;
                             *shared_state.lock().unwrap() = EngineState::Stopped;

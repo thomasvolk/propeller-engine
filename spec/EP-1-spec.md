@@ -4,7 +4,7 @@
 
 This epic establishes the foundational daemon infrastructure for the propeller-engine. The engine starts on demand via a CLI `start` command, daemonises itself using a double-fork, opens a Unix domain socket at a configurable path (defaulting to `/tmp/propeller.sock`) as its liveness indicator and IPC endpoint, and shuts down cleanly when a `stop` command is received or SIGTERM arrives. All subsequent epics build on top of this socket-based foundation.
 
-**Confidence Level:** 95% — All questions answered and decisions resolved; every PRD item including the new `status` subcommand (F-11, AC-11, AC-12) has a task; TDD ordering is maintained throughout.
+**Confidence Level:** 90% — F-12 and AC-13 (graceful player-thread shutdown before process exit) added to PRD after cycle 6; tasks T-25/T-26 added to cover them; all other items remain fully specified.
 
 ---
 
@@ -47,7 +47,7 @@ The daemonised grandchild, running under `#[tokio::main]`. Responsibilities:
 - Bind and listen on the resolved socket path (F-8).
 - Accept IPC connections and handle the `stop` message via `tokio::select!` (F-3).
 - Await SIGTERM via `tokio::signal` in the same `select!` loop (NF-4).
-- On shutdown: close the socket, unlink the file, release all resources, exit (F-4).
+- On shutdown: signal all sub-threads (e.g. the player thread introduced in later epics) to stop, then **block until each sub-thread has completed its in-flight work** (e.g. sent MIDI Clock Stop, flushed active notes) before unlinking the socket and calling `exit` (F-4, F-12). A per-thread timeout (default 100 ms) prevents shutdown from hanging indefinitely.
 
 ### Socket Server
 
@@ -110,6 +110,8 @@ Tasks are ordered TDD-first: every test task must appear before the impl task it
 | T-22 | Write test: `propeller status` exits 0 and prints a running message when daemon is up (AC-11) | test | F-11, AC-11 | — |
 | T-23 | Write test: `propeller status` exits non-zero and prints a not-running message when daemon is down (AC-12) | test | F-11, AC-12 | — |
 | T-24 | Impl: CLI `status` subcommand — connect to resolved socket path, print state, exit with code 0 (running) or 1 (not running) | impl | F-11 | T-22, T-23 |
+| T-25 | Write test: `clock_stop_on_shutdown()` blocks until engine state reaches `Stopped` before returning; verifies that shutdown does not return while the player thread still has in-flight work (AC-13) | test | F-12, AC-13 | — |
+| T-26 | Impl: `clock_stop_on_shutdown()` — after sending the stop command, poll engine state with a 100 ms timeout, blocking until `Stopped` before returning; ensures all in-flight MIDI messages are delivered before process exit | impl | F-12 | T-25 |
 
 ---
 
@@ -154,3 +156,7 @@ All decisions resolved and reconciled into the specification.
 ### Cycle 6 — Confidence: 95%
 - Reconciled: none
 - Added: T-22/T-23 (status tests for AC-11/AC-12), T-24 (status impl for F-11); architecture overview and CLI component updated to describe `status` subcommand
+
+### Cycle 7 — Confidence: 90%
+- Reconciled: F-12/AC-13 from PRD (graceful player-thread shutdown before process exit) → Daemon Process component updated with blocking shutdown constraint and 100 ms timeout; T-25 (test: `clock_stop_on_shutdown()` blocks until Stopped) and T-26 (impl: poll-with-timeout in `clock_stop_on_shutdown()`) added
+- Added: none — all PRD items now have tasks; specification is complete

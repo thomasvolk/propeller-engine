@@ -72,6 +72,14 @@ impl LoopEngine {
         let s = self.state();
         if s == EngineState::Running || s == EngineState::Paused {
             self.clock_stop();
+            // Block until the player thread processes ClockStop and sends 0xFC before process exit.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(100);
+            while std::time::Instant::now() < deadline {
+                if self.state() == EngineState::Stopped {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
         }
     }
 
@@ -928,6 +936,26 @@ mod tests {
         let events = captured.lock().unwrap().clone();
         let has_clock_stop = events.iter().any(|e| matches!(e, midi::MidiEvent::ClockStop));
         assert!(has_clock_stop, "expected ClockStop on shutdown");
+    }
+
+    // T-25 (EP-1): clock_stop_on_shutdown() blocks until Stopped — state is Stopped immediately on return
+    #[test]
+    fn clock_stop_on_shutdown_blocks_until_stopped() {
+        let (engine, captured) = make_engine_with_project();
+        engine.clock_start();
+        wait_for_state(&engine, EngineState::Running, 500);
+
+        engine.clock_stop_on_shutdown();
+
+        // No external wait: method must have blocked until Stopped before returning
+        assert_eq!(
+            engine.state(),
+            EngineState::Stopped,
+            "clock_stop_on_shutdown must block until Stopped before returning"
+        );
+        let events = captured.lock().unwrap().clone();
+        let has_clock_stop = events.iter().any(|e| matches!(e, midi::MidiEvent::ClockStop));
+        assert!(has_clock_stop, "ClockStop must be emitted before clock_stop_on_shutdown returns");
     }
 
     // T-29 variant: clock_stop_on_shutdown() while Stopped → no ClockStop
