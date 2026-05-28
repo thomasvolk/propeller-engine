@@ -74,6 +74,10 @@ fn sleep_until_with_poll(
     }
 }
 
+// Microseconds to wait before the first event on startup so that program changes and
+// Clock Start (0xFA) reach the MIDI device before any NoteOn.
+const START_LATENCY_MICROS: u64 = 20_000;
+
 pub fn run_player_loop(
     receiver: mpsc::Receiver<LoopCommand>,
     store: Arc<RwLock<ProjectStore>>,
@@ -105,7 +109,7 @@ pub fn run_player_loop(
                                 let project = store_r.active().unwrap();
                                 scheduler = Scheduler::new(project.header.bpm);
                             }
-                            anchor = Instant::now();
+                            anchor = Instant::now() + Duration::from_micros(START_LATENCY_MICROS);
                             is_clock_mode = false;
                             state = EngineState::Running;
                             *shared_state.lock().unwrap() = EngineState::Running;
@@ -124,7 +128,7 @@ pub fn run_player_loop(
                             scheduler = Scheduler::new(project.header.bpm);
                             last_bar_ticks = project.header.time_signature.bar_ticks() as u64;
                         }
-                        anchor = Instant::now();
+                        anchor = Instant::now() + Duration::from_micros(START_LATENCY_MICROS);
                         is_clock_mode = true;
                         output.clock_start();
                         state = EngineState::Running;
@@ -154,7 +158,7 @@ pub fn run_player_loop(
                             let project = store_r.active().unwrap();
                             scheduler = Scheduler::new(project.header.bpm);
                         }
-                        anchor = Instant::now();
+                        anchor = Instant::now() + Duration::from_micros(START_LATENCY_MICROS);
                         state = EngineState::Running;
                         *shared_state.lock().unwrap() = EngineState::Running;
                         continue;

@@ -4,7 +4,7 @@
 
 The engine can act as a MIDI clock source that other devices follow. In clock output mode it sends standard MIDI timing clock pulses (0xF8, 24 per quarter note) at the rate determined by the active project's BPM. Starting the clock sends MIDI Start (0xFA); resuming from pause sends MIDI Continue (0xFB); stopping sends MIDI Stop (0xFC). The clock and loop engine are fully coupled: starting the clock starts the loop, and stopping the clock stops the loop. Clock-pause introduces a paused sub-state in which note output halts and the tick position is retained, allowing a seamless MIDI Continue resume. If the active project is removed while the clock is running, the clock continues sending timing pulses and the loop idles silently. The clock cannot be started unless an active project is loaded. On graceful daemon shutdown the engine attempts to send a MIDI Stop message so connected devices do not hang.
 
-**Confidence Level:** 92% — All roadmap requirements are covered and all open questions are reconciled. The PRD is complete.
+**Confidence Level:** 95% — All roadmap requirements are covered and all open questions are reconciled. F-19/AC-17 added to capture the startup latency requirement. The PRD is complete.
 
 ---
 
@@ -66,6 +66,7 @@ The clock is running and the performer removes the active project. The MIDI cloc
 | F-16 | On clock-pause, the engine sends MIDI note-off for every currently-sounding note (to prevent stuck notes), then halts all further note output and retains the loop's current tick position. |
 | F-17 | On clock-resume, the loop continues from the retained tick position, resuming note output at that tick. |
 | F-18 | If the active project is removed while the clock is running, the MIDI clock continues sending timing pulses; the loop enters the idle state (no note output, per EP-3 F-13) until a new project is loaded. No MIDI Stop message is sent. |
+| F-19 | On loop start and clock start, the engine applies a fixed startup latency window (20 ms) before emitting the first note event and the first clock pulse. Initial MIDI setup messages (Program Change, MIDI Start 0xFA) are sent immediately before this window; all bar events including NoteOn and ClockPulse fire only after the window has elapsed. This ensures connected MIDI devices have time to process setup messages and avoid dropping the first note. |
 
 ---
 
@@ -98,6 +99,7 @@ The clock is running and the performer removes the active project. The MIDI cloc
 | AC-14 | The clock is running and notes are sounding | a clock-pause command is sent | MIDI note-off events are sent for all active notes, note output ceases, and the loop tick position is retained |
 | AC-15 | The clock is paused | a clock-resume command is sent | loop note output resumes from the retained tick position |
 | AC-16 | The clock is running | the active project is removed | the clock continues sending MIDI timing pulses and the loop produces no note output |
+| AC-17 | An active project is loaded | a loop-start or clock-start command is received | the first NoteOn (and first ClockPulse in clock mode) is emitted at least 20 ms after the Program Change and/or MIDI Start (0xFA) sent during startup |
 
 ---
 
@@ -120,3 +122,7 @@ No open questions. All questions have been reconciled.
 ### Cycle 3 — Confidence: 92%
 - Reconciled: Q-4 → F-16 (note-off on pause + tick position retained), F-17 (resume from retained tick), AC-14/AC-15; Q-5 → F-18 (clock continues on project removal, loop idles), UJ-8, AC-16
 - Added: none — confidence 92%, PRD is complete
+
+### Cycle 4 — Confidence: 95%
+- Reconciled: none
+- Added: F-19 (startup latency window of 20 ms before first note/clock-pulse event), AC-17 — motivated by real MIDI device dropping the first NoteOn when it arrives back-to-back with the Program Change or MIDI Start message sent at startup

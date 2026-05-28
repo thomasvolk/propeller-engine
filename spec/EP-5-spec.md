@@ -4,7 +4,7 @@
 
 This epic adds MIDI clock output capability to the daemon by extending the existing `LoopEngine` (EP-3) and IPC layer (EP-4). Four new IPC commands (`clock-start`, `clock-pause`, `clock-resume`, `clock-stop`) are wired through new `LoopCommand` variants to the player loop thread. The `MidiOutput` trait gains four transport-message methods. MIDI timing clock pulses (0xF8, every 20 internal ticks) are inserted as `BarEvent::ClockPulse` entries in the per-bar event list. A new `Paused` engine state enables mid-bar position retention for seamless MIDI Continue resumes. The daemon's graceful-shutdown path sends a MIDI Stop before removing the socket.
 
-**Confidence Level:** 95% — All F-x and AC-x are covered by tasks, TDD ordering is maintained, architecture and data model are complete. All decisions reconciled; no open questions or decisions remain.
+**Confidence Level:** 95% — All F-x and AC-x are covered by tasks, TDD ordering is maintained, architecture and data model are complete. All decisions reconciled; no open questions or decisions remain. F-19/AC-17 tasks added.
 
 ---
 
@@ -67,6 +67,10 @@ At each bar boundary, `commit_pending()` is called. If the resulting `active()` 
 **Daemon shutdown MIDI Stop (F-9, NF-2):**
 
 `daemon.rs` calls `engine.clock_stop_on_shutdown()` after the tokio select exits (on SIGTERM or stop command) but before `fs::remove_file(&sock_path)`. This method checks `engine.state()` and, if `Running` or `Paused`, sends `ClockStop` synchronously before the socket is removed.
+
+**Startup latency window (F-19, AC-17):**
+
+A module-level constant `START_LATENCY_MICROS: u64 = 20_000` (20 ms) is defined in `player.rs`. On `Start`, `ClockStart`, and `Waiting→Running` transitions, `anchor` is set to `Instant::now() + Duration::from_micros(START_LATENCY_MICROS)` instead of `Instant::now()`. Initial MIDI setup messages (Program Change, `clock_start()`) are sent immediately before the event loop; all bar events — NoteOn, NoteOff, ClockPulse — then fire once `anchor` is reached (~20 ms later). The BPM-change anchor reset (`anchor = Instant::now()` at bar boundaries) and the pause-resume anchor recalculation are unaffected.
 
 ---
 
@@ -160,6 +164,8 @@ Tasks are ordered TDD-first: every test task must appear before the impl task it
 | T-30 | Impl: `daemon.rs` shutdown path calls `engine.clock_stop_on_shutdown()` after tokio select exits and before `fs::remove_file(&sock_path)` | impl | F-9, NF-2, AC-7 | T-6, T-22, T-29 |
 | T-31 | Write test: `MidiPortOutput` clock byte helpers return `[0xF8]` for `clock_tick`, `[0xFA]` for `clock_start`, `[0xFB]` for `clock_continue`, `[0xFC]` for `clock_stop` (test via private helper functions analogous to EP-8's `note_on_bytes`) | test | F-15, AC-13 | T-2 |
 | T-32 | Impl: add `clock_tick`, `clock_start`, `clock_continue`, `clock_stop` on `MidiPortOutput` (`src/midi_port.rs`) — each sends the corresponding single status byte via `self.0.send()`; satisfies F-15/AC-13 | impl | F-15, AC-13 | T-2, T-31 |
+| T-33 | Write test: after `engine.start()` or `engine.clock_start()`, the first `NoteOn` event is received no sooner than `START_LATENCY_MICROS` (20 ms) after the call, confirming that the startup latency window is applied before the first note event; uses a timestamped capturing output to compare wall-clock timestamps | test | F-19, AC-17 | — |
+| T-34 | Impl: define `START_LATENCY_MICROS: u64 = 20_000` in `player.rs`; set `anchor = Instant::now() + Duration::from_micros(START_LATENCY_MICROS)` on `Start`, `ClockStart`, and `Waiting→Running` transitions; leave BPM-change and pause-resume anchor resets unchanged | impl | F-19, AC-17 | T-33 |
 
 ---
 
@@ -193,3 +199,7 @@ No open decisions remain. All decisions have been reconciled.
 ### Cycle 4 — Confidence: 95%
 - Reconciled: D-1 (A) → required methods on MidiOutput confirmed in spec; D-2 (A) → ClockPulse inserted every 20 ticks in shared event list confirmed; D-3 (A) → PauseContext with remaining_events and bar_index confirmed in data model; D-4 (A) → is_clock_mode bool flag confirmed in player loop component; D-5 (A) → explicit clock_stop_on_shutdown call in daemon.rs confirmed in architecture — all five decision blocks removed from Open Decisions
 - Added: none — confidence 95%, specification is complete
+
+### Cycle 5 — Confidence: 95%
+- Reconciled: none
+- Added: F-19/AC-17 from PRD → architecture updated (Startup latency window section); T-33 (test: first NoteOn fires no sooner than 20 ms after start) and T-34 (impl: START_LATENCY_MICROS constant and anchor offset on Start/ClockStart/Waiting→Running transitions)
