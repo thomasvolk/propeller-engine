@@ -66,7 +66,7 @@ The clock is running and the performer removes the active project. The MIDI cloc
 | F-16 | On clock-pause, the engine sends MIDI note-off for every currently-sounding note (to prevent stuck notes), then halts all further note output and retains the loop's current tick position. |
 | F-17 | On clock-resume, the loop continues from the retained tick position, resuming note output at that tick. |
 | F-18 | If the active project is removed while the clock is running, the MIDI clock continues sending timing pulses; the loop enters the idle state (no note output, per EP-3 F-13) until a new project is loaded. No MIDI Stop message is sent. |
-| F-19 | On loop start and clock start, the engine applies a fixed startup latency window (20 ms) before emitting the first note event and the first clock pulse. Initial MIDI setup messages (Program Change, MIDI Start 0xFA) are sent immediately before this window; all bar events including NoteOn and ClockPulse fire only after the window has elapsed. This ensures connected MIDI devices have time to process setup messages and avoid dropping the first note. |
+| F-19 | On loop start and clock start, the engine applies a fixed startup latency window (20 ms) before emitting the first note event and the first clock pulse. Initial MIDI setup messages (Program Change, MIDI Start 0xFA) are sent immediately before this window; all bar events including NoteOn and ClockPulse fire only after the window has elapsed. The latency is retained to support older or slower hardware that requires settling time after a Program Change before it can reliably respond to NoteOn messages. |
 
 ---
 
@@ -126,3 +126,6 @@ No open questions. All questions have been reconciled.
 ### Cycle 4 — Confidence: 95%
 - Reconciled: none
 - Added: F-19 (startup latency window of 20 ms before first note/clock-pulse event), AC-17 — motivated by real MIDI device dropping the first NoteOn when it arrives back-to-back with the Program Change or MIDI Start message sent at startup
+
+### Cycle 5 — Confidence: 95%
+- Reconciled: F-19 rationale clarified — the root cause of the first-note-dropped bug in clock mode was the event priority ordering (ClockPulse fired before NoteOn at tick 0; the 1-byte Clock was fully received and processed by the device before the 3-byte NoteOn had finished arriving over the 31.25 kBaud MIDI wire). This was fixed by reordering event priority to NoteOff → NoteOn → ClockPulse. The 20 ms startup latency window is retained as a separate, independent measure to support older or slower hardware that needs settling time after a Program Change before it can reliably respond to NoteOn messages.
