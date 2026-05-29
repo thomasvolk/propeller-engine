@@ -42,6 +42,11 @@ enum Commands {
         #[command(subcommand)]
         command: LoopCommand,
     },
+    /// MIDI utilities
+    Midi {
+        #[command(subcommand)]
+        command: MidiCommand,
+    },
     #[command(hide = true)]
     DaemonRun {
         #[arg(long)]
@@ -71,6 +76,12 @@ enum LoopCommand {
     Stop,
 }
 
+#[derive(Subcommand)]
+enum MidiCommand {
+    /// List all available MIDI output ports
+    Ports,
+}
+
 fn main() {
     let cli = Cli::parse();
     match cli.command {
@@ -84,6 +95,9 @@ fn main() {
         Commands::Loop { command } => match command {
             LoopCommand::Start => cmd_loop_start(),
             LoopCommand::Stop => cmd_loop_stop(),
+        },
+        Commands::Midi { command } => match command {
+            MidiCommand::Ports => cmd_midi_ports(),
         },
         Commands::DaemonRun { clock } => cmd_daemon_run(clock),
     }
@@ -271,6 +285,12 @@ fn cmd_loop_stop() {
     if let Err(e) = client::send_command(&sock_path, serde_json::json!({"command": "loop-stop"}))
     {
         handle_client_error(e, &sock_path);
+    }
+}
+
+fn cmd_midi_ports() {
+    for port in midi_port::list_ports() {
+        println!("{}", port.name);
     }
 }
 

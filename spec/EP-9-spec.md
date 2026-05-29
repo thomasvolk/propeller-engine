@@ -10,10 +10,13 @@ This epic adds `project create`, `project modify`, `loop start`, and `loop stop`
 
 ## Architecture Overview
 
-The `propeller` binary (`src/main.rs`) already handles `start`, `stop`, and `status` via a `clap`-derived `Commands` enum. EP-9 extends this enum with two new top-level subcommands, each with nested sub-subcommands:
+The `propeller` binary (`src/main.rs`) already handles `start`, `stop`, and `status` via a `clap`-derived `Commands` enum. EP-9 extends this enum with three new top-level subcommands, each with nested sub-subcommands:
 
 - `Commands::Project(ProjectCommand)` — `Create { filename: Option<PathBuf> }` and `Modify { filename: Option<PathBuf> }`
 - `Commands::Loop(LoopCommand)` — `Start` and `Stop`
+- `Commands::Midi(MidiCommand)` — `Ports`
+
+The `Midi(MidiCommand::Ports)` handler calls `midi_port::list_ports()` directly (already implemented in `src/midi_port.rs`) and requires no daemon connection.
 
 A new `src/client.rs` module provides two functions used by all new command handlers:
 
@@ -42,7 +45,7 @@ ClientError::Input(String)              — file/stdin read or JSON parse failur
 
 ### `src/main.rs` (extended)
 
-Adds `Project(ProjectCommand)` and `Loop(LoopCommand)` to the `Commands` enum. Four new handler functions: `cmd_project_create`, `cmd_project_modify`, `cmd_loop_start`, `cmd_loop_stop`. All handlers follow the same pattern: resolve socket path → call client functions → `eprintln!` + `exit(1)` on error → silent exit 0 on success.
+Adds `Project(ProjectCommand)`, `Loop(LoopCommand)`, and `Midi(MidiCommand)` to the `Commands` enum. Five new handler functions: `cmd_project_create`, `cmd_project_modify`, `cmd_loop_start`, `cmd_loop_stop`, `cmd_midi_ports`. The four daemon-communicating handlers follow the same pattern: resolve socket path → call client functions → `eprintln!` + `exit(1)` on error → silent exit 0 on success. `cmd_midi_ports` calls `midi_port::list_ports()`, prints each port name, and exits 0 — no socket interaction required.
 
 ### `src/socket_path.rs` (unchanged)
 
@@ -56,6 +59,7 @@ Reused as-is. `socket_path::resolve()` already reads `PROPELLER_SOCK` and defaul
 |------|--------|-------|
 | `ProjectCommand` | `Create { filename: Option<PathBuf> }`, `Modify { filename: Option<PathBuf> }` | Clap subcommand enum |
 | `LoopCommand` | `Start`, `Stop` | Clap subcommand enum |
+| `MidiCommand` | `Ports` | Clap subcommand enum; no daemon connection |
 | `ClientError` | `Connect(io::Error)`, `Daemon { message: String }`, `Input(String)` | Non-public; mapped to stderr + exit in handlers |
 | project input | `serde_json::Value` with `header` and `tracks` fields | Parsed from file or stdin; `"command"` field inserted by handler before dispatch |
 | protocol command | `serde_json::Value` with `"command"` and payload fields | e.g. `{"command":"create-project","header":…,"tracks":…}` |
@@ -94,6 +98,8 @@ Tasks are ordered TDD-first: every test task must appear before the impl task it
 | T-23 | Impl: `ClientError::Connect` mapped to `eprintln!("propeller: …")` + `exit(1)` in all handlers | impl | F-8 | T-22, T-4 |
 | T-24 | Test (integration): daemon returns `{"status":"error","message":"…"}` — CLI writes message to stderr, exits non-zero | test | AC-6 | — |
 | T-25 | Impl: `ClientError::Daemon` mapped to `eprintln!("propeller: …")` + `exit(1)` in all handlers | impl | AC-6 | T-24, T-6 |
+| T-26 | Test: `propeller midi ports` prints each port name on its own line and exits 0; no socket required (use `assert!(output.status.success())` with no daemon running) | test | F-13, AC-12 | — |
+| T-27 | Impl: `Midi(MidiCommand::Ports)` arm in `main.rs` — calls `midi_port::list_ports()`, prints `port.name` for each entry, exits 0 | impl | F-13, AC-12 | T-26 |
 
 ---
 
@@ -112,3 +118,6 @@ No open decisions. The specification is complete.
 ### Cycle 2 — Confidence: 93%
 - Reconciled: D-1 → B (synchronous `std::os::unix::net::UnixStream`); architecture overview, `src/client.rs` component description, and T-1/T-2/T-8/T-9 task descriptions updated to reflect sync I/O and thread-based test helpers
 - Added: none — no open decisions remain, specification is complete
+
+### Cycle 3 — Confidence: 93%
+- Added: `Commands::Midi(MidiCommand)` with `Ports` variant; `cmd_midi_ports` handler; T-26 (test) and T-27 (impl) for `propeller midi ports` — moved from EP-6

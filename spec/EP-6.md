@@ -2,9 +2,9 @@
 
 ## Overview
 
-The engine can follow an external MIDI clock source and synchronize its loop to it. In clock sync mode the loop tempo is driven entirely by incoming MIDI clock pulses (0xF8); the internal BPM setting has no effect. The engine follows standard MIDI sync semantics: clock pulses alone provide tempo information but do not trigger playback — the external device must send MIDI Start (0xFA, from the beginning) or Continue (0xFB, from the current position) to begin the loop. Playback also requires an active project. MIDI Stop (0xFC) halts the loop. If the external clock is lost the engine stops the loop and waits for a new Start or Continue. A port-enumeration utility lets the performer identify the correct MIDI input port before starting the daemon.
+The engine can follow an external MIDI clock source and synchronize its loop to it. In clock sync mode the loop tempo is driven entirely by incoming MIDI clock pulses (0xF8); the internal BPM setting has no effect. The engine follows standard MIDI sync semantics: clock pulses alone provide tempo information but do not trigger playback — the external device must send MIDI Start (0xFA, from the beginning) or Continue (0xFB, from the current position) to begin the loop. Playback also requires an active project. MIDI Stop (0xFC) halts the loop. If the external clock is lost the engine stops the loop and waits for a new Start or Continue.
 
-**Confidence Level:** 92% — All roadmap requirements and open questions are reconciled; the PRD is complete. Remaining minor details (exact status field naming, port-scan utility interface) are intentionally deferred to the technical specification.
+**Confidence Level:** 92% — All roadmap requirements and open questions are reconciled; the PRD is complete. Remaining minor details (exact status field naming) are intentionally deferred to the technical specification.
 
 ---
 
@@ -34,10 +34,6 @@ While in clock sync mode the performer issues a set-BPM command. The engine reje
 
 A performer's external sequencer sends MIDI Start (0xFA). The engine resets the loop to the first tick and begins playback. Later the sequencer sends MIDI Stop (0xFC); the engine halts the loop and sends MIDI note-off for all active notes. The sequencer then sends MIDI Continue (0xFB); the loop resumes from its current position.
 
-### UJ-7 · Port enumeration before daemon startup
-
-Before starting the daemon the performer invokes the MIDI port enumeration utility. All available MIDI input ports are listed. The performer identifies their external clock device's port and passes it as the configured input port when starting the daemon.
-
 ---
 
 ## Functional Requirements
@@ -53,12 +49,11 @@ Before starting the daemon the performer invokes the MIDI port enumeration utili
 | F-7 | The engine responds to MIDI Continue (0xFB) by resuming loop playback from the current tick position, provided an active project is defined and a clock signal is active. |
 | F-8 | The engine responds to MIDI Stop (0xFC) by halting loop playback and sending MIDI note-off for all currently-sounding notes. |
 | F-9 | The MIDI input port used for the external clock signal is specified at daemon startup and remains fixed for the lifetime of the daemon. |
-| F-10 | The engine provides a MIDI port enumeration utility (invocable before or independently of the daemon) that lists all available MIDI input ports, so the performer can identify the correct port to configure. |
-| F-11 | The engine declares the external clock lost after approximately 3–4 expected pulse intervals of silence, where the expected interval is derived from the last observed BPM. |
-| F-12 | When the external clock is declared lost or MIDI Stop (0xFC) is received, the engine halts loop playback immediately, sending MIDI note-off for all currently-sounding notes. |
-| F-13 | When the external clock signal resumes after being declared lost, the engine re-establishes tempo tracking from the pulses. Loop playback restarts only when the external device subsequently sends MIDI Start (0xFA) or Continue (0xFB) with an active project present. |
-| F-14 | In clock sync mode, a set-BPM command is rejected with an error response; BPM control is disabled while the engine is in sync mode. |
-| F-15 | MIDI Timing Clock pulses (0xF8) received in the absence of a prior MIDI Start or Continue message within the current playback session are used for tempo derivation only; they do not trigger loop playback. |
+| F-10 | The engine declares the external clock lost after approximately 3–4 expected pulse intervals of silence, where the expected interval is derived from the last observed BPM. |
+| F-11 | When the external clock is declared lost or MIDI Stop (0xFC) is received, the engine halts loop playback immediately, sending MIDI note-off for all currently-sounding notes. |
+| F-12 | When the external clock signal resumes after being declared lost, the engine re-establishes tempo tracking from the pulses. Loop playback restarts only when the external device subsequently sends MIDI Start (0xFA) or Continue (0xFB) with an active project present. |
+| F-13 | In clock sync mode, a set-BPM command is rejected with an error response; BPM control is disabled while the engine is in sync mode. |
+| F-14 | MIDI Timing Clock pulses (0xF8) received in the absence of a prior MIDI Start or Continue message within the current playback session are used for tempo derivation only; they do not trigger loop playback. |
 
 ---
 
@@ -85,12 +80,11 @@ Before starting the daemon the performer invokes the MIDI port enumeration utili
 | AC-7 | The loop is halted (by MIDI Stop or clock loss) and a clock signal is active | MIDI Continue (0xFB) is received and a project is present | the loop resumes from the current tick position |
 | AC-8 | The loop is running in sync mode | MIDI Stop (0xFC) is received | the loop halts and MIDI note-off events are sent for all active notes |
 | AC-9 | A MIDI input port is configured at startup and a clock signal arrives on that port | the engine is running in sync mode | the engine processes the incoming clock |
-| AC-10 | The performer invokes the MIDI port enumeration utility | the utility runs | all available MIDI input ports are listed |
-| AC-11 | The loop is running in sync mode at 120 BPM (pulse interval ~20.8 ms) | the clock signal goes silent for approximately 80–100 ms | the engine declares the clock lost and the status query reflects this |
-| AC-12 | The engine has declared the clock lost (loop halted) and a project is still active | the external clock resumes and the external device sends MIDI Start or Continue | the loop begins playing again |
-| AC-13 | The engine is in clock sync mode | a set-BPM command is issued | the engine returns an error response |
-| AC-14 | Sync mode is active with a project loaded and clock pulses are flowing | no MIDI Start or Continue has been received in the current session | no loop playback occurs |
-| AC-15 | The engine has declared the clock lost and clock pulses resume without a MIDI Start or Continue | the clock is flowing again | the engine tracks tempo but does not restart the loop |
+| AC-10 | The loop is running in sync mode at 120 BPM (pulse interval ~20.8 ms) | the clock signal goes silent for approximately 80–100 ms | the engine declares the clock lost and the status query reflects this |
+| AC-11 | The engine has declared the clock lost (loop halted) and a project is still active | the external clock resumes and the external device sends MIDI Start or Continue | the loop begins playing again |
+| AC-12 | The engine is in clock sync mode | a set-BPM command is issued | the engine returns an error response |
+| AC-13 | Sync mode is active with a project loaded and clock pulses are flowing | no MIDI Start or Continue has been received in the current session | no loop playback occurs |
+| AC-14 | The engine has declared the clock lost and clock pulses resume without a MIDI Start or Continue | the clock is flowing again | the engine tracks tempo but does not restart the loop |
 
 ---
 
@@ -107,9 +101,12 @@ No open questions. All questions have been reconciled.
 - Added: Q-1 (incoming MIDI transport messages), Q-2 (MIDI input port), Q-3 (clock loss timeout), Q-4 (loop behaviour on clock loss), Q-5 (BPM command in sync mode)
 
 ### Cycle 2 — Confidence: 80%
-- Reconciled: Q-1 → F-6/F-7/F-8 (MIDI Start/Continue/Stop handling), UJ-6, AC-6/AC-7/AC-8; Q-2 → F-9 (startup-configured port), F-10 (port enumeration utility), UJ-7, AC-9/AC-10; Q-3 → F-11 (3–4 pulse interval timeout), NF-3 (BPM-proportional timeout), AC-11; Q-4 → F-12 (stop + note-off on clock loss), F-13 (auto-resume on clock return), AC-12; Q-5 → F-14 (set-BPM rejected in sync mode), AC-13
+- Reconciled: Q-1 → F-6/F-7/F-8 (MIDI Start/Continue/Stop handling), UJ-6, AC-6/AC-7/AC-8; Q-2 → F-9 (startup-configured port); Q-3 → F-10 (3–4 pulse interval timeout), NF-3 (BPM-proportional timeout), AC-10; Q-4 → F-11 (stop + note-off on clock loss), F-12 (auto-resume on clock return), AC-11; Q-5 → F-13 (set-BPM rejected in sync mode), AC-12
 - Added: Q-6 (playback trigger: clock pulses alone vs MIDI Start required)
 
 ### Cycle 3 — Confidence: 92%
-- Reconciled: Q-6 → F-4 updated (Start/Continue required to trigger playback), F-13 updated (clock return alone does not restart — Start/Continue still required), F-15 (0xF8 alone = tempo only), AC-1/AC-12 updated, AC-14/AC-15 added; UJ-1/UJ-3/UJ-4 updated to remove placeholder references
+- Reconciled: Q-6 → F-4 updated (Start/Continue required to trigger playback), F-12 updated (clock return alone does not restart — Start/Continue still required), F-14 (0xF8 alone = tempo only), AC-1/AC-11 updated, AC-13/AC-14 added; UJ-1/UJ-3/UJ-4 updated to remove placeholder references
 - Added: none — confidence 92%, PRD is complete
+
+### Cycle 4 — Confidence: 92%
+- Removed: UJ-7 (port enumeration), F-10 (port enumeration utility), AC-10 (port enumeration AC) — moved to EP-9 as `propeller midi ports`; renumbered F-11..F-15 → F-10..F-14 and AC-11..AC-15 → AC-10..AC-14
