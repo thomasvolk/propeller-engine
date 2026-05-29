@@ -30,9 +30,9 @@ enum BarEvent {
 impl BarEvent {
     fn priority(&self) -> u8 {
         match self {
-            BarEvent::ClockPulse => 0,
-            BarEvent::NoteOff { .. } => 1,
-            BarEvent::NoteOn { .. } => 2,
+            BarEvent::NoteOff { .. } => 0,
+            BarEvent::NoteOn { .. } => 1,
+            BarEvent::ClockPulse => 2,
         }
     }
 }
