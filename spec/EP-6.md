@@ -48,7 +48,7 @@ A performer's external sequencer sends MIDI Start (0xFA). The engine resets the 
 | F-6 | The engine responds to MIDI Start (0xFA) by resetting the loop position to the first tick and beginning playback, provided an active project is defined. |
 | F-7 | The engine responds to MIDI Continue (0xFB) by resuming loop playback from the current tick position, provided an active project is defined and a clock signal is active. |
 | F-8 | The engine responds to MIDI Stop (0xFC) by halting loop playback and sending MIDI note-off for all currently-sounding notes. |
-| F-9 | The MIDI input port used for the external clock signal is specified at daemon startup and remains fixed for the lifetime of the daemon. |
+| F-9 | Clock sync mode is activated by passing `--sync` at daemon startup. The MIDI input port name is read from the `PROPELLER_SYNC_PORT` environment variable. If `--sync` is given but `PROPELLER_SYNC_PORT` is not set, the daemon exits with an error before opening any port. The port remains fixed for the lifetime of the daemon. |
 | F-10 | The engine declares the external clock lost after approximately 3–4 expected pulse intervals of silence, where the expected interval is derived from the last observed BPM. |
 | F-11 | When the external clock is declared lost or MIDI Stop (0xFC) is received, the engine halts loop playback immediately, sending MIDI note-off for all currently-sounding notes. |
 | F-12 | When the external clock signal resumes after being declared lost, the engine re-establishes tempo tracking from the pulses. Loop playback restarts only when the external device subsequently sends MIDI Start (0xFA) or Continue (0xFB) with an active project present. |
@@ -79,7 +79,7 @@ A performer's external sequencer sends MIDI Start (0xFA). The engine resets the 
 | AC-6 | Sync mode is active with a project loaded and clock running | MIDI Start (0xFA) is received | the loop resets to the first tick and begins playback |
 | AC-7 | The loop is halted (by MIDI Stop or clock loss) and a clock signal is active | MIDI Continue (0xFB) is received and a project is present | the loop resumes from the current tick position |
 | AC-8 | The loop is running in sync mode | MIDI Stop (0xFC) is received | the loop halts and MIDI note-off events are sent for all active notes |
-| AC-9 | A MIDI input port is configured at startup and a clock signal arrives on that port | the engine is running in sync mode | the engine processes the incoming clock |
+| AC-9 | The daemon is started with `--sync` and `PROPELLER_SYNC_PORT` names a valid MIDI input port, and a clock signal arrives on that port | the engine is running in sync mode | the engine processes the incoming clock |
 | AC-10 | The loop is running in sync mode at 120 BPM (pulse interval ~20.8 ms) | the clock signal goes silent for approximately 80–100 ms | the engine declares the clock lost and the status query reflects this |
 | AC-11 | The engine has declared the clock lost (loop halted) and a project is still active | the external clock resumes and the external device sends MIDI Start or Continue | the loop begins playing again |
 | AC-12 | The engine is in clock sync mode | a set-BPM command is issued | the engine returns an error response |
@@ -110,3 +110,7 @@ No open questions. All questions have been reconciled.
 
 ### Cycle 4 — Confidence: 92%
 - Removed: UJ-7 (port enumeration), F-10 (port enumeration utility), AC-10 (port enumeration AC) — moved to EP-9 as `propeller midi ports`; renumbered F-11..F-15 → F-10..F-14 and AC-11..AC-15 → AC-10..AC-14
+
+### Cycle 5 — Confidence: 92%
+- Updated: F-9 — port name no longer passed as a CLI argument; `--sync` is now a boolean flag and the input port name is read from `PROPELLER_SYNC_PORT`; daemon exits with an error if the flag is present but the env var is unset
+- Updated: AC-9 — "given" clause reflects env var interface

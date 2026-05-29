@@ -2,7 +2,7 @@
 
 ## Overview
 
-This epic adds the ability for the engine to follow an external MIDI clock. A new `MidiClockReceiver` module opens a configured MIDI input port at daemon startup, parses incoming MIDI Timing Clock pulses (0xF8) and transport messages (0xFA/0xFB/0xFC), derives BPM from inter-pulse intervals, and drives the `LoopEngine` via four new `LoopCommand` variants. A `PulseTracker` struct handles BPM computation and clock-loss detection in pure Rust with no hardware dependency, enabling thorough unit testing. Clock loss is detected using a `recv_timeout` pattern: the receiver thread blocks with a BPM-proportional timeout and treats an expired wait as a lost clock signal. A `list-ports` CLI subcommand lets the performer enumerate available MIDI input ports before starting the daemon. In sync mode the IPC `set-bpm` command is rejected with a structured error response, and the status query exposes a `sync_clock_state` field.
+This epic adds the ability for the engine to follow an external MIDI clock. A new `MidiClockReceiver` module opens a configured MIDI input port at daemon startup, parses incoming MIDI Timing Clock pulses (0xF8) and transport messages (0xFA/0xFB/0xFC), derives BPM from inter-pulse intervals, and drives the `LoopEngine` via four new `LoopCommand` variants. A `PulseTracker` struct handles BPM computation and clock-loss detection in pure Rust with no hardware dependency, enabling thorough unit testing. Clock loss is detected using a `recv_timeout` pattern: the receiver thread blocks with a BPM-proportional timeout and treats an expired wait as a lost clock signal. Sync mode is activated by the `--sync` flag at daemon startup; the input port name is read from the `PROPELLER_SYNC_PORT` environment variable. In sync mode the IPC `set-bpm` command is rejected with a structured error response, and the status query exposes a `sync_clock_state` field.
 
 **Confidence Level:** 90% — All open questions and decisions are resolved and reconciled. The spec covers every PRD requirement, maintains TDD ordering throughout, and defines all component interactions without ambiguity. T-41/T-42 close the set-mode sync guard gap identified in Cycle 2.
 
@@ -61,7 +61,7 @@ The `LoopEngine` facade gains four corresponding public methods: `sync_start()`,
 
 The `SetBpm` handler in `src/ipc/handler.rs` gains an early-return guard: if `settings.mode == EngineMode::Sync`, return `error_response("sync_mode_active", "…")` before updating any state (F-14, AC-5, AC-13).
 
-The `SetMode` handler gains a corresponding guard: if the requested mode is `Sync` and the `sync_clock_state: Option<Arc<Mutex<SyncClockState>>>` passed through `dispatch` is `None`, return `error_response("sync_requires_port", "sync mode requires --sync-port at startup")` and leave the mode unchanged. This preserves the invariant that `settings.mode == Sync` always implies an active `MidiClockReceiver`.
+The `SetMode` handler gains a corresponding guard: if the requested mode is `Sync` and the `sync_clock_state: Option<Arc<Mutex<SyncClockState>>>` passed through `dispatch` is `None`, return `error_response("sync_requires_port", "sync mode requires --sync at startup")` and leave the mode unchanged. This preserves the invariant that `settings.mode == Sync` always implies an active `MidiClockReceiver`.
 
 **Status response extension:**
 
@@ -71,7 +71,7 @@ When mode is `"sync"`, the `Status` handler appends a `"sync_clock_state"` field
 
 - `src/midi_clock/mod.rs` — `MidiClockReceiver` struct; `ClockMessage` enum; `SyncClockState` enum
 - `src/midi_clock/tracker.rs` — `PulseTracker`: BPM derivation, timeout computation, clock-loss predicate
-- `src/main.rs` — extended with `--sync-port <name>` startup argument
+- `src/main.rs` — extended with `--sync` boolean flag; port name read from `PROPELLER_SYNC_PORT` env var at startup
 
 ---
 
@@ -79,7 +79,7 @@ When mode is `"sync"`, the `Status` handler appends a `"sync_clock_state"` field
 
 ### MidiClockReceiver (`src/midi_clock/mod.rs`)
 
-Created at daemon startup when `--sync-port` is provided. Before spawning the OS thread, `src/main.rs` sets `settings.mode = EngineMode::Sync` on the shared `Arc<Mutex<EngineSettings>>`; this ensures IPC guards are active from the first connection. Holds:
+Created at daemon startup when `--sync` is passed and `PROPELLER_SYNC_PORT` is set. If `--sync` is given but `PROPELLER_SYNC_PORT` is absent, `src/main.rs` exits with an error before creating a receiver. Before spawning the OS thread, `src/main.rs` sets `settings.mode = EngineMode::Sync` on the shared `Arc<Mutex<EngineSettings>>`; this ensures IPC guards are active from the first connection. Holds:
 - `mpsc::Receiver<ClockMessage>` — messages from the MIDI input bridge
 - `PulseTracker` — BPM derivation and timeout
 - `Arc<LoopEngine>` — to send sync commands
@@ -183,9 +183,9 @@ Tasks are ordered TDD-first: every test task must appear before the impl task it
 | T-37 | Write test: `Status` IPC command with mode = Sync and `SyncClockState::Tracking` → response contains `"sync_clock_state":"tracking"`; with `SyncClockState::Lost` → `"sync_clock_state":"lost"` | test | F-5, AC-2 | — |
 | T-38 | Impl: extend `Status` handler in `src/ipc/handler.rs` to accept `Option<Arc<Mutex<SyncClockState>>>`; if present and `mode == Sync`, append `"sync_clock_state"` to the response | impl | F-5, AC-2 | T-37 |
 | T-39 | Write test: `Status` IPC command with mode = Standalone (no sync state provided) → response does NOT contain `"sync_clock_state"` field | test | F-5, AC-2 | — |
-| T-40 | Impl: startup wiring in `src/main.rs` and `src/ipc/mod.rs` — CLI `--sync-port <name>` argument (D-3); if provided, set `settings.mode = EngineMode::Sync`, create `MidiClockReceiver` and its `Arc<Mutex<SyncClockState>>`; pass both to `run_ipc_server()` | impl | F-1, F-9, AC-9 | T-26, T-38, T-39 |
+| T-40 | Impl: startup wiring in `src/main.rs` and `src/ipc/mod.rs` — add boolean `--sync` flag (clap); if present, read `PROPELLER_SYNC_PORT` env var (exit with error if absent), set `settings.mode = EngineMode::Sync`, create `MidiClockReceiver` opening that port, and its `Arc<Mutex<SyncClockState>>`; pass both to `run_ipc_server()` | impl | F-1, F-9, AC-9 | T-26, T-38, T-39 |
 | T-41 | Write test: `SetMode { mode: "sync" }` IPC command returns `{"status":"error","code":"sync_requires_port",…}` when `sync_clock_state` is `None` (no receiver running) | test | — | — |
-| T-42 | Impl: guard in `handle_set_mode` in `src/ipc/handler.rs`: if requested mode is `Sync` and `sync_clock_state` is `None` → return `error_response("sync_requires_port", "…")`; function signature updated to accept `sync_clock_state: Option<&Arc<Mutex<SyncClockState>>>` (same plumbing added by T-38) | impl | — | T-38, T-41 |
+| T-42 | Impl: guard in `handle_set_mode` in `src/ipc/handler.rs`: if requested mode is `Sync` and `sync_clock_state` is `None` → return `error_response("sync_requires_port", "sync mode requires --sync at startup")`; function signature updated to accept `sync_clock_state: Option<&Arc<Mutex<SyncClockState>>>` (same plumbing added by T-38) | impl | — | T-38, T-41 |
 
 ---
 
@@ -222,3 +222,9 @@ No open decisions. All decisions have been reconciled.
 ### Cycle 5 — Confidence: 90%
 - Removed: T-9, T-10, T-11 (port list test, impl, and `list-ports` subcommand); `src/midi_clock/port_list.rs` module; `list_midi_input_ports()` re-export — port enumeration moved to EP-9 (`propeller midi ports`)
 - Updated: PRD refs in T-3..T-36 renumbered to match EP-6.md Cycle 4 renumbering (F-11..F-15 → F-10..F-14; AC-11..AC-15 → AC-10..AC-14)
+
+### Cycle 6 — Confidence: 90%
+- Updated: overview, module layout, `MidiClockReceiver` component — `--sync-port <name>` replaced by `--sync` (boolean flag) + `PROPELLER_SYNC_PORT` env var; daemon exits with error if `--sync` is present but the env var is unset
+- Updated: IPC guard error string `"sync mode requires --sync-port at startup"` → `"sync mode requires --sync at startup"`
+- Updated: T-40 — startup wiring now reads `PROPELLER_SYNC_PORT` instead of a CLI argument value
+- Updated: T-42 — error string updated to match
