@@ -54,6 +54,12 @@ The process double-forks and detaches from your shell immediately. The daemon is
 to accept connections as soon as the command returns. Starting a second instance while
 one is already running is rejected.
 
+To start in clock mode immediately (instead of switching later with `set-mode`):
+
+```sh
+propeller start --clock
+```
+
 ### Stopping the daemon
 
 ```sh
@@ -118,7 +124,13 @@ By default the daemon opens a virtual MIDI port named `propeller`. To route to a
 PROPELLER_MIDI_PORT="IAC Driver Bus 1" propeller start
 ```
 
-If the named port is not found, `start` prints the available port names and exits with a non-zero code. List available output ports using your OS MIDI utilities (e.g. `system_profiler SPMIDIDataType` on macOS).
+If the named port is not found, `start` prints the available port names and exits with a non-zero code.
+
+List all output ports propeller can see:
+
+```sh
+propeller midi ports
+```
 
 ### Log files
 
