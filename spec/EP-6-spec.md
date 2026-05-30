@@ -61,6 +61,8 @@ The `LoopEngine` facade gains four corresponding public methods: `sync_start()`,
 
 The `SetBpm` handler in `src/ipc/handler.rs` gains an early-return guard: if `settings.mode == EngineMode::Sync`, return `error_response("sync_mode_active", "…")` before updating any state (F-14, AC-5, AC-13).
 
+The `LoopStart` and `LoopStop` handlers each gain a `Sync` arm in their mode match. Both return `error_response("sync_mode_active", "…")` when the engine is in sync mode (F-15, F-16, AC-15, AC-16). The match uses explicit arms for all three modes (`Standalone`, `Clock`, `Sync`) so the compiler will flag any future `EngineMode` addition that is not handled. The `_ =>` wildcard that previously let `Sync` silently inherit standalone behaviour is removed.
+
 The `SetMode` handler gains a corresponding guard: if the requested mode is `Sync` and the `sync_clock_state: Option<Arc<Mutex<SyncClockState>>>` passed through `dispatch` is `None`, return `error_response("sync_requires_port", "sync mode requires --sync at startup")` and leave the mode unchanged. This preserves the invariant that `settings.mode == Sync` always implies an active `MidiClockReceiver`.
 
 **Status response extension:**
@@ -255,6 +257,8 @@ Tasks are ordered TDD-first: every test task must appear before the impl task it
 | T-40 | Impl: startup wiring in `src/main.rs` and `src/ipc/mod.rs` — add boolean `--sync` flag (clap); if present, read `PROPELLER_SYNC_PORT` env var (exit with error if absent), set `settings.mode = EngineMode::Sync`, create `MidiClockReceiver` opening that port, and its `Arc<Mutex<SyncClockState>>`; pass both to `run_ipc_server()` | impl | F-1, F-9, AC-9 | T-26, T-38, T-39 |
 | T-41 | Write test: `SetMode { mode: "sync" }` IPC command returns `{"status":"error","code":"sync_requires_port",…}` when `sync_clock_state` is `None` (no receiver running) | test | — | — |
 | T-42 | Impl: guard in `handle_set_mode` in `src/ipc/handler.rs`: if requested mode is `Sync` and `sync_clock_state` is `None` → return `error_response("sync_requires_port", "sync mode requires --sync at startup")`; function signature updated to accept `sync_clock_state: Option<&Arc<Mutex<SyncClockState>>>` (same plumbing added by T-38) | impl | — | T-38, T-41 |
+| T-43 | Write test: `LoopStart` IPC command with `settings.mode = Sync` returns `{"status":"error","code":"sync_mode_active",…}` | test | F-15, AC-15 | — |
+| T-44 | Impl: explicit `EngineMode::Sync` arm in `LoopStart` and `LoopStop` handlers returning `sync_mode_active` error; change `_ =>` wildcard to `EngineMode::Standalone =>` in both matches so the compiler enforces exhaustiveness | impl | F-15, F-16, AC-15, AC-16 | T-43 |
 
 ---
 
@@ -301,3 +305,6 @@ No open decisions. All decisions have been reconciled.
 ### Cycle 7 — Confidence: 90%
 - Reconciled: nothing (no open questions or decisions pending)
 - Added: Test Strategy section — five testing layers (PulseTracker deterministic via injected `Instant` offsets; player loop commands via existing thread/channel/mock pattern; IPC guards via direct handler calls; MidiClockReceiver state machine via MockMidiClockSource + high-BPM timeout priming; integration startup guard without hardware, full sync flow as `#[ignore]`); wall-clock cost table included
+
+### Cycle 8 — Confidence: 92%
+- Added: `LoopStart`/`LoopStop` IPC guard description to the IPC guard section (F-15, F-16); T-43 (test), T-44 (impl) — gap found during hardware testing: `LoopStart` in sync mode fell through the `_ =>` arm introduced for standalone mode in EP-5, bypassing transport ownership semantics; `LoopStop` had the same structural defect

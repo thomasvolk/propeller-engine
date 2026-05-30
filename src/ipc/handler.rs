@@ -93,7 +93,13 @@ async fn dispatch(
                     }
                     engine.clock_start();
                 }
-                _ => {
+                EngineMode::Sync => {
+                    return error_response(
+                        "sync_mode_active",
+                        "in sync mode playback is controlled by the external clock; send MIDI Start (0xFA) from your device",
+                    );
+                }
+                EngineMode::Standalone => {
                     engine.start();
                 }
             }
@@ -103,7 +109,13 @@ async fn dispatch(
             let mode = settings.lock().unwrap().mode.clone();
             match mode {
                 EngineMode::Clock => engine.clock_stop(),
-                _ => engine.stop(),
+                EngineMode::Sync => {
+                    return error_response(
+                        "sync_mode_active",
+                        "in sync mode playback is controlled by the external clock; send MIDI Stop (0xFC) from your device",
+                    );
+                }
+                EngineMode::Standalone => engine.stop(),
             }
             ok_response()
         }
@@ -971,6 +983,50 @@ mod tests {
         assert_eq!(v["status"], "ok");
         assert_eq!(v["mode"], "standalone");
         assert!(v.get("sync_clock_state").is_none(), "sync_clock_state must not appear in standalone mode");
+    }
+
+    // T-43 (EP-6 fix): loop-start in sync mode → sync_mode_active error
+    #[tokio::test]
+    async fn loop_start_in_sync_mode_returns_error() {
+        let (store, engine, settings, shutdown_tx) = make_shared_state();
+        settings.lock().unwrap().mode = EngineMode::Sync;
+
+        let (client, server) = UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            connection_handler(server, store, engine, settings, shutdown_tx).await;
+        });
+
+        let cmd = r#"{"command":"loop-start"}"#.to_string() + "\n";
+        let mut client = client;
+        use tokio::io::AsyncWriteExt;
+        client.write_all(cmd.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        client.read_to_string(&mut resp).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
+        assert_eq!(v["status"], "error");
+        assert_eq!(v["code"], "sync_mode_active");
+    }
+
+    // T-44 (EP-6 fix): loop-stop in sync mode → sync_mode_active error
+    #[tokio::test]
+    async fn loop_stop_in_sync_mode_returns_error() {
+        let (store, engine, settings, shutdown_tx) = make_shared_state();
+        settings.lock().unwrap().mode = EngineMode::Sync;
+
+        let (client, server) = UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            connection_handler(server, store, engine, settings, shutdown_tx).await;
+        });
+
+        let cmd = r#"{"command":"loop-stop"}"#.to_string() + "\n";
+        let mut client = client;
+        use tokio::io::AsyncWriteExt;
+        client.write_all(cmd.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        client.read_to_string(&mut resp).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
+        assert_eq!(v["status"], "error");
+        assert_eq!(v["code"], "sync_mode_active");
     }
 
     // T-41 (EP-6): SetMode "sync" without a MidiClockReceiver → sync_requires_port error

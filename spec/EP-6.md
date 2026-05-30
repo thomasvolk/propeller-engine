@@ -54,6 +54,8 @@ A performer's external sequencer sends MIDI Start (0xFA). The engine resets the 
 | F-12 | When the external clock signal resumes after being declared lost, the engine re-establishes tempo tracking from the pulses. Loop playback restarts only when the external device subsequently sends MIDI Start (0xFA) or Continue (0xFB) with an active project present. |
 | F-13 | In clock sync mode, a set-BPM command is rejected with an error response; BPM control is disabled while the engine is in sync mode. |
 | F-14 | MIDI Timing Clock pulses (0xF8) received in the absence of a prior MIDI Start or Continue message within the current playback session are used for tempo derivation only; they do not trigger loop playback. |
+| F-15 | In clock sync mode, a `loop-start` command is rejected with an error response; playback is triggered exclusively by MIDI Start (0xFA) or Continue (0xFB) from the external device. |
+| F-16 | In clock sync mode, a `loop-stop` command is rejected with an error response; playback is halted exclusively by MIDI Stop (0xFC) from the external device. |
 
 ---
 
@@ -85,6 +87,8 @@ A performer's external sequencer sends MIDI Start (0xFA). The engine resets the 
 | AC-12 | The engine is in clock sync mode | a set-BPM command is issued | the engine returns an error response |
 | AC-13 | Sync mode is active with a project loaded and clock pulses are flowing | no MIDI Start or Continue has been received in the current session | no loop playback occurs |
 | AC-14 | The engine has declared the clock lost and clock pulses resume without a MIDI Start or Continue | the clock is flowing again | the engine tracks tempo but does not restart the loop |
+| AC-15 | The engine is in clock sync mode | a `loop-start` command is issued via IPC | the engine returns an error response with code `sync_mode_active` |
+| AC-16 | The engine is in clock sync mode | a `loop-stop` command is issued via IPC | the engine returns an error response with code `sync_mode_active` |
 
 ---
 
@@ -132,3 +136,6 @@ No open questions. All questions have been reconciled.
 ### Cycle 6 — Confidence: 92%
 - Reconciled: nothing (no open questions pending)
 - Added: Test Strategy section — documents the five testing layers (PulseTracker unit tests via injected `Instant` offsets, player loop sync commands via existing thread/channel/mock pattern, IPC handler guard tests in-process, MidiClockReceiver state machine via MockMidiClockSource + high-BPM timeout priming, integration startup guard test; full sync playback marked `#[ignore]` for CI)
+
+### Cycle 7 — Confidence: 95%
+- Added: F-15 (`loop-start` rejected in sync mode), F-16 (`loop-stop` rejected in sync mode), AC-15/AC-16 — gap found during hardware testing: `loop-start` in sync mode used the `_ =>` wildcard arm added for standalone mode in EP-5, bypassing sync-mode transport semantics and allowing the loop to start with internal timing; the 1-second default timeout in `MidiClockReceiver` then fired `sync_stop`, producing the symptom of two notes playing before the engine halted

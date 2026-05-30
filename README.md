@@ -114,6 +114,8 @@ propeller loop start
 propeller loop stop
 ```
 
+Starts or stops the loop in standalone or clock mode. In sync mode these commands are rejected — the external device controls transport via MIDI Start (0xFA) and Stop (0xFC).
+
 ### Configuring the socket path
 
 Set `PROPELLER_SOCK` to override the default socket location:
@@ -219,6 +221,8 @@ Queues a new project definition; the change takes effect at the next bar boundar
 ```
 
 `loop-start` with no active project transitions the engine to a waiting state; playback begins automatically once a project is loaded.
+
+In sync mode both commands are rejected with a `sync_mode_active` error. Transport is controlled entirely by the external device: MIDI Start (0xFA) starts the loop, MIDI Stop (0xFC) halts it.
 
 #### clock-start, clock-pause, clock-resume, clock-stop
 
