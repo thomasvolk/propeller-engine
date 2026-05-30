@@ -88,6 +88,20 @@ A performer's external sequencer sends MIDI Start (0xFA). The engine resets the 
 
 ---
 
+## Test Strategy
+
+Three challenges make EP-6 non-trivial to test: real MIDI hardware dependency, timeout-based clock-loss detection (which requires real wall-clock waiting), and cross-thread synchronisation between the `MidiClockReceiver` and the `LoopEngine`.
+
+The strategy addresses each at the appropriate layer:
+
+- **`PulseTracker` unit tests** — The `update(now: Instant)` and `is_clock_active(now: Instant)` API accepts injected `Instant` values, so BPM derivation and clock-active predicates are tested with computed offsets (e.g. `base + Duration::from_millis(20_833)` for 120 BPM pulses) without any `thread::sleep`. All assertions are deterministic and run in microseconds.
+- **Player loop sync commands** — The four new `LoopCommand` variants (`SyncStart`, `SyncContinue`, `SyncStop`, `SyncBpmUpdate`) are exercised using the existing test pattern: `run_player_loop` on a thread, real `mpsc` channel, `MockMidiOutput`, and shared `Arc<Mutex<EngineState>>`. No timing sensitivity.
+- **IPC handler guards** — `SetBpm` rejection and `Status` sync field tests call handler functions directly in-process with crafted `EngineSettings`. Fast, no I/O.
+- **`MidiClockReceiver` state machine** — The `Box<dyn MidiClockSource>` abstraction allows a mock that writes `ClockMessage` directly to the channel. Timeout tests prime the `PulseTracker` with high-frequency pulses (≈ 30,000 BPM → 7 ms timeout) so clock-loss triggers after ~15 ms of silence rather than ~75 ms. Thread effects are observed by polling `sync_clock_state()` rather than using fixed sleeps, matching the `wait_for_socket` pattern in existing integration tests.
+- **Integration tests** — The startup guard (`--sync` without `PROPELLER_SYNC_PORT` → daemon exits with error) is testable without any MIDI hardware. Full sync playback tests (AC-1, AC-9, AC-10) require a virtual or physical MIDI loopback and are marked `#[ignore]` in CI.
+
+---
+
 ## Open Questions
 
 No open questions. All questions have been reconciled.
@@ -114,3 +128,7 @@ No open questions. All questions have been reconciled.
 ### Cycle 5 — Confidence: 92%
 - Updated: F-9 — port name no longer passed as a CLI argument; `--sync` is now a boolean flag and the input port name is read from `PROPELLER_SYNC_PORT`; daemon exits with an error if the flag is present but the env var is unset
 - Updated: AC-9 — "given" clause reflects env var interface
+
+### Cycle 6 — Confidence: 92%
+- Reconciled: nothing (no open questions pending)
+- Added: Test Strategy section — documents the five testing layers (PulseTracker unit tests via injected `Instant` offsets, player loop sync commands via existing thread/channel/mock pattern, IPC handler guard tests in-process, MidiClockReceiver state machine via MockMidiClockSource + high-BPM timeout priming, integration startup guard test; full sync playback marked `#[ignore]` for CI)

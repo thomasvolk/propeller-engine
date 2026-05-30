@@ -141,6 +141,75 @@ The `Waiting` state already polls for a project and transitions to `Running` whe
 
 ---
 
+## Test Strategy
+
+### Overview of challenges
+
+Three orthogonal problems make EP-6 non-trivial to test:
+
+1. **Real MIDI hardware** — `MidiClockReceiver` normally opens a physical port via `midir`. Mitigated by the `Box<dyn MidiClockSource>` abstraction: tests inject a `MockMidiClockSource` that writes `ClockMessage` directly to the `mpsc::Sender<ClockMessage>`, bypassing all hardware.
+2. **Timeout-based clock-loss detection** — `recv_timeout` uses real wall-clock time, so tests that exercise clock loss must either sleep or shrink the timeout. Mitigated by priming `PulseTracker` with high-frequency fake pulses to produce a very short `timeout_duration()`.
+3. **Cross-thread synchronisation** — `MidiClockReceiver` runs on its own OS thread; tests must wait for its effects to propagate to `LoopEngine` before asserting. Mitigated by polling `sync_clock_state()` (mirroring the `wait_for_socket` pattern in existing integration tests) rather than using fixed sleeps.
+
+### Layer 1 — `PulseTracker` unit tests (T-1/T-3/T-5/T-7)
+
+`PulseTracker` is a pure struct with no hardware or thread dependencies. Both `update(now: Instant)` and `is_clock_active(now: Instant)` accept an `Instant` parameter, so tests control "time" by computing offsets from a fixed baseline:
+
+```rust
+let base = Instant::now();
+tracker.update(base);
+tracker.update(base + Duration::from_millis(20_833)); // 120 BPM pulse
+// ...
+assert_eq!(tracker.bpm(), Some(120));
+assert!(!tracker.is_clock_active(base + Duration::from_millis(250_000))); // silence
+```
+
+No `thread::sleep`. All assertions are deterministic and run in microseconds.
+
+### Layer 2 — Player loop sync commands (T-12 to T-21)
+
+Use the existing pattern: spin `run_player_loop` in a thread with a real `mpsc` channel, `MockMidiOutput`, and a shared `Arc<Mutex<EngineState>>`. Send the new `SyncStart` / `SyncContinue` / `SyncStop` / `SyncBpmUpdate(bpm)` variants and assert on `EngineState` and `MockMidiOutput::events`. No timing sensitivity.
+
+### Layer 3 — IPC handler guards (T-23, T-37-T-39, T-41, T-42)
+
+Call handler functions directly in-process with crafted `EngineSettings` (e.g. `mode = EngineMode::Sync`) and an `Option<Arc<Mutex<SyncClockState>>>`. Assert on the returned JSON. Fast, no I/O, no threads.
+
+### Layer 4 — `MidiClockReceiver` state machine (T-25 to T-36)
+
+Use a real `LoopEngine` (with `MockMidiOutput`) and a `MockMidiClockSource` that exposes the `mpsc::Sender<ClockMessage>` directly to the test.
+
+For **timeout tests** (T-33/T-34), prime the `PulseTracker` with very high-frequency pulses before the silence period so `timeout_duration()` is tiny:
+
+- 30,000 BPM → 2 ms pulse interval → `3.5 × 2 ms` = 7 ms timeout
+- Feed 25 pulses at 2 ms spacing (≈ 50 ms real time), then withhold pulses for 15 ms
+- Receiver thread detects clock loss after ≈ 7 ms of silence
+
+Thread effects are observed by polling `sync_clock_state()` in a tight loop with a generous deadline (e.g. 3× the expected timeout), rather than a fixed `thread::sleep`.
+
+### Layer 5 — Integration tests
+
+**Testable without hardware:**
+
+- `--sync` present but `PROPELLER_SYNC_PORT` not set → daemon exits with error before binding the socket (covers the startup guard in T-40)
+
+**Requires virtual or physical MIDI loopback (marked `#[ignore]` in CI):**
+
+- Full sync playback flow (AC-1, AC-9, AC-10): start daemon with `--sync`, provide a virtual MIDI loopback port (macOS `IAC Driver`, Linux `ttymidi`), send `0xFA` + `0xF8` pulses, assert loop plays
+
+### Wall-clock cost summary
+
+| Group | Approach | Wall-clock cost |
+|---|---|---|
+| `PulseTracker` (T-1/T-3/T-5/T-7) | Injected `Instant` offsets, no sleep | ~0 ms |
+| Player sync commands (T-12..T-21) | Existing thread + channel + mock pattern | ~0 ms |
+| IPC guards (T-23, T-37-T-42) | Direct handler calls | ~0 ms |
+| Receiver normal messages (T-25..T-32) | Mock source + polling | ~50 ms total |
+| Clock loss timeout (T-33/T-34) | High-BPM priming (7 ms timeout) | ~100 ms |
+| Integration startup guard | Real binary, no MIDI | ~200 ms |
+| Integration sync flow | Virtual MIDI loopback | `#[ignore]` |
+
+---
+
 ## Implementation Tasks
 
 Tasks are ordered TDD-first: every test task must appear before the impl task it covers.
@@ -228,3 +297,7 @@ No open decisions. All decisions have been reconciled.
 - Updated: IPC guard error string `"sync mode requires --sync-port at startup"` → `"sync mode requires --sync at startup"`
 - Updated: T-40 — startup wiring now reads `PROPELLER_SYNC_PORT` instead of a CLI argument value
 - Updated: T-42 — error string updated to match
+
+### Cycle 7 — Confidence: 90%
+- Reconciled: nothing (no open questions or decisions pending)
+- Added: Test Strategy section — five testing layers (PulseTracker deterministic via injected `Instant` offsets; player loop commands via existing thread/channel/mock pattern; IPC guards via direct handler calls; MidiClockReceiver state machine via MockMidiClockSource + high-BPM timeout priming; integration startup guard without hardware, full sync flow as `#[ignore]`); wall-clock cost table included
