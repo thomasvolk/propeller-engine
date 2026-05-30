@@ -705,6 +705,62 @@ fn ep9_error_when_daemon_not_running() {
     );
 }
 
+// ── EP-6: sync startup guard (AC-9, F-9) ──────────────────────────────────
+
+/// EP-6: `propeller start --sync` without PROPELLER_SYNC_PORT → exits non-zero,
+/// socket never created (F-9, AC-9).
+#[test]
+fn start_with_sync_flag_and_no_env_var_exits_nonzero() {
+    let sock = unique_sock_path();
+    let output = Command::new(propeller_bin())
+        .args(["start", "--sync"])
+        .env("PROPELLER_SOCK", &sock)
+        .env_remove("PROPELLER_SYNC_PORT")
+        .output()
+        .expect("failed to run propeller start --sync");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "start --sync without PROPELLER_SYNC_PORT should exit non-zero"
+    );
+    assert!(
+        !wait_for_socket(&sock, Duration::from_millis(500)),
+        "socket should not be created when startup guard fires"
+    );
+    assert!(
+        stderr.contains("PROPELLER_SYNC_PORT"),
+        "stderr should mention PROPELLER_SYNC_PORT, got: {stderr}"
+    );
+}
+
+/// EP-6: `propeller start --sync` with PROPELLER_SYNC_PORT set to a nonexistent
+/// port name → exits non-zero, socket never created (F-9, AC-9).
+#[test]
+fn start_with_sync_flag_and_nonexistent_port_exits_nonzero() {
+    let sock = unique_sock_path();
+    let output = Command::new(propeller_bin())
+        .args(["start", "--sync"])
+        .env("PROPELLER_SOCK", &sock)
+        .env("PROPELLER_SYNC_PORT", "nonexistent_sync_port_xyz")
+        .output()
+        .expect("failed to run propeller start --sync");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "start --sync with nonexistent PROPELLER_SYNC_PORT should exit non-zero"
+    );
+    assert!(
+        !wait_for_socket(&sock, Duration::from_millis(500)),
+        "socket should not be created when startup guard fires"
+    );
+    assert!(
+        stderr.contains("nonexistent_sync_port_xyz"),
+        "stderr should contain the requested port name, got: {stderr}"
+    );
+}
+
 /// T-24: daemon returns error — CLI writes message to stderr, exits non-zero
 #[test]
 fn ep9_error_when_daemon_returns_error() {
