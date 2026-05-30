@@ -54,11 +54,19 @@ The process double-forks and detaches from your shell immediately. The daemon is
 to accept connections as soon as the command returns. Starting a second instance while
 one is already running is rejected.
 
-To start in clock mode immediately (instead of switching later with `set-mode`):
+To start in clock mode immediately (MIDI clock output, instead of switching later with `set-mode`):
 
 ```sh
 propeller start --clock
 ```
+
+To start in sync mode and follow an external MIDI clock source:
+
+```sh
+PROPELLER_SYNC_PORT="IAC Driver Bus 1" propeller start --sync
+```
+
+`--sync` requires `PROPELLER_SYNC_PORT` to be set. If the variable is absent or names an unknown port the daemon exits with an error before opening any port.
 
 ### Stopping the daemon
 
@@ -125,6 +133,18 @@ PROPELLER_MIDI_PORT="IAC Driver Bus 1" propeller start
 ```
 
 If the named port is not found, `start` prints the available port names and exits with a non-zero code.
+
+### Selecting a MIDI input port for sync mode
+
+Set `PROPELLER_SYNC_PORT` to the name of the port that will deliver incoming MIDI clock pulses when starting with `--sync`:
+
+```sh
+PROPELLER_SYNC_PORT="IAC Driver Bus 1" propeller start --sync
+```
+
+This port is fixed for the lifetime of the daemon.
+
+### Listing available MIDI ports
 
 List all output ports propeller can see:
 
@@ -200,6 +220,21 @@ Queues a new project definition; the change takes effect at the next bar boundar
 
 `loop-start` with no active project transitions the engine to a waiting state; playback begins automatically once a project is loaded.
 
+#### clock-start, clock-pause, clock-resume, clock-stop
+
+Low-level MIDI clock transport control for use in `clock` mode. These operate on the clock signal independently of the loop:
+
+```json
+{"command": "clock-start"}
+{"command": "clock-pause"}
+{"command": "clock-resume"}
+{"command": "clock-stop"}
+```
+
+`clock-start` requires an active project and returns a `no_project` error otherwise. `clock-pause` and `clock-resume` are unique to these commands — there is no `loop-pause` CLI equivalent.
+
+Note: in `clock` mode the `loop-start` and `loop-stop` CLI convenience commands route to `clock-start` and `clock-stop` automatically.
+
 #### set-bpm
 
 Changes tempo while the loop is playing. The new BPM is applied at the next bar boundary.
@@ -207,6 +242,8 @@ Changes tempo while the loop is playing. The new BPM is applied at the next bar 
 ```json
 {"command": "set-bpm", "bpm": 140}
 ```
+
+In sync mode this command is rejected with a `sync_mode_active` error; tempo is controlled entirely by the external clock.
 
 #### set-mode
 
@@ -216,7 +253,11 @@ Switches the operating mode at runtime.
 {"command": "set-mode", "mode": "standalone"}
 ```
 
-Valid modes: `standalone`, `clock`. The engine starts in `standalone` mode.
+Valid modes:
+
+- `standalone` — internal BPM drives the loop. The engine starts in this mode.
+- `clock` — the engine emits outgoing MIDI clock pulses. Activated at startup with `--clock` or via this command at runtime.
+- `sync` — the loop tempo is driven by incoming MIDI clock pulses from an external device. Requires the daemon to have been started with `--sync`; switching to `sync` via this command without that flag returns a `sync_requires_port` error.
 
 #### status
 
@@ -226,7 +267,7 @@ Returns the current engine state.
 {"command": "status"}
 ```
 
-Example response:
+Example response (standalone or clock mode):
 
 ```json
 {
@@ -239,7 +280,23 @@ Example response:
 }
 ```
 
-`clock_state` is `"started"` while the loop is playing, `"stopped"` otherwise.
+`clock_state` is `"started"` while the loop is playing, `"stopped"` otherwise. `time_signature` is `null` when no project is loaded.
+
+In sync mode the response includes an additional field:
+
+```json
+{
+  "status": "ok",
+  "mode": "sync",
+  "bpm": 120,
+  "time_signature": { "numerator": 4, "denominator": 4 },
+  "clock_state": "started",
+  "project_present": true,
+  "sync_clock_state": "tracking"
+}
+```
+
+`sync_clock_state` values: `waiting` (no clock signal yet), `tracking` (clock pulses are flowing), `lost` (clock was present but has gone silent).
 
 #### Response format
 
@@ -269,7 +326,7 @@ On error:
 - **Continuous loop playback** — repeats the project endlessly with no timing gap between repetitions.
 - **Bar-boundary updates** — pending project changes take effect at the next bar boundary; the current bar always plays to completion.
 - **Runtime JSON interface** — load projects, control playback, adjust BPM and mode, and query status over the socket without restarting the engine.
-- **Operating modes** — `standalone` and `clock` modes are supported and switchable at runtime via `set-mode`.
+- **Operating modes** — `standalone`, `clock`, and `sync` modes are supported. `standalone` and `clock` are switchable at runtime via `set-mode`; `sync` requires `--sync` at daemon startup.
 
 ## Contributing
 
