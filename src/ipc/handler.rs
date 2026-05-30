@@ -9,6 +9,7 @@ use crate::domain::{
     Bar, Header, Note, NoteEvent, Project, ProjectStore, TimeSignature, Track, ValidationError,
 };
 use crate::loop_engine::{EngineState, LoopEngine};
+use crate::midi_clock::SyncClockState;
 
 use super::types::{
     Command, EngineMode, EngineSettings, WireBar, WireHeader, WireNote, WireTrack,
@@ -191,6 +192,11 @@ fn handle_set_bpm(
     store: &Arc<RwLock<ProjectStore>>,
     settings: &Arc<Mutex<EngineSettings>>,
 ) -> Value {
+    // T-24 (EP-6): reject set-bpm in sync mode
+    if settings.lock().unwrap().mode == EngineMode::Sync {
+        return error_response("sync_mode_active", "set-bpm is not allowed in sync mode; tempo is controlled by the external clock");
+    }
+
     if bpm.fract() != 0.0 {
         return error_response("bpm_non_integer", "BPM must be a whole number");
     }
@@ -238,6 +244,17 @@ fn handle_set_mode(
 ) -> Value {
     match EngineMode::from_str(mode_str) {
         Some(new_mode) => {
+            // T-42 (EP-6): reject set-mode sync when no MidiClockReceiver is running
+            if new_mode == EngineMode::Sync {
+                let has_receiver = settings.lock().unwrap().sync_clock_state.is_some();
+                if !has_receiver {
+                    return error_response(
+                        "sync_requires_port",
+                        "sync mode requires --sync at startup",
+                    );
+                }
+            }
+
             let current_mode = settings.lock().unwrap().mode.clone();
             let engine_state = engine.state();
 
@@ -250,7 +267,7 @@ fn handle_set_mode(
             settings.lock().unwrap().mode = new_mode;
             ok_response()
         }
-        None => error_response("invalid_mode", "unrecognised mode; use standalone or clock"),
+        None => error_response("invalid_mode", "unrecognised mode; use standalone, clock, or sync"),
     }
 }
 
@@ -279,14 +296,29 @@ fn handle_status(
         })
     });
 
-    json!({
+    let mut resp = json!({
         "status": "ok",
         "mode": settings_guard.mode.as_str(),
         "bpm": bpm,
         "time_signature": time_signature,
         "clock_state": clock_state,
         "project_present": active.is_some(),
-    })
+    });
+
+    // T-38 (EP-6): append sync_clock_state when in sync mode
+    if settings_guard.mode == EngineMode::Sync {
+        if let Some(ref arc) = settings_guard.sync_clock_state {
+            let sync_state = arc.lock().unwrap().clone();
+            let label = match sync_state {
+                SyncClockState::Waiting => "waiting",
+                SyncClockState::Tracking => "tracking",
+                SyncClockState::Lost => "lost",
+            };
+            resp["sync_clock_state"] = json!(label);
+        }
+    }
+
+    resp
 }
 
 fn wire_track_to_domain(t: WireTrack) -> Track {
@@ -336,6 +368,7 @@ fn validation_error_response(e: ValidationError) -> Value {
 mod tests {
     use super::*;
     use crate::loop_engine::midi::MockMidiOutput;
+    use crate::midi_clock::SyncClockState;
     use std::sync::{Arc, Mutex, RwLock};
     use tokio::io::AsyncReadExt;
     use tokio::net::UnixStream;
@@ -854,5 +887,99 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         assert_eq!(engine.state(), EngineState::Stopped, "clock_stop must be called on clock→standalone transition");
         assert_eq!(settings.lock().unwrap().mode, EngineMode::Standalone);
+    }
+
+    // T-23 (EP-6): SetBpm in sync mode → sync_mode_active error
+    #[tokio::test]
+    async fn set_bpm_in_sync_mode_returns_error() {
+        let (store, engine, settings, shutdown_tx) = make_shared_state();
+        settings.lock().unwrap().mode = EngineMode::Sync;
+
+        let (client, server) = UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            connection_handler(server, store, engine, settings, shutdown_tx).await;
+        });
+
+        let cmd = r#"{"command":"set-bpm","bpm":120}"#.to_string() + "\n";
+        let mut client = client;
+        use tokio::io::AsyncWriteExt;
+        client.write_all(cmd.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        client.read_to_string(&mut resp).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
+        assert_eq!(v["status"], "error");
+        assert_eq!(v["code"], "sync_mode_active");
+    }
+
+    // T-37 (EP-6): Status in sync mode → response contains sync_clock_state
+    #[tokio::test]
+    async fn status_in_sync_mode_includes_sync_clock_state_tracking() {
+        let (store, engine, settings, shutdown_tx) = make_shared_state();
+        let sync_state = Arc::new(Mutex::new(SyncClockState::Tracking));
+        {
+            let mut s = settings.lock().unwrap();
+            s.mode = EngineMode::Sync;
+            s.sync_clock_state = Some(Arc::clone(&sync_state));
+        }
+
+        let (client, server) = UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            connection_handler(server, store, engine, settings, shutdown_tx).await;
+        });
+
+        let cmd = r#"{"command":"status"}"#.to_string() + "\n";
+        let mut client = client;
+        use tokio::io::AsyncWriteExt;
+        client.write_all(cmd.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        client.read_to_string(&mut resp).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["sync_clock_state"], "tracking");
+    }
+
+    #[tokio::test]
+    async fn status_in_sync_mode_includes_sync_clock_state_lost() {
+        let (store, engine, settings, shutdown_tx) = make_shared_state();
+        let sync_state = Arc::new(Mutex::new(SyncClockState::Lost));
+        {
+            let mut s = settings.lock().unwrap();
+            s.mode = EngineMode::Sync;
+            s.sync_clock_state = Some(Arc::clone(&sync_state));
+        }
+
+        let (client, server) = UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            connection_handler(server, store, engine, settings, shutdown_tx).await;
+        });
+
+        let cmd = r#"{"command":"status"}"#.to_string() + "\n";
+        let mut client = client;
+        use tokio::io::AsyncWriteExt;
+        client.write_all(cmd.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        client.read_to_string(&mut resp).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
+        assert_eq!(v["sync_clock_state"], "lost");
+    }
+
+    // T-39 (EP-6): Status in standalone mode → no sync_clock_state field
+    #[tokio::test]
+    async fn status_in_standalone_mode_excludes_sync_clock_state() {
+        let response = send_command_get_response(r#"{"command":"status"}"#).await;
+        let v: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["mode"], "standalone");
+        assert!(v.get("sync_clock_state").is_none(), "sync_clock_state must not appear in standalone mode");
+    }
+
+    // T-41 (EP-6): SetMode "sync" without a MidiClockReceiver → sync_requires_port error
+    #[tokio::test]
+    async fn set_mode_sync_without_receiver_returns_error() {
+        // settings.sync_clock_state is None (no receiver running)
+        let response = send_command_get_response(r#"{"command":"set-mode","mode":"sync"}"#).await;
+        let v: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+        assert_eq!(v["status"], "error");
+        assert_eq!(v["code"], "sync_requires_port");
     }
 }

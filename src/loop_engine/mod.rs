@@ -24,6 +24,10 @@ pub(crate) enum LoopCommand {
     ClockPause,
     ClockResume,
     ClockStop,
+    SyncStart,
+    SyncContinue,
+    SyncStop,
+    SyncBpmUpdate(u32),
 }
 
 pub struct LoopEngine {
@@ -85,6 +89,22 @@ impl LoopEngine {
 
     pub fn state(&self) -> EngineState {
         self.state.lock().unwrap().clone()
+    }
+
+    pub fn sync_start(&self) {
+        let _ = self.sender.send(LoopCommand::SyncStart);
+    }
+
+    pub fn sync_continue(&self) {
+        let _ = self.sender.send(LoopCommand::SyncContinue);
+    }
+
+    pub fn sync_stop(&self) {
+        let _ = self.sender.send(LoopCommand::SyncStop);
+    }
+
+    pub fn sync_bpm_update(&self, bpm: u32) {
+        let _ = self.sender.send(LoopCommand::SyncBpmUpdate(bpm));
     }
 }
 
@@ -956,6 +976,107 @@ mod tests {
         let events = captured.lock().unwrap().clone();
         let has_clock_stop = events.iter().any(|e| matches!(e, midi::MidiEvent::ClockStop));
         assert!(has_clock_stop, "ClockStop must be emitted before clock_stop_on_shutdown returns");
+    }
+
+    // T-12 (EP-6): SyncStart with active project → state = Running; bar_index resets to 0
+    #[test]
+    fn sync_start_with_project_transitions_to_running_at_bar_0() {
+        let (engine, _) = make_engine_with_project();
+        engine.sync_start();
+        wait_for_state(&engine, EngineState::Running, 500);
+        assert_eq!(engine.state(), EngineState::Running);
+        engine.sync_stop();
+        wait_for_state(&engine, EngineState::Stopped, 500);
+    }
+
+    // T-14 (EP-6): SyncStart while already Running → bar restarts (still Running)
+    #[test]
+    fn sync_start_while_running_resets_and_stays_running() {
+        let (engine, captured) = make_engine_with_project();
+        engine.sync_start();
+        wait_for_state(&engine, EngineState::Running, 500);
+        // Wait for a NoteOn then send another SyncStart
+        std::thread::sleep(Duration::from_millis(50));
+        let events_before = captured.lock().unwrap().len();
+        engine.sync_start();
+        std::thread::sleep(Duration::from_millis(50));
+        // Engine should still be Running
+        assert_eq!(engine.state(), EngineState::Running);
+        // More events should have been emitted
+        let events_after = captured.lock().unwrap().len();
+        assert!(events_after > events_before, "expected more events after SyncStart restart");
+        engine.sync_stop();
+        wait_for_state(&engine, EngineState::Stopped, 500);
+    }
+
+    // T-16 (EP-6): SyncContinue with active project → state = Running; bar_index unchanged
+    #[test]
+    fn sync_continue_with_project_transitions_to_running() {
+        let (engine, _) = make_engine_with_project();
+        engine.sync_continue();
+        wait_for_state(&engine, EngineState::Running, 500);
+        assert_eq!(engine.state(), EngineState::Running);
+        engine.sync_stop();
+        wait_for_state(&engine, EngineState::Stopped, 500);
+    }
+
+    // T-18 (EP-6): SyncStop → state = Stopped; active notes flushed
+    #[test]
+    fn sync_stop_transitions_to_stopped_and_flushes_notes() {
+        let store = Arc::new(RwLock::new(ProjectStore::new()));
+        let project = Project {
+            header: Header { bpm: 60, time_signature: TimeSignature { numerator: 4, denominator: 4 } },
+            tracks: vec![Track {
+                name: "t".to_string(), channel: 1, instrument: 0,
+                bars: vec![Bar { notes: vec![Note {
+                    event: NoteEvent::Note { pitch: 60, velocity: 80 }, duration_ticks: 1920,
+                }] }],
+            }],
+        };
+        store.write().unwrap().set_pending(project).unwrap();
+        store.write().unwrap().commit_pending();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let output = CapturingOutput { captured: Arc::clone(&captured) };
+        let engine = LoopEngine::new(store, Box::new(output));
+
+        engine.sync_start();
+        std::thread::sleep(Duration::from_millis(50)); // let NoteOn emit
+        engine.sync_stop();
+        wait_for_state(&engine, EngineState::Stopped, 500);
+
+        let events = captured.lock().unwrap().clone();
+        assert_eq!(engine.state(), EngineState::Stopped);
+        let has_note_off = events.iter().any(|e| matches!(e, midi::MidiEvent::NoteOff { .. }));
+        assert!(has_note_off, "expected NoteOff on sync_stop");
+        let has_clock_stop = events.iter().any(|e| matches!(e, midi::MidiEvent::ClockStop));
+        assert!(!has_clock_stop, "sync_stop must not emit ClockStop (0xFC)");
+    }
+
+    // T-20 (EP-6): SyncBpmUpdate while Running → applied at bar boundary; engine stays Running
+    #[test]
+    fn sync_bpm_update_does_not_stop_engine() {
+        let (engine, _) = make_engine_with_project(); // BPM 300
+        engine.sync_start();
+        wait_for_state(&engine, EngineState::Running, 500);
+        std::thread::sleep(Duration::from_millis(100));
+
+        engine.sync_bpm_update(150);
+
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(engine.state(), EngineState::Running, "engine should remain Running after SyncBpmUpdate");
+        engine.sync_stop();
+        wait_for_state(&engine, EngineState::Stopped, 500);
+    }
+
+    // T-12 variant: SyncStart with no project → state = Waiting
+    #[test]
+    fn sync_start_with_no_project_enters_waiting() {
+        let (engine, _) = make_engine_no_project();
+        engine.sync_start();
+        wait_for_state(&engine, EngineState::Waiting, 200);
+        assert_eq!(engine.state(), EngineState::Waiting);
+        engine.sync_stop();
+        wait_for_state(&engine, EngineState::Stopped, 200);
     }
 
     // T-29 variant: clock_stop_on_shutdown() while Stopped → no ClockStop

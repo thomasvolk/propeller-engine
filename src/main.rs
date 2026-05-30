@@ -4,6 +4,7 @@ mod domain;
 mod ipc;
 mod loop_engine;
 mod logger;
+mod midi_clock;
 mod midi_port;
 mod socket_path;
 mod startup_guard;
@@ -27,6 +28,9 @@ enum Commands {
         /// Start in clock mode (overrides the default standalone mode)
         #[arg(long)]
         clock: bool,
+        /// Start in sync mode (reads PROPELLER_SYNC_PORT env var for the MIDI input port name)
+        #[arg(long)]
+        sync: bool,
     },
     /// Stop the running daemon
     Stop,
@@ -51,6 +55,8 @@ enum Commands {
     DaemonRun {
         #[arg(long)]
         clock: bool,
+        #[arg(long)]
+        sync: bool,
     },
 }
 
@@ -85,7 +91,7 @@ enum MidiCommand {
 fn main() {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Start { clock } => cmd_start(clock),
+        Commands::Start { clock, sync } => cmd_start(clock, sync),
         Commands::Stop => cmd_stop(),
         Commands::Status => cmd_status(),
         Commands::Project { command } => match command {
@@ -99,11 +105,11 @@ fn main() {
         Commands::Midi { command } => match command {
             MidiCommand::Ports => cmd_midi_ports(),
         },
-        Commands::DaemonRun { clock } => cmd_daemon_run(clock),
+        Commands::DaemonRun { clock, sync } => cmd_daemon_run(clock, sync),
     }
 }
 
-fn cmd_start(clock: bool) {
+fn cmd_start(clock: bool, sync: bool) {
     let sock_path = socket_path::resolve();
 
     match startup_guard::check(&sock_path) {
@@ -132,6 +138,28 @@ fn cmd_start(clock: bool) {
         }
     }
 
+    // Validate PROPELLER_SYNC_PORT when --sync is passed.
+    if sync {
+        match std::env::var("PROPELLER_SYNC_PORT") {
+            Err(_) => {
+                eprintln!("propeller: --sync requires PROPELLER_SYNC_PORT to be set");
+                std::process::exit(1);
+            }
+            Ok(ref name) => {
+                let ports = midi_port::list_ports();
+                let names: Vec<String> = ports.iter().map(|p| p.name.clone()).collect();
+                if midi_port::find_port_by_name(&names, name).is_none() {
+                    eprintln!(
+                        "propeller: sync MIDI port {:?} not found; available ports: [{}]",
+                        name,
+                        names.join(", ")
+                    );
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
+
     let exe = match std::env::current_exe() {
         Ok(p) => p,
         Err(e) => {
@@ -144,6 +172,9 @@ fn cmd_start(clock: bool) {
     cmd.arg("daemon-run");
     if clock {
         cmd.arg("--clock");
+    }
+    if sync {
+        cmd.arg("--sync");
     }
     use std::os::unix::process::CommandExt;
     cmd.stdin(std::process::Stdio::null())
@@ -170,7 +201,7 @@ fn cmd_start(clock: bool) {
     }
 }
 
-fn cmd_daemon_run(clock: bool) {
+fn cmd_daemon_run(clock: bool, sync: bool) {
     let sock_path = socket_path::resolve();
 
     let midi_port_name: Option<String> = std::env::var("PROPELLER_MIDI_PORT").ok();
@@ -191,13 +222,31 @@ fn cmd_daemon_run(clock: bool) {
         },
     };
 
+    let sync_port_name: Option<String> = if sync {
+        match std::env::var("PROPELLER_SYNC_PORT") {
+            Ok(name) => Some(name),
+            Err(_) => {
+                eprintln!("propeller: --sync requires PROPELLER_SYNC_PORT to be set");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        None
+    };
+
     let log_path = logger::platform_log_path();
     let _guard = logger::init(&log_path);
 
-    let initial_mode = if clock { EngineMode::Clock } else { EngineMode::Standalone };
+    let initial_mode = if sync {
+        EngineMode::Sync
+    } else if clock {
+        EngineMode::Clock
+    } else {
+        EngineMode::Standalone
+    };
 
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    rt.block_on(daemon::run(sock_path, midi_out, initial_mode));
+    rt.block_on(daemon::run(sock_path, midi_out, initial_mode, sync_port_name));
 }
 
 fn cmd_stop() {

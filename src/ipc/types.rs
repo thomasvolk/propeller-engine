@@ -1,5 +1,9 @@
+use std::sync::{Arc, Mutex};
+
 use serde::Deserialize;
 use serde_json::{Value, json};
+
+use crate::midi_clock::SyncClockState;
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "command", rename_all = "kebab-case")]
@@ -56,6 +60,7 @@ pub struct WireNote {
 pub enum EngineMode {
     Standalone,
     Clock,
+    Sync,
 }
 
 impl EngineMode {
@@ -63,6 +68,7 @@ impl EngineMode {
         match s {
             "standalone" => Some(EngineMode::Standalone),
             "clock" => Some(EngineMode::Clock),
+            "sync" => Some(EngineMode::Sync),
             _ => None,
         }
     }
@@ -71,6 +77,7 @@ impl EngineMode {
         match self {
             EngineMode::Standalone => "standalone",
             EngineMode::Clock => "clock",
+            EngineMode::Sync => "sync",
         }
     }
 }
@@ -78,11 +85,13 @@ impl EngineMode {
 pub struct EngineSettings {
     pub mode: EngineMode,
     pub bpm: u32,
+    /// Present only when the daemon was started with --sync; used by Status and SetMode handlers.
+    pub sync_clock_state: Option<Arc<Mutex<SyncClockState>>>,
 }
 
 impl EngineSettings {
     pub fn new() -> Self {
-        EngineSettings { mode: EngineMode::Standalone, bpm: 120 }
+        EngineSettings { mode: EngineMode::Standalone, bpm: 120, sync_clock_state: None }
     }
 }
 
@@ -180,5 +189,16 @@ mod tests {
         assert_eq!(v["status"], "error");
         assert_eq!(v["code"], "parse_error");
         assert_eq!(v["message"], "bad json");
+    }
+
+    // EP-6: EngineMode::Sync serialises to "sync"
+    #[test]
+    fn engine_mode_sync_as_str() {
+        assert_eq!(EngineMode::Sync.as_str(), "sync");
+    }
+
+    #[test]
+    fn engine_mode_sync_from_str() {
+        assert_eq!(EngineMode::from_str("sync"), Some(EngineMode::Sync));
     }
 }

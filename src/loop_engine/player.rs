@@ -42,6 +42,8 @@ enum SleepResult {
     Stop,
     ClockPause,
     ClockStop,
+    SyncStop,
+    SyncStart,
     Disconnected,
 }
 
@@ -50,6 +52,7 @@ fn sleep_until_with_poll(
     deadline: Instant,
     receiver: &mpsc::Receiver<LoopCommand>,
     scheduler: &Scheduler,
+    pending_sync_bpm: &mut Option<u32>,
 ) -> SleepResult {
     loop {
         let now = Instant::now();
@@ -63,7 +66,13 @@ fn sleep_until_with_poll(
                 Ok(LoopCommand::Stop) => return SleepResult::Stop,
                 Ok(LoopCommand::ClockStop) => return SleepResult::ClockStop,
                 Ok(LoopCommand::ClockPause) => return SleepResult::ClockPause,
-                Ok(LoopCommand::Start | LoopCommand::ClockStart | LoopCommand::ClockResume) => {}
+                Ok(LoopCommand::SyncStop) => return SleepResult::SyncStop,
+                Ok(LoopCommand::SyncStart) => return SleepResult::SyncStart,
+                Ok(LoopCommand::SyncBpmUpdate(bpm)) => *pending_sync_bpm = Some(bpm),
+                Ok(LoopCommand::Start
+                    | LoopCommand::ClockStart
+                    | LoopCommand::ClockResume
+                    | LoopCommand::SyncContinue) => {}
                 Err(mpsc::TryRecvError::Disconnected) => return SleepResult::Disconnected,
                 Err(mpsc::TryRecvError::Empty) => {}
             }
@@ -94,6 +103,8 @@ pub fn run_player_loop(
     let mut is_clock_mode = false;
     let mut pause_context: Option<PauseContext> = None;
     let mut last_bar_ticks: u64 = 480;
+    // EP-6 sync mode state
+    let mut pending_sync_bpm: Option<u32> = None;
 
     loop {
         match state {
@@ -134,8 +145,51 @@ pub fn run_player_loop(
                         state = EngineState::Running;
                         *shared_state.lock().unwrap() = EngineState::Running;
                     }
-                    Ok(LoopCommand::Stop | LoopCommand::ClockStop
-                        | LoopCommand::ClockPause | LoopCommand::ClockResume) => {}
+                    // T-13 (EP-6): SyncStart — start from bar 0 if project present, else Waiting
+                    Ok(LoopCommand::SyncStart) => {
+                        let has_project = store.read().unwrap().active().is_some();
+                        if has_project {
+                            bar_index = 0;
+                            last_instruments.clear();
+                            {
+                                let store_r = store.read().unwrap();
+                                let project = store_r.active().unwrap();
+                                scheduler = Scheduler::new(project.header.bpm);
+                            }
+                            anchor = Instant::now() + Duration::from_micros(START_LATENCY_MICROS);
+                            state = EngineState::Running;
+                            *shared_state.lock().unwrap() = EngineState::Running;
+                        } else {
+                            state = EngineState::Waiting;
+                            *shared_state.lock().unwrap() = EngineState::Waiting;
+                        }
+                    }
+                    // T-17 (EP-6): SyncContinue — continue from current bar_index if project present
+                    Ok(LoopCommand::SyncContinue) => {
+                        let has_project = store.read().unwrap().active().is_some();
+                        if has_project {
+                            last_instruments.clear();
+                            {
+                                let store_r = store.read().unwrap();
+                                let project = store_r.active().unwrap();
+                                scheduler = Scheduler::new(project.header.bpm);
+                            }
+                            anchor = Instant::now() + Duration::from_micros(START_LATENCY_MICROS);
+                            state = EngineState::Running;
+                            *shared_state.lock().unwrap() = EngineState::Running;
+                        } else {
+                            state = EngineState::Waiting;
+                            *shared_state.lock().unwrap() = EngineState::Waiting;
+                        }
+                    }
+                    Ok(LoopCommand::SyncBpmUpdate(bpm)) => {
+                        pending_sync_bpm = Some(bpm);
+                    }
+                    Ok(LoopCommand::Stop
+                        | LoopCommand::ClockStop
+                        | LoopCommand::SyncStop
+                        | LoopCommand::ClockPause
+                        | LoopCommand::ClockResume) => {}
                     Err(_) => return,
                 }
             }
@@ -165,7 +219,7 @@ pub fn run_player_loop(
                     }
                 }
                 match receiver.try_recv() {
-                    Ok(LoopCommand::Stop) => {
+                    Ok(LoopCommand::Stop | LoopCommand::SyncStop) => {
                         state = EngineState::Stopped;
                         *shared_state.lock().unwrap() = EngineState::Stopped;
                     }
@@ -222,6 +276,12 @@ pub fn run_player_loop(
                                         Ok(LoopCommand::ClockStop) => {
                                             flush_active_notes(&mut active_notes, &mut output);
                                             output.clock_stop();
+                                            bar_index = 0;
+                                            state = EngineState::Stopped;
+                                            *shared_state.lock().unwrap() = EngineState::Stopped;
+                                        }
+                                        Ok(LoopCommand::SyncStop) => {
+                                            flush_active_notes(&mut active_notes, &mut output);
                                             bar_index = 0;
                                             state = EngineState::Stopped;
                                             *shared_state.lock().unwrap() = EngineState::Stopped;
@@ -327,7 +387,7 @@ pub fn run_player_loop(
                     let (tick, event) = &events[i];
                     let deadline = scheduler.deadline_for_tick(anchor, *tick);
 
-                    match sleep_until_with_poll(deadline, &receiver, &scheduler) {
+                    match sleep_until_with_poll(deadline, &receiver, &scheduler, &mut pending_sync_bpm) {
                         SleepResult::Elapsed => {}
                         SleepResult::Stop => {
                             flush_active_notes(&mut active_notes, &mut output);
@@ -348,6 +408,25 @@ pub fn run_player_loop(
                             is_clock_mode = false;
                             state = EngineState::Stopped;
                             *shared_state.lock().unwrap() = EngineState::Stopped;
+                            stopped = true;
+                            break;
+                        }
+                        // T-19 (EP-6): SyncStop — flush notes, go Stopped (no 0xFC output)
+                        SleepResult::SyncStop => {
+                            flush_active_notes(&mut active_notes, &mut output);
+                            bar_index = 0;
+                            state = EngineState::Stopped;
+                            *shared_state.lock().unwrap() = EngineState::Stopped;
+                            stopped = true;
+                            break;
+                        }
+                        // T-15 (EP-6): SyncStart while Running — flush, reset to bar 0, restart
+                        SleepResult::SyncStart => {
+                            flush_active_notes(&mut active_notes, &mut output);
+                            bar_index = 0;
+                            last_instruments.clear();
+                            anchor = Instant::now() + Duration::from_micros(START_LATENCY_MICROS);
+                            // State stays Running; break current bar to restart from bar 0
                             stopped = true;
                             break;
                         }
@@ -404,6 +483,25 @@ pub fn run_player_loop(
                             stopped = true;
                             break;
                         }
+                        Ok(LoopCommand::SyncStop) => {
+                            flush_active_notes(&mut active_notes, &mut output);
+                            bar_index = 0;
+                            state = EngineState::Stopped;
+                            *shared_state.lock().unwrap() = EngineState::Stopped;
+                            stopped = true;
+                            break;
+                        }
+                        Ok(LoopCommand::SyncStart) => {
+                            flush_active_notes(&mut active_notes, &mut output);
+                            bar_index = 0;
+                            last_instruments.clear();
+                            anchor = Instant::now() + Duration::from_micros(START_LATENCY_MICROS);
+                            stopped = true;
+                            break;
+                        }
+                        Ok(LoopCommand::SyncBpmUpdate(bpm)) => {
+                            pending_sync_bpm = Some(bpm);
+                        }
                         Ok(LoopCommand::ClockPause) => {
                             flush_active_notes(&mut active_notes, &mut output);
                             pause_context = Some(PauseContext {
@@ -416,7 +514,10 @@ pub fn run_player_loop(
                             paused = true;
                             break;
                         }
-                        Ok(LoopCommand::Start | LoopCommand::ClockStart | LoopCommand::ClockResume) => {}
+                        Ok(LoopCommand::Start
+                            | LoopCommand::ClockStart
+                            | LoopCommand::ClockResume
+                            | LoopCommand::SyncContinue) => {}
                         Err(mpsc::TryRecvError::Disconnected) => return,
                         Err(mpsc::TryRecvError::Empty) => {}
                     }
@@ -424,6 +525,12 @@ pub fn run_player_loop(
                     i += 1;
                 }
 
+                // SyncStart while Running: state is still Running but stopped=true (restart bar 0)
+                // We need to distinguish "true stop" from "SyncStart restart"
+                if stopped && state == EngineState::Running {
+                    // SyncStart triggered — restart from bar 0 (anchor already updated above)
+                    continue;
+                }
                 if stopped || paused {
                     continue;
                 }
@@ -431,15 +538,22 @@ pub fn run_player_loop(
                 // Advance anchor to end of this bar
                 anchor = scheduler.deadline_for_tick(anchor, bar_ticks);
 
-                // Bar boundary: commit pending, check BPM
+                // Bar boundary: commit pending, apply pending_sync_bpm or project BPM
                 {
                     store.write().unwrap().commit_pending();
-                    let store_r = store.read().unwrap();
-                    if let Some(project) = store_r.active() {
-                        let new_bpm = project.header.bpm;
-                        if new_bpm != scheduler.bpm() {
-                            scheduler.update_bpm(new_bpm);
+                    if let Some(sync_bpm) = pending_sync_bpm.take() {
+                        if sync_bpm != scheduler.bpm() {
+                            scheduler.update_bpm(sync_bpm);
                             anchor = Instant::now();
+                        }
+                    } else {
+                        let store_r = store.read().unwrap();
+                        if let Some(project) = store_r.active() {
+                            let new_bpm = project.header.bpm;
+                            if new_bpm != scheduler.bpm() {
+                                scheduler.update_bpm(new_bpm);
+                                anchor = Instant::now();
+                            }
                         }
                     }
                 }

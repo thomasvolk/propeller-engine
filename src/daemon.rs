@@ -8,11 +8,13 @@ use tracing::info;
 use crate::domain::ProjectStore;
 use crate::ipc::{run_ipc_server, EngineMode, EngineSettings};
 use crate::loop_engine::{LoopEngine, midi::MidiOutput};
+use crate::midi_clock::MidiClockReceiver;
 
 pub async fn run(
     sock_path: PathBuf,
     midi_output: Box<dyn MidiOutput>,
     initial_mode: EngineMode,
+    sync_port_name: Option<String>,
 ) {
     let listener = match UnixListener::bind(&sock_path) {
         Ok(l) => l,
@@ -29,6 +31,22 @@ pub async fn run(
     let engine_for_shutdown = Arc::clone(&engine);
     let settings = Arc::new(Mutex::new(EngineSettings::new()));
     settings.lock().unwrap().mode = initial_mode;
+
+    // If --sync was passed, start the MIDI clock receiver and store its state in settings.
+    let _clock_receiver: Option<MidiClockReceiver> = if let Some(ref port_name) = sync_port_name {
+        match MidiClockReceiver::new(port_name, Arc::clone(&engine)) {
+            Ok(receiver) => {
+                settings.lock().unwrap().sync_clock_state = Some(receiver.state_arc());
+                Some(receiver)
+            }
+            Err(e) => {
+                eprintln!("propeller: failed to start MIDI clock receiver on {port_name:?}: {e}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        None
+    };
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let shutdown_tx = Arc::new(Mutex::new(Some(shutdown_tx)));
