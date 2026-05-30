@@ -349,7 +349,4 @@ Open an issue in the repository issue tracker.
 
 ## License
 
-No license has been declared yet. Until one is added, default copyright applies and
-no use, modification, or distribution is permitted without the author's explicit consent.
-Add a `LICENSE` file and a `license` field to `Cargo.toml` to clarify terms for contributors
-and users.
+Apache 2.0 — see [LICENSE](LICENSE) for details.
