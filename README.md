@@ -171,6 +171,8 @@ Use `nc -U` or `socat` to send commands from the shell:
 printf '{"command":"loop-start"}\n' | nc -U /tmp/propeller.sock
 ```
 
+For the full command and field reference, error codes, and worked examples, see [docs/json-socket-interface.md](docs/json-socket-interface.md).
+
 #### create-project
 
 Creates and immediately activates a project. A project must be loaded before the loop can play.
