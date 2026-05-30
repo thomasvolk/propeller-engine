@@ -9,7 +9,7 @@ use crate::domain::ProjectStore;
 use midi::MidiOutput;
 use player::run_player_loop;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EngineState {
     Stopped,
     Waiting,
@@ -154,7 +154,7 @@ fn wait_for_state(engine: &LoopEngine, target: EngineState, timeout_ms: u64) {
 mod tests {
     use super::*;
     use crate::domain::*;
-    use crate::loop_engine::midi::MockMidiOutput;
+    use crate::loop_engine::midi::{MidiSendError, MockMidiOutput};
     use std::sync::{Arc, Mutex, RwLock};
     use std::time::{Duration, Instant};
 
@@ -179,19 +179,34 @@ mod tests {
     }
 
     impl MidiOutput for CapturingOutput {
-        fn note_on(&mut self, channel: u8, pitch: u8, velocity: u8) {
+        fn note_on(&mut self, channel: u8, pitch: u8, velocity: u8) -> Result<(), MidiSendError> {
             self.captured.lock().unwrap().push(midi::MidiEvent::NoteOn { channel, pitch, velocity });
+            Ok(())
         }
-        fn note_off(&mut self, channel: u8, pitch: u8) {
+        fn note_off(&mut self, channel: u8, pitch: u8) -> Result<(), MidiSendError> {
             self.captured.lock().unwrap().push(midi::MidiEvent::NoteOff { channel, pitch });
+            Ok(())
         }
-        fn program_change(&mut self, channel: u8, program: u8) {
+        fn program_change(&mut self, channel: u8, program: u8) -> Result<(), MidiSendError> {
             self.captured.lock().unwrap().push(midi::MidiEvent::ProgramChange { channel, program });
+            Ok(())
         }
-        fn clock_tick(&mut self) { self.captured.lock().unwrap().push(midi::MidiEvent::ClockTick); }
-        fn clock_start(&mut self) { self.captured.lock().unwrap().push(midi::MidiEvent::ClockStart); }
-        fn clock_continue(&mut self) { self.captured.lock().unwrap().push(midi::MidiEvent::ClockContinue); }
-        fn clock_stop(&mut self) { self.captured.lock().unwrap().push(midi::MidiEvent::ClockStop); }
+        fn clock_tick(&mut self) -> Result<(), MidiSendError> {
+            self.captured.lock().unwrap().push(midi::MidiEvent::ClockTick);
+            Ok(())
+        }
+        fn clock_start(&mut self) -> Result<(), MidiSendError> {
+            self.captured.lock().unwrap().push(midi::MidiEvent::ClockStart);
+            Ok(())
+        }
+        fn clock_continue(&mut self) -> Result<(), MidiSendError> {
+            self.captured.lock().unwrap().push(midi::MidiEvent::ClockContinue);
+            Ok(())
+        }
+        fn clock_stop(&mut self) -> Result<(), MidiSendError> {
+            self.captured.lock().unwrap().push(midi::MidiEvent::ClockStop);
+            Ok(())
+        }
     }
 
     // T-11: LoopEngine::new() → state is Stopped
@@ -615,28 +630,31 @@ mod tests {
         }
 
         impl MidiOutput for TimestampedOutput {
-            fn note_on(&mut self, channel: u8, pitch: u8, velocity: u8) {
+            fn note_on(&mut self, channel: u8, pitch: u8, velocity: u8) -> Result<(), MidiSendError> {
                 self.timestamps.lock().unwrap().push((
                     Instant::now(),
                     midi::MidiEvent::NoteOn { channel, pitch, velocity },
                 ));
+                Ok(())
             }
-            fn note_off(&mut self, channel: u8, pitch: u8) {
+            fn note_off(&mut self, channel: u8, pitch: u8) -> Result<(), MidiSendError> {
                 self.timestamps.lock().unwrap().push((
                     Instant::now(),
                     midi::MidiEvent::NoteOff { channel, pitch },
                 ));
+                Ok(())
             }
-            fn program_change(&mut self, channel: u8, program: u8) {
+            fn program_change(&mut self, channel: u8, program: u8) -> Result<(), MidiSendError> {
                 self.timestamps.lock().unwrap().push((
                     Instant::now(),
                     midi::MidiEvent::ProgramChange { channel, program },
                 ));
+                Ok(())
             }
-            fn clock_tick(&mut self) {}
-            fn clock_start(&mut self) {}
-            fn clock_continue(&mut self) {}
-            fn clock_stop(&mut self) {}
+            fn clock_tick(&mut self) -> Result<(), MidiSendError> { Ok(()) }
+            fn clock_start(&mut self) -> Result<(), MidiSendError> { Ok(()) }
+            fn clock_continue(&mut self) -> Result<(), MidiSendError> { Ok(()) }
+            fn clock_stop(&mut self) -> Result<(), MidiSendError> { Ok(()) }
         }
 
         // BPM 480 → micros_per_tick = 60_000_000/(480*480) = 260μs; 1/4 bar = ~125ms

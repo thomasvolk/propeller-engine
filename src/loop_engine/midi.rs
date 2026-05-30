@@ -1,11 +1,28 @@
+#[derive(Debug)]
+pub struct MidiSendError(String);
+
+impl MidiSendError {
+    pub(crate) fn new(msg: impl std::fmt::Display) -> Self {
+        MidiSendError(msg.to_string())
+    }
+}
+
+impl std::fmt::Display for MidiSendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for MidiSendError {}
+
 pub trait MidiOutput: Send + 'static {
-    fn note_on(&mut self, channel: u8, pitch: u8, velocity: u8);
-    fn note_off(&mut self, channel: u8, pitch: u8);
-    fn program_change(&mut self, channel: u8, program: u8);
-    fn clock_tick(&mut self);
-    fn clock_start(&mut self);
-    fn clock_continue(&mut self);
-    fn clock_stop(&mut self);
+    fn note_on(&mut self, channel: u8, pitch: u8, velocity: u8) -> Result<(), MidiSendError>;
+    fn note_off(&mut self, channel: u8, pitch: u8) -> Result<(), MidiSendError>;
+    fn program_change(&mut self, channel: u8, program: u8) -> Result<(), MidiSendError>;
+    fn clock_tick(&mut self) -> Result<(), MidiSendError>;
+    fn clock_start(&mut self) -> Result<(), MidiSendError>;
+    fn clock_continue(&mut self) -> Result<(), MidiSendError>;
+    fn clock_stop(&mut self) -> Result<(), MidiSendError>;
 }
 
 #[cfg(test)]
@@ -34,22 +51,40 @@ impl MockMidiOutput {
 
 #[cfg(test)]
 impl MidiOutput for MockMidiOutput {
-    fn note_on(&mut self, channel: u8, pitch: u8, velocity: u8) {
+    fn note_on(&mut self, channel: u8, pitch: u8, velocity: u8) -> Result<(), MidiSendError> {
         self.events.push(MidiEvent::NoteOn { channel, pitch, velocity });
+        Ok(())
     }
 
-    fn note_off(&mut self, channel: u8, pitch: u8) {
+    fn note_off(&mut self, channel: u8, pitch: u8) -> Result<(), MidiSendError> {
         self.events.push(MidiEvent::NoteOff { channel, pitch });
+        Ok(())
     }
 
-    fn program_change(&mut self, channel: u8, program: u8) {
+    fn program_change(&mut self, channel: u8, program: u8) -> Result<(), MidiSendError> {
         self.events.push(MidiEvent::ProgramChange { channel, program });
+        Ok(())
     }
 
-    fn clock_tick(&mut self) { self.events.push(MidiEvent::ClockTick); }
-    fn clock_start(&mut self) { self.events.push(MidiEvent::ClockStart); }
-    fn clock_continue(&mut self) { self.events.push(MidiEvent::ClockContinue); }
-    fn clock_stop(&mut self) { self.events.push(MidiEvent::ClockStop); }
+    fn clock_tick(&mut self) -> Result<(), MidiSendError> {
+        self.events.push(MidiEvent::ClockTick);
+        Ok(())
+    }
+
+    fn clock_start(&mut self) -> Result<(), MidiSendError> {
+        self.events.push(MidiEvent::ClockStart);
+        Ok(())
+    }
+
+    fn clock_continue(&mut self) -> Result<(), MidiSendError> {
+        self.events.push(MidiEvent::ClockContinue);
+        Ok(())
+    }
+
+    fn clock_stop(&mut self) -> Result<(), MidiSendError> {
+        self.events.push(MidiEvent::ClockStop);
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -60,9 +95,9 @@ mod tests {
     #[test]
     fn mock_records_events_in_order() {
         let mut m = MockMidiOutput::new();
-        m.note_on(1, 60, 80);
-        m.note_off(1, 60);
-        m.program_change(1, 42);
+        m.note_on(1, 60, 80).unwrap();
+        m.note_off(1, 60).unwrap();
+        m.program_change(1, 42).unwrap();
         assert_eq!(m.events, vec![
             MidiEvent::NoteOn { channel: 1, pitch: 60, velocity: 80 },
             MidiEvent::NoteOff { channel: 1, pitch: 60 },
@@ -74,12 +109,12 @@ mod tests {
     #[test]
     fn mock_records_clock_events_in_order() {
         let mut m = MockMidiOutput::new();
-        m.note_on(1, 60, 80);
-        m.clock_start();
-        m.clock_tick();
-        m.clock_continue();
-        m.clock_stop();
-        m.note_off(1, 60);
+        m.note_on(1, 60, 80).unwrap();
+        m.clock_start().unwrap();
+        m.clock_tick().unwrap();
+        m.clock_continue().unwrap();
+        m.clock_stop().unwrap();
+        m.note_off(1, 60).unwrap();
         assert_eq!(m.events, vec![
             MidiEvent::NoteOn { channel: 1, pitch: 60, velocity: 80 },
             MidiEvent::ClockStart,

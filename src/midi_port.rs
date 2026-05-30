@@ -1,7 +1,7 @@
 use midir::os::unix::VirtualOutput;
 use serde::Serialize;
 
-use crate::loop_engine::midi::MidiOutput;
+use crate::loop_engine::midi::{MidiOutput, MidiSendError};
 
 #[derive(Debug, Serialize, Clone)]
 pub struct MidiPortInfo {
@@ -36,25 +36,33 @@ impl std::fmt::Display for MidiPortError {
 pub struct MidiPortOutput(midir::MidiOutputConnection);
 
 impl MidiOutput for MidiPortOutput {
-    fn note_on(&mut self, channel: u8, pitch: u8, velocity: u8) {
-        let bytes = note_on_bytes(channel, pitch, velocity);
-        let _ = self.0.send(&bytes);
+    fn note_on(&mut self, channel: u8, pitch: u8, velocity: u8) -> Result<(), MidiSendError> {
+        self.0.send(&note_on_bytes(channel, pitch, velocity)).map_err(MidiSendError::new)
     }
 
-    fn note_off(&mut self, channel: u8, pitch: u8) {
-        let bytes = note_off_bytes(channel, pitch);
-        let _ = self.0.send(&bytes);
+    fn note_off(&mut self, channel: u8, pitch: u8) -> Result<(), MidiSendError> {
+        self.0.send(&note_off_bytes(channel, pitch)).map_err(MidiSendError::new)
     }
 
-    fn program_change(&mut self, channel: u8, program: u8) {
-        let bytes = program_change_bytes(channel, program);
-        let _ = self.0.send(&bytes);
+    fn program_change(&mut self, channel: u8, program: u8) -> Result<(), MidiSendError> {
+        self.0.send(&program_change_bytes(channel, program)).map_err(MidiSendError::new)
     }
 
-    fn clock_tick(&mut self) { let _ = self.0.send(&clock_tick_bytes()); }
-    fn clock_start(&mut self) { let _ = self.0.send(&clock_start_bytes()); }
-    fn clock_continue(&mut self) { let _ = self.0.send(&clock_continue_bytes()); }
-    fn clock_stop(&mut self) { let _ = self.0.send(&clock_stop_bytes()); }
+    fn clock_tick(&mut self) -> Result<(), MidiSendError> {
+        self.0.send(&clock_tick_bytes()).map_err(MidiSendError::new)
+    }
+
+    fn clock_start(&mut self) -> Result<(), MidiSendError> {
+        self.0.send(&clock_start_bytes()).map_err(MidiSendError::new)
+    }
+
+    fn clock_continue(&mut self) -> Result<(), MidiSendError> {
+        self.0.send(&clock_continue_bytes()).map_err(MidiSendError::new)
+    }
+
+    fn clock_stop(&mut self) -> Result<(), MidiSendError> {
+        self.0.send(&clock_stop_bytes()).map_err(MidiSendError::new)
+    }
 }
 
 pub fn find_port_by_name(names: &[String], target: &str) -> Option<usize> {
@@ -269,9 +277,9 @@ mod tests {
             )
             .unwrap();
 
-        port_out.note_on(1, 60, 80);
-        port_out.note_off(1, 60);
-        port_out.program_change(1, 42);
+        port_out.note_on(1, 60, 80).unwrap();
+        port_out.note_off(1, 60).unwrap();
+        port_out.program_change(1, 42).unwrap();
 
         std::thread::sleep(std::time::Duration::from_millis(100));
 
