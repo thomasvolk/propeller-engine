@@ -122,6 +122,14 @@ Parse subcommands with `clap` using the derive API. Resolve `PROPELLER_SOCK` at 
 
 ---
 
+## Code Structure
+
+- Stateful loops must be expressed as methods on a struct, not as free functions with a large set of local variables acting as implicit fields. All mutable state that persists across iterations belongs on the struct.
+- Repeated `match` arms that handle the same commands in multiple places within a single module must be consolidated into a shared helper method. Duplication of command-dispatch logic is a maintenance defect.
+- State machine transitions must be exhaustive and explicit. Every reachable `(current_state, command)` pair must either be handled or explicitly ignored with a comment explaining why.
+
+---
+
 ## Approved Crates
 
 | Purpose | Crate |

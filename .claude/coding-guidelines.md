@@ -211,6 +211,16 @@ match value {
 
 ---
 
+## Project-Specific Rules
+
+- Code must not produce compiler warnings. Follow the compiler's recommendations to fix them.
+- Traits that produce output or perform I/O must return `Result`, not `()`. Silent error drops (`let _ = ...`) are not acceptable in trait implementations; callers must have the option to observe and react to failures.
+- Prefer `&mut dyn Trait` over `&mut Box<dyn Trait>` in function signatures. The latter forces an extra indirection and is not idiomatic Rust.
+- Use `sort_unstable` and `sort_unstable_by_key` in place of their stable counterparts unless preservation of equal-key insertion order is a documented requirement.
+- Boolean flags that encode more than one distinct outcome (e.g. `stopped = true` meaning both "stopped" and "restarting") must be replaced with a named enum. Every distinct outcome must map to exactly one variant.
+
+---
+
 ## Cargo.toml
 
 - Same line width (100 chars) and 4-space indentation as Rust code
