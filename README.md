@@ -338,10 +338,10 @@ On error:
 
 Specifications live in the `spec/` directory. Read `spec/briefing.md` for the project
 vision and `spec/roadmap.md` for the planned epic sequence before starting work.
-Architecture and coding conventions are in `spec/architecture-guidelines.md` and
-`spec/coding-guidelines.md`.
+Architecture and coding conventions are in `.claude/architecture-guidelines.md` and
+`.claude/coding-guidelines.md`.
 
-Open issues and submit pull requests in the project repository.
+Open issues and submit pull requests at <https://github.com/thomasvolk/propeller-engine>.
 
 ## Support
 

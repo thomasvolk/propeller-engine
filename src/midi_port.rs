@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Thomas Volk
+
 use midir::os::unix::VirtualOutput;
 use serde::Serialize;
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Thomas Volk
+
 pub const PPQN: u32 = 480;
 
 pub struct Project {
