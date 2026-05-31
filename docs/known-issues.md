@@ -58,6 +58,24 @@ sendmidi dev "IAC Driver Bus 1" cc 1 123 0
 
 Repeat for each channel your project uses (channels 1–16 if in doubt).
 
+## First notes missed when starting immediately after daemon start
+
+When using a virtual MIDI port (the default, when `PROPELLER_MIDI_PORT` is not set) and running `propeller start` followed immediately by `propeller project create` and `propeller loop start`, the first few notes may be lost.
+
+**Cause:** When the daemon creates a virtual MIDI port, macOS CoreMIDI sends an asynchronous notification to all registered MIDI clients. A synthesizer or DAW that auto-connects by port name must process that notification on its own event loop before it is listening on the port again. This reconnection can take anywhere from tens to several hundred milliseconds depending on the host application. Notes sent during that window are silently discarded.
+
+**Workaround (recommended):** Use a named MIDI port via `PROPELLER_MIDI_PORT`. A pre-existing port (a hardware interface or a persistent IAC/virtual port set up in Audio MIDI Setup) is always present, so there is no reconnection delay.
+
+```sh
+PROPELLER_MIDI_PORT="IAC Driver Bus 1" propeller start
+```
+
+**Workaround (soft):** Add a short delay between `propeller start` and your first `loop start` to give the synthesizer time to reconnect:
+
+```sh
+propeller start && sleep 0.5 && propeller project create my_project.json && propeller loop start
+```
+
 ## 20 ms startup latency on loop and clock start
 
 When the loop or MIDI clock starts, the engine applies a fixed 20 ms delay before emitting the first note-on and the first clock pulse. Program Change messages are sent immediately; all note and clock events follow after the window. This is intentional: some hardware synthesisers need settling time after a Program Change before they respond reliably to NoteOn.

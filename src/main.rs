@@ -187,11 +187,23 @@ fn cmd_start(clock: bool, sync: bool) {
         std::process::exit(1);
     }
 
-    // Block until the socket is connectable (F-22)
+    // Block until the IPC server is accepting and processing commands.
+    // A plain connect() check is insufficient: the socket becomes connectable as soon as
+    // UnixListener::bind() is called, which is before run_ipc_server starts. We send a
+    // status command and wait for a valid JSON response so that callers can safely send
+    // project and loop commands immediately after this function returns.
+    use std::io::{BufRead, BufReader, Write};
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
-        if std::os::unix::net::UnixStream::connect(&sock_path).is_ok() {
-            return;
+        if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(&sock_path) {
+            let probe = r#"{"command":"status"}"#.to_string() + "\n";
+            if stream.write_all(probe.as_bytes()).is_ok() {
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_ok() && !line.is_empty() {
+                    return;
+                }
+            }
         }
         if std::time::Instant::now() >= deadline {
             eprintln!("propeller: timed out waiting for daemon to become ready");
