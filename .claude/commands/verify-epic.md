@@ -26,7 +26,7 @@ If `spec/$ARGUMENTS.md` does not exist, stop and output:
 
 If `spec/$ARGUMENTS-spec.md` does not exist, stop and output:
 
-> No spec found for $ARGUMENTS. Run `/create-spec $ARGUMENTS` first.
+> No spec found for $ARGUMENTS. Run `/refine-spec $ARGUMENTS` first.
 
 Extract the list of acceptance criteria (AC-x rows) from the PRD and the list of test tasks (rows where Type = `test`) from the Implementation Tasks table in the spec. You will use both to map test results to ACs.
 

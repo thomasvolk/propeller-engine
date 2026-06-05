@@ -22,7 +22,7 @@ If `spec/$ARGUMENTS.md` does not exist, stop and output:
 
 If `spec/$ARGUMENTS-spec.md` does not exist, stop and output:
 
-> No spec found for $ARGUMENTS. Run `/create-spec $ARGUMENTS` first.
+> No spec found for $ARGUMENTS. Run `/refine-spec $ARGUMENTS` first.
 
 ---
 
