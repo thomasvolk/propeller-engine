@@ -1,0 +1,441 @@
+-- allium: 3
+-- propeller.allium
+--
+-- Specification for the propeller-engine live-coding MIDI loop daemon.
+--
+-- Scope: project authoring, playback engine, sync clock receiver, daemon lifecycle
+-- Excludes:
+--   Unix socket / IPC transport (infrastructure)
+--   Logging subsystem (infrastructure)
+--   Scheduler timing implementation (infrastructure)
+--   Process daemonisation (infrastructure)
+--   MIDI hardware driver (midir crate)
+
+------------------------------------------------------------
+-- Given
+------------------------------------------------------------
+
+given {
+    engine: Engine
+    store: ProjectStore
+}
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value TimeSignature {
+    numerator: Integer      -- ≥ 1
+    denominator: Integer    -- must be 2, 4, 8, or 16
+
+    bar_ticks: numerator * (config.ppqn * 4 / denominator)
+}
+
+value NoteSpec {
+    rest: Boolean
+    pitch: Integer          -- 0–127; meaningful only when rest = false
+    velocity: Integer       -- 0–127; meaningful only when rest = false
+    duration_ticks: Integer -- > 0, ≤ bar_ticks of the containing bar
+}
+
+value BarSpec {
+    notes: List<NoteSpec>
+}
+
+value TrackSpec {
+    name: String
+    channel: Integer        -- 1–16 (MIDI channel)
+    instrument: Integer     -- 0–127 (General MIDI program number)
+    bars: List<BarSpec>     -- must contain at least one bar
+}
+
+value ProjectData {
+    bpm: Integer            -- 20–300, whole number only
+    time_signature: TimeSignature
+    tracks: List<TrackSpec>
+
+    cycle_length: tracks.map(t => t.bars.count).max()
+}
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum EngineMode { standalone | clock | sync }
+
+enum SyncClockStatus { waiting | tracking | lost }
+
+------------------------------------------------------------
+-- Entities
+------------------------------------------------------------
+
+entity Engine {
+    mode: EngineMode
+    state: stopped | waiting | running | paused
+    sync_clock_status: SyncClockStatus?  -- null when mode != sync
+    last_pulse_at: Timestamp?            -- set on each 0xF8 pulse; null when not in sync mode
+
+    transitions state {
+        stopped  -> running
+        stopped  -> waiting
+        waiting  -> running
+        waiting  -> stopped
+        running  -> paused
+        running  -> stopped
+        paused   -> running
+        paused   -> stopped
+    }
+}
+
+entity ProjectStore {
+    active: ProjectData?
+    pending: ProjectData?
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    ppqn: Integer = 480         -- ticks per quarter note; defines the note-authoring resolution
+    clock_ppq: Integer = 24     -- MIDI clock pulses per quarter note (MIDI 1.0 specification)
+    bpm_default: Integer = 120  -- BPM used for status responses when no project is loaded
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+-- Project management
+
+rule CreateProject {
+    when: CreateProject(operator, data)
+
+    requires: data.bpm >= 20 and data.bpm <= 300
+    requires: data.time_signature.numerator >= 1
+    requires: data.time_signature.denominator in {2, 4, 8, 16}
+    requires: data.tracks.all(t =>
+        t.channel >= 1
+        and t.channel <= 16
+        and t.instrument <= 127
+        and t.bars.count >= 1
+        and t.bars.all(b => b.notes.all(n =>
+            n.duration_ticks > 0
+            and n.duration_ticks <= data.time_signature.bar_ticks
+        ))
+    )
+
+    ensures: store.active = data
+    ensures: store.pending = null
+    ensures:
+        if engine.state = waiting:
+            engine.state = running
+    -- Immediately activates the project. If the engine was Waiting for a project,
+    -- playback starts at once from bar 0.
+}
+
+rule ModifyProject {
+    when: ModifyProject(operator, data)
+
+    requires: data.bpm >= 20 and data.bpm <= 300
+    requires: data.time_signature.numerator >= 1
+    requires: data.time_signature.denominator in {2, 4, 8, 16}
+    requires: data.tracks.all(t =>
+        t.channel >= 1
+        and t.channel <= 16
+        and t.instrument <= 127
+        and t.bars.count >= 1
+        and t.bars.all(b => b.notes.all(n =>
+            n.duration_ticks > 0
+            and n.duration_ticks <= data.time_signature.bar_ticks
+        ))
+    )
+
+    ensures: store.pending = data
+    -- Always accepted regardless of engine state.
+    -- The pending project takes effect at the next bar boundary (see PendingAppliedAtBarBoundary).
+    -- If the engine is stopped, pending is applied when playback next starts.
+}
+
+rule SetBpm {
+    when: SetBpm(operator, bpm)
+
+    requires: engine.mode != sync    -- set-bpm is rejected in sync mode
+    requires: bpm >= 20 and bpm <= 300
+
+    ensures:
+        if store.active != null:
+            store.pending = store.active with bpm = bpm
+    -- If a project is loaded, a new version with the updated BPM becomes pending
+    -- and takes effect at the next bar boundary.
+    -- If no project is loaded, the BPM is remembered in engine settings and applied
+    -- when the next project is created.
+}
+
+-- Playback: standalone mode
+
+rule LoopStart {
+    when: LoopStart(operator)
+
+    requires: engine.mode = standalone
+
+    ensures:
+        if store.active != null:
+            engine.state = running
+        else:
+            engine.state = waiting
+    -- In Waiting state the engine polls for a project and starts playback automatically
+    -- as soon as CreateProject supplies one.
+}
+
+rule LoopStop {
+    when: LoopStop(operator)
+
+    requires: engine.mode = standalone
+
+    ensures: engine.state = stopped
+    -- All active notes receive NoteOff before the state transitions (see NotesSilenced).
+}
+
+-- Playback: clock mode
+-- In clock mode the engine emits MIDI Timing Clock (0xF8) alongside notes.
+-- LoopStart in clock mode behaves as ClockStart; LoopStop behaves as ClockStop (not ClockPause).
+-- Pause and resume are only accessible via the dedicated ClockPause / ClockResume commands.
+
+rule ClockStart {
+    when: ClockStart(operator)
+
+    requires: store.active != null
+
+    ensures: engine.state = running
+    -- 0xFA (MIDI Start) is emitted before the first 0xF8 (see ClockBoundaryMessages).
+}
+
+rule ClockPause {
+    when: ClockPause(operator)
+
+    requires: engine.state = running
+
+    ensures: engine.state = paused
+    -- All active notes receive NoteOff. No 0xFC is emitted; the clock is merely suspended.
+}
+
+rule ClockResume {
+    when: ClockResume(operator)
+
+    requires: engine.state = paused
+
+    ensures: engine.state = running
+    -- 0xFB (MIDI Continue) is emitted before the first resumed 0xF8 (see ClockBoundaryMessages).
+}
+
+rule ClockStop {
+    when: ClockStop(operator)
+
+    requires: engine.state = running or engine.state = paused
+
+    ensures: engine.state = stopped
+    -- 0xFC (MIDI Stop) is emitted. All active notes receive NoteOff.
+}
+
+-- Playback: sync mode
+-- Playback is driven entirely by MIDI Realtime messages from an external clock device.
+-- LoopStart and LoopStop are rejected in sync mode (see SyncModeRejectsDirectControl).
+
+rule ExternalClockStart {
+    when: MidiClockStart(clock)
+
+    requires: engine.mode = sync
+
+    ensures:
+        if store.active != null:
+            engine.state = running    -- playback restarts from bar 0
+        else:
+            engine.state = waiting
+    ensures: engine.sync_clock_status = tracking
+    ensures: engine.last_pulse_at = null  -- pulse tracker resets on Start
+}
+
+rule ExternalClockContinue {
+    when: MidiClockContinue(clock)
+
+    requires: engine.mode = sync
+    requires: engine.sync_clock_status = tracking  -- only acted on when clock is active
+
+    ensures:
+        if store.active != null:
+            engine.state = running    -- resumes from current bar position
+        else:
+            engine.state = waiting
+}
+
+rule ExternalClockStop {
+    when: MidiClockStop(clock)
+
+    requires: engine.mode = sync
+
+    ensures: engine.state = stopped
+    ensures: engine.sync_clock_status = waiting
+    -- All active notes receive NoteOff.
+}
+
+rule ExternalClockPulse {
+    when: MidiClockPulse(clock)
+
+    requires: engine.mode = sync
+
+    ensures: engine.sync_clock_status = tracking
+    ensures: engine.last_pulse_at = now
+    -- BPM is derived from inter-pulse timing and applied at the next bar boundary.
+}
+
+rule ExternalClockLost {
+    -- Fires when the expected inter-pulse interval has elapsed with no pulse received.
+    -- Timeout duration is proportional to the observed clock rate (approximately 3.5 × interval).
+    when: engine: Engine.last_pulse_at + clock_loss_timeout <= now
+
+    requires: engine.mode = sync
+    requires: engine.sync_clock_status != lost
+
+    ensures: engine.sync_clock_status = lost
+    ensures: engine.state = stopped
+    -- All active notes receive NoteOff. Engine stays stopped until a new Start arrives.
+}
+
+-- Mode switching
+
+rule SetMode {
+    when: SetMode(operator, new_mode)
+
+    requires: new_mode in {standalone, clock, sync}
+    requires:
+        if new_mode = sync:
+            -- sync mode requires the daemon to have been started with --sync and a MIDI port
+            engine.sync_clock_status != null
+
+    ensures:
+        if engine.mode = clock
+            and (engine.state = running or engine.state = paused):
+            engine.state = stopped
+            -- 0xFC is emitted and active notes receive NoteOff before the mode changes.
+    ensures: engine.mode = new_mode
+    -- Only the clock→non-clock direction stops the engine.
+    -- All other mode switches (standalone↔sync, standalone→clock, sync→standalone)
+    -- leave engine.state unchanged.
+}
+
+-- Daemon shutdown
+
+rule DaemonStop {
+    -- Triggered by the stop IPC command or SIGTERM.
+    when: Stop(operator)
+
+    ensures:
+        if engine.state = running or engine.state = paused:
+            engine.state = stopped
+    -- If the engine was in clock mode, 0xFC is emitted before the socket is unlinked.
+    -- All active notes receive NoteOff. IPC socket is removed after output is complete.
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant NoteOffBeforeNoteOnAtSameTick {
+    -- When a NoteOff and a NoteOn are scheduled at the same tick,
+    -- NoteOff is always emitted first.
+    -- This prevents stuck notes when consecutive notes share a tick boundary.
+}
+
+invariant NotesSilenced {
+    -- Every NoteOn must be matched by a NoteOff before the engine transitions
+    -- to the stopped or paused state.
+    -- No note may be left sounding when the engine halts.
+}
+
+invariant ProgramChangeBeforeFirstNoteOn {
+    -- At the start of each bar, a ProgramChange (instrument select) is emitted
+    -- for any track whose instrument changed since the previous bar.
+    -- On the very first bar, ProgramChange is sent for all tracks unconditionally.
+    -- ProgramChange always precedes any NoteOn within the same bar.
+}
+
+invariant ClockBoundaryMessages {
+    -- In clock mode:
+    -- 0xFA (Start) is emitted once, before the first 0xF8 (Timing Clock) pulse.
+    -- After ClockResume, 0xFB (Continue) is emitted before the first resumed 0xF8.
+    -- 0xFC (Stop) is emitted once on ClockStop, after the final 0xF8.
+}
+
+invariant ClockPulseRate {
+    -- In clock mode, one 0xF8 pulse is emitted every config.ppqn / config.clock_ppq ticks.
+    -- This yields exactly 24 pulses per quarter note, conforming to MIDI 1.0.
+}
+
+invariant SyncModeRejectsDirectControl {
+    -- In sync mode, LoopStart and LoopStop are rejected with an error response.
+    -- In sync mode, SetBpm is rejected with an error response.
+    -- Transport and tempo are controlled exclusively by the external MIDI clock device.
+}
+
+invariant PendingAppliedAtBarBoundary {
+    -- A pending project never interrupts a bar in progress.
+    -- It becomes the active project only at the completion of the current bar.
+    -- Exception: CreateProject immediately activates the project; no bar boundary wait.
+}
+
+invariant SyncRestartResetsBarIndex {
+    -- ExternalClockStart (MIDI 0xFA) always restarts playback from bar 0,
+    -- discarding any mid-bar position and resetting the cycle counter.
+    -- ExternalClockContinue (MIDI 0xFB) resumes from the current bar index without resetting.
+}
+
+invariant ClockLossStopsPlayback {
+    -- When the external clock signal is lost (ExternalClockLost fires),
+    -- playback stops and all notes are silenced.
+    -- The engine remains stopped until a new MIDI Start (0xFA) or Continue (0xFB) arrives
+    -- from the external device.
+}
+
+------------------------------------------------------------
+-- Actor Declarations
+------------------------------------------------------------
+
+actor Operator {}      -- human or script using the propeller CLI
+actor ExternalClock {} -- MIDI device sending realtime clock messages (sync mode only)
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface OperatorInterface {
+    facing operator: Operator
+
+    provides:
+        CreateProject(operator, data: ProjectData)
+        ModifyProject(operator, data: ProjectData)
+        SetBpm(operator, bpm: Integer)
+        SetMode(operator, mode: EngineMode)
+        LoopStart(operator)
+        LoopStop(operator)
+        ClockStart(operator)
+        ClockPause(operator)
+        ClockResume(operator)
+        ClockStop(operator)
+        ListMidiPorts(operator)
+        Status(operator)
+        Stop(operator)
+}
+
+surface MidiClockInput {
+    -- Receives MIDI Realtime messages from the external clock device (sync mode only).
+    -- Only 0xF8, 0xFA, 0xFB, 0xFC are processed; all other messages are ignored.
+    facing clock: ExternalClock
+
+    provides:
+        MidiClockPulse(clock)     -- 0xF8 Timing Clock
+        MidiClockStart(clock)     -- 0xFA Start
+        MidiClockContinue(clock)  -- 0xFB Continue
+        MidiClockStop(clock)      -- 0xFC Stop
+}
+
