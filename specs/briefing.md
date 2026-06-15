@@ -8,6 +8,10 @@ This is about simplifying the protocol and the play loop.
 - A midi event will get a start tick value instead of an implicit calculated the position
 - Notes of one channel can overlap
 
+# The current protocol
+
+see @docs/json-socket-interface.md 
+
 # The new protocol
 
 ## Header
