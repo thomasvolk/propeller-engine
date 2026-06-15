@@ -61,6 +61,7 @@ entity Engine {
     state: stopped | waiting | running | paused
     sync_clock_status: SyncClockStatus?  -- null when mode != sync
     last_pulse_at: Timestamp?            -- set on each 0xF8 pulse; null when not in sync mode
+    last_pulse_interval: Duration?       -- interval between the two most recent pulses; null until two pulses received
 
     transitions state {
         stopped  -> running
@@ -72,6 +73,9 @@ entity Engine {
         paused   -> running
         paused   -> stopped
     }
+
+    clock_loss_deadline: last_pulse_at + last_pulse_interval * config.clock_loss_multiplier
+    is_clock_active: clock_loss_deadline >= now
 }
 
 entity ProjectStore {
@@ -84,9 +88,10 @@ entity ProjectStore {
 ------------------------------------------------------------
 
 config {
-    ppqn: Integer = 480         -- ticks per quarter note; defines the note-authoring resolution
-    clock_ppq: Integer = 24     -- MIDI clock pulses per quarter note (MIDI 1.0 specification)
-    bpm_default: Integer = 120  -- BPM used for status responses when no project is loaded
+    ppqn: Integer = 480              -- ticks per quarter note; defines the note-authoring resolution
+    clock_ppq: Integer = 24          -- MIDI clock pulses per quarter note (MIDI 1.0 specification)
+    bpm_default: Integer = 120       -- BPM used for status responses when no project is loaded
+    clock_loss_multiplier: Integer = 4  -- clock declared lost after this many observed intervals (~3.5 in practice)
 }
 
 ------------------------------------------------------------
@@ -240,14 +245,15 @@ rule ExternalClockStart {
         else:
             engine.state = waiting
     ensures: engine.sync_clock_status = tracking
-    ensures: engine.last_pulse_at = null  -- pulse tracker resets on Start
+    ensures: engine.last_pulse_at = null          -- pulse tracker resets on Start
+    ensures: engine.last_pulse_interval = null    -- interval history cleared on Start
 }
 
 rule ExternalClockContinue {
     when: MidiClockContinue(clock)
 
     requires: engine.mode = sync
-    requires: engine.sync_clock_status = tracking  -- only acted on when clock is active
+    requires: engine.is_clock_active  -- only acted on when pulses are still being received
 
     ensures:
         if store.active != null:
@@ -272,14 +278,16 @@ rule ExternalClockPulse {
     requires: engine.mode = sync
 
     ensures: engine.sync_clock_status = tracking
+    ensures: engine.last_pulse_interval = now - engine.last_pulse_at
     ensures: engine.last_pulse_at = now
     -- BPM is derived from inter-pulse timing and applied at the next loop boundary.
+    -- last_pulse_interval is null on the first pulse because last_pulse_at was null (null arithmetic produces null).
 }
 
 rule ExternalClockLost {
     -- Fires when the expected inter-pulse interval has elapsed with no pulse received.
-    -- Timeout duration is proportional to the observed clock rate (approximately 3.5 × interval).
-    when: engine: Engine.last_pulse_at + clock_loss_timeout <= now
+    -- Timeout = config.clock_loss_multiplier × the most recently observed pulse interval.
+    when: engine: Engine.clock_loss_deadline <= now
 
     requires: engine.mode = sync
     requires: engine.sync_clock_status != lost
@@ -302,6 +310,7 @@ rule SetMode {
 
     ensures:
         if engine.mode = clock
+            and new_mode != clock
             and (engine.state = running or engine.state = paused):
             engine.state = stopped
             -- 0xFC is emitted and active notes receive NoteOff before the mode changes.
@@ -322,6 +331,25 @@ rule DaemonStop {
             engine.state = stopped
     -- If the engine was in clock mode, 0xFC is emitted before the socket is unlinked.
     -- All active notes receive NoteOff. IPC socket is removed after output is complete.
+}
+
+-- Status queries
+
+rule ReportStatus {
+    when: Status(operator)
+
+    ensures: StatusReported(
+        operator,
+        bpm: store.active?.bpm ?? config.bpm_default,
+        mode: engine.mode,
+        state: engine.state
+    )
+}
+
+rule ListPorts {
+    when: ListMidiPorts(operator)
+
+    ensures: MidiPortsListed(operator)
 }
 
 ------------------------------------------------------------
