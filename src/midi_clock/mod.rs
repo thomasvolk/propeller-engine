@@ -142,7 +142,7 @@ fn run_receiver(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{Bar, Header, Note, NoteEvent, Project, ProjectStore, TimeSignature, Track};
+    use crate::domain::{Header, Note, Project, ProjectStore, Track};
     use crate::loop_engine::{EngineState, LoopEngine};
     use crate::loop_engine::midi::MockMidiOutput;
     use std::sync::{Arc, RwLock};
@@ -152,20 +152,12 @@ mod tests {
         let store = Arc::new(RwLock::new(ProjectStore::new()));
         {
             let project = Project {
-                header: Header {
-                    bpm: 300,
-                    time_signature: TimeSignature { numerator: 1, denominator: 4 },
-                },
+                header: Header { bpm: 300, loop_duration: 480 },
                 tracks: vec![Track {
                     name: "t".to_string(),
                     channel: 1,
                     instrument: 0,
-                    bars: vec![Bar {
-                        notes: vec![Note {
-                            event: NoteEvent::Note { pitch: 60, velocity: 80 },
-                            duration_ticks: 480,
-                        }],
-                    }],
+                    notes: vec![Note { start_tick: 0, duration: 480, pitch: 60, velocity: 80 }],
                 }],
             };
             store.write().unwrap().set_pending(project).unwrap();

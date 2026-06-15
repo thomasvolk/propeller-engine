@@ -28,14 +28,8 @@ pub enum Command {
 
 #[derive(Debug, Deserialize)]
 pub struct WireHeader {
-    pub bpm: f64,
-    pub time_signature: WireTimeSignature,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct WireTimeSignature {
-    pub numerator: u32,
-    pub denominator: u32,
+    pub bpm: u32,
+    pub loop_duration: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -43,20 +37,7 @@ pub struct WireTrack {
     pub name: String,
     pub channel: u8,
     pub instrument: u8,
-    pub bars: Vec<WireBar>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct WireBar {
-    pub notes: Vec<WireNote>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct WireNote {
-    pub rest: Option<bool>,
-    pub pitch: Option<u8>,
-    pub velocity: Option<u8>,
-    pub duration_ticks: u32,
+    pub notes: Vec<[u32; 4]>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -203,5 +184,43 @@ mod tests {
     #[test]
     fn engine_mode_sync_from_str() {
         assert_eq!(EngineMode::from_str("sync"), Some(EngineMode::Sync));
+    }
+
+    // EP-NP-2: WireHeader deserialises with bpm and loop_duration
+    #[test]
+    fn wire_header_deserialises() {
+        let h: WireHeader =
+            serde_json::from_str(r#"{"bpm":120,"loop_duration":1920}"#).unwrap();
+        assert_eq!(h.bpm, 120);
+        assert_eq!(h.loop_duration, 1920);
+    }
+
+    // EP-NP-2: WireTrack notes are arrays of four u32
+    #[test]
+    fn wire_track_notes_deserialise() {
+        let t: WireTrack = serde_json::from_str(
+            r#"{"name":"piano","channel":1,"instrument":0,"notes":[[0,480,60,80]]}"#,
+        )
+        .unwrap();
+        assert_eq!(t.notes.len(), 1);
+        assert_eq!(t.notes[0], [0, 480, 60, 80]);
+    }
+
+    // EP-NP-2: create-project with new wire format deserialises correctly
+    #[test]
+    fn deserialize_create_project_new_format() {
+        let cmd: Command = serde_json::from_str(
+            r#"{"command":"create-project","header":{"bpm":120,"loop_duration":1920},"tracks":[{"name":"p","channel":1,"instrument":0,"notes":[[0,480,60,80]]}]}"#,
+        )
+        .unwrap();
+        match cmd {
+            Command::CreateProject { header, tracks } => {
+                assert_eq!(header.bpm, 120);
+                assert_eq!(header.loop_duration, 1920);
+                assert_eq!(tracks.len(), 1);
+                assert_eq!(tracks[0].notes[0], [0, 480, 60, 80]);
+            }
+            _ => panic!("expected CreateProject"),
+        }
     }
 }

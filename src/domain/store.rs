@@ -47,20 +47,12 @@ mod tests {
 
     fn make_valid_project() -> Project {
         Project {
-            header: Header {
-                bpm: 120,
-                time_signature: TimeSignature { numerator: 4, denominator: 4 },
-            },
+            header: Header { bpm: 120, loop_duration: 1920 },
             tracks: vec![Track {
                 name: "piano".to_string(),
                 channel: 1,
                 instrument: 0,
-                bars: vec![Bar {
-                    notes: vec![Note {
-                        event: NoteEvent::Note { pitch: 60, velocity: 80 },
-                        duration_ticks: 480,
-                    }],
-                }],
+                notes: vec![Note { start_tick: 0, duration: 480, pitch: 60, velocity: 80 }],
             }],
         }
     }
@@ -85,10 +77,7 @@ mod tests {
     fn test_set_pending_invalid() {
         let mut store = ProjectStore::new();
         let invalid = Project {
-            header: Header {
-                bpm: 0,
-                time_signature: TimeSignature { numerator: 4, denominator: 4 },
-            },
+            header: Header { bpm: 0, loop_duration: 1920 },
             tracks: vec![],
         };
         assert!(store.set_pending(invalid).is_err());

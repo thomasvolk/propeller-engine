@@ -8,14 +8,12 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::sync::oneshot;
 
-use crate::domain::{
-    Bar, Header, Note, NoteEvent, Project, ProjectStore, TimeSignature, Track, ValidationError,
-};
+use crate::domain::{Header, Note, Project, ProjectStore, Track, ValidationError};
 use crate::loop_engine::{EngineState, LoopEngine};
 use crate::midi_clock::SyncClockState;
 
 use super::types::{
-    Command, EngineMode, EngineSettings, WireBar, WireHeader, WireNote, WireTrack,
+    Command, EngineMode, EngineSettings, WireTrack, WireHeader,
     error_response, ok_response,
 };
 
@@ -151,21 +149,11 @@ async fn dispatch(
     }
 }
 
-fn build_domain_project(header: WireHeader, tracks: Vec<WireTrack>) -> Result<Project, Value> {
-    if header.bpm.fract() != 0.0 {
-        return Err(error_response("bpm_non_integer", "BPM must be a whole number"));
-    }
-    let bpm = header.bpm as u32;
-    Ok(Project {
-        header: Header {
-            bpm,
-            time_signature: TimeSignature {
-                numerator: header.time_signature.numerator,
-                denominator: header.time_signature.denominator,
-            },
-        },
+fn build_domain_project(header: WireHeader, tracks: Vec<WireTrack>) -> Project {
+    Project {
+        header: Header { bpm: header.bpm, loop_duration: header.loop_duration },
         tracks: tracks.into_iter().map(wire_track_to_domain).collect(),
-    })
+    }
 }
 
 fn handle_create_project(
@@ -173,10 +161,7 @@ fn handle_create_project(
     tracks: Vec<WireTrack>,
     store: &Arc<RwLock<ProjectStore>>,
 ) -> Value {
-    let project = match build_domain_project(header, tracks) {
-        Ok(p) => p,
-        Err(e) => return e,
-    };
+    let project = build_domain_project(header, tracks);
     let mut store_w = store.write().unwrap();
     match store_w.set_pending(project) {
         Ok(()) => {
@@ -192,10 +177,7 @@ fn handle_project(
     tracks: Vec<WireTrack>,
     store: &Arc<RwLock<ProjectStore>>,
 ) -> Value {
-    let project = match build_domain_project(header, tracks) {
-        Ok(p) => p,
-        Err(e) => return e,
-    };
+    let project = build_domain_project(header, tracks);
     match store.write().unwrap().set_pending(project) {
         Ok(()) => ok_response(),
         Err(e) => validation_error_response(e),
@@ -222,29 +204,29 @@ fn handle_set_bpm(
 
     settings.lock().unwrap().bpm = bpm_u32;
 
-    if let Some(active) = store.read().unwrap().active() {
-        let new_project = Project {
-            header: Header {
-                bpm: bpm_u32,
-                time_signature: TimeSignature {
-                    numerator: active.header.time_signature.numerator,
-                    denominator: active.header.time_signature.denominator,
-                },
-            },
-            tracks: active.tracks.iter().map(|t| Track {
+    // Read active project data and release the read lock before acquiring the write lock
+    // to avoid holding both simultaneously (which would deadlock on std::sync::RwLock).
+    let rebuild = {
+        let guard = store.read().unwrap();
+        guard.active().map(|p| {
+            let tracks = p.tracks.iter().map(|t| Track {
                 name: t.name.clone(),
                 channel: t.channel,
                 instrument: t.instrument,
-                bars: t.bars.iter().map(|b| Bar {
-                    notes: b.notes.iter().map(|n| Note {
-                        event: match &n.event {
-                            NoteEvent::Note { pitch, velocity } => NoteEvent::Note { pitch: *pitch, velocity: *velocity },
-                            NoteEvent::Rest => NoteEvent::Rest,
-                        },
-                        duration_ticks: n.duration_ticks,
-                    }).collect(),
+                notes: t.notes.iter().map(|n| Note {
+                    start_tick: n.start_tick,
+                    duration: n.duration,
+                    pitch: n.pitch,
+                    velocity: n.velocity,
                 }).collect(),
-            }).collect(),
+            }).collect::<Vec<_>>();
+            (p.header.loop_duration, tracks)
+        })
+    };
+    if let Some((loop_duration, tracks)) = rebuild {
+        let new_project = Project {
+            header: Header { bpm: bpm_u32, loop_duration },
+            tracks,
         };
         let _ = store.write().unwrap().set_pending(new_project);
     }
@@ -304,21 +286,18 @@ fn handle_status(
         .map(|p| p.header.bpm)
         .unwrap_or(settings_guard.bpm);
 
-    let time_signature = active.map(|p| {
-        json!({
-            "numerator": p.header.time_signature.numerator,
-            "denominator": p.header.time_signature.denominator,
-        })
-    });
-
     let mut resp = json!({
         "status": "ok",
         "mode": settings_guard.mode.as_str(),
         "bpm": bpm,
-        "time_signature": time_signature,
         "clock_state": clock_state,
         "project_present": active.is_some(),
     });
+
+    // F-13: include loop_duration when a project is active; omit entirely when no project.
+    if let Some(p) = active {
+        resp["loop_duration"] = json!(p.header.loop_duration);
+    }
 
     // T-38 (EP-6): append sync_clock_state when in sync mode
     if settings_guard.mode == EngineMode::Sync {
@@ -341,39 +320,44 @@ fn wire_track_to_domain(t: WireTrack) -> Track {
         name: t.name,
         channel: t.channel,
         instrument: t.instrument,
-        bars: t.bars.into_iter().map(wire_bar_to_domain).collect(),
+        notes: t.notes
+            .into_iter()
+            .map(|[start_tick, duration, pitch, velocity]| Note {
+                start_tick,
+                duration,
+                pitch: pitch as u8,
+                velocity: velocity as u8,
+            })
+            .collect(),
     }
-}
-
-fn wire_bar_to_domain(b: WireBar) -> Bar {
-    Bar {
-        notes: b.notes.into_iter().map(wire_note_to_domain).collect(),
-    }
-}
-
-fn wire_note_to_domain(n: WireNote) -> Note {
-    let event = if n.rest == Some(true) {
-        NoteEvent::Rest
-    } else {
-        NoteEvent::Note {
-            pitch: n.pitch.unwrap_or(60),
-            velocity: n.velocity.unwrap_or(64),
-        }
-    };
-    Note { event, duration_ticks: n.duration_ticks }
 }
 
 fn validation_error_response(e: ValidationError) -> Value {
     let message = match &e {
-        ValidationError::BpmOutOfRange { actual } => format!("BPM {actual} is out of range (20–300)"),
-        ValidationError::InvalidTimeSignatureNumerator => "time signature numerator must be ≥ 1".to_string(),
-        ValidationError::InvalidTimeSignatureDenominator { actual } => format!("time signature denominator {actual} must be 2, 4, 8, or 16"),
-        ValidationError::InvalidMidiChannel { track, actual } => format!("track {track}: MIDI channel {actual} is out of range (1–16)"),
-        ValidationError::InvalidMidiInstrument { track, actual } => format!("track {track}: instrument {actual} is out of range (0–127)"),
-        ValidationError::EmptyTrackBars { track } => format!("track {track}: must have at least one bar"),
-        ValidationError::NoteDurationZero { track, bar, note } => format!("track {track} bar {bar} note {note}: duration must be > 0"),
-        ValidationError::NoteDurationExceedsBar { track, bar, note, duration, bar_ticks } => {
-            format!("track {track} bar {bar} note {note}: duration {duration} exceeds bar ticks {bar_ticks}")
+        ValidationError::BpmOutOfRange { actual } => {
+            format!("BPM {actual} is out of range (20–300)")
+        }
+        ValidationError::LoopDurationZero => "loop_duration must be greater than 0".to_string(),
+        ValidationError::InvalidMidiChannel { track, actual } => {
+            format!("track {track}: MIDI channel {actual} is out of range (1–16)")
+        }
+        ValidationError::InvalidMidiInstrument { track, actual } => {
+            format!("track {track}: instrument {actual} is out of range (0–127)")
+        }
+        ValidationError::NoteDurationZero { track, note } => {
+            format!("track {track} note {note}: duration must be > 0")
+        }
+        ValidationError::NoteStartTickOutOfRange { track, note, start_tick, loop_duration } => {
+            format!(
+                "track {track} note {note}: start_tick {start_tick} is out of range \
+                 (must be < loop_duration {loop_duration})"
+            )
+        }
+        ValidationError::NoteDurationExceedsLimit { track, note, duration, limit } => {
+            format!(
+                "track {track} note {note}: duration {duration} exceeds limit {limit} \
+                 (2 * loop_duration)"
+            )
         }
     };
     error_response("validation_error", &message)
@@ -464,7 +448,7 @@ mod tests {
         assert_eq!(v["code"], "missing_command");
     }
 
-    // T-13: valid create-project → ok, store.active() is Some
+    // T-13: valid create-project (new wire format) → ok, store.active() is Some
     #[tokio::test]
     async fn create_project_stores_project() {
         let (store, engine, settings, shutdown_tx) = make_shared_state();
@@ -475,7 +459,7 @@ mod tests {
             connection_handler(server, store_clone, engine, settings, shutdown_tx).await;
         });
 
-        let cmd = r#"{"command":"create-project","header":{"bpm":120,"time_signature":{"numerator":4,"denominator":4}},"tracks":[{"name":"piano","channel":1,"instrument":0,"bars":[{"notes":[{"pitch":60,"velocity":80,"duration_ticks":480}]}]}]}"# .to_string() + "\n";
+        let cmd = r#"{"command":"create-project","header":{"bpm":120,"loop_duration":1920},"tracks":[{"name":"piano","channel":1,"instrument":0,"notes":[[0,480,60,80]]}]}"#.to_string() + "\n";
 
         let mut client = client;
         use tokio::io::AsyncWriteExt;
@@ -490,31 +474,22 @@ mod tests {
     #[tokio::test]
     async fn create_project_bpm_out_of_range() {
         let response = send_command_get_response(
-            r#"{"command":"create-project","header":{"bpm":301,"time_signature":{"numerator":4,"denominator":4}},"tracks":[{"name":"t","channel":1,"instrument":0,"bars":[{"notes":[{"pitch":60,"velocity":80,"duration_ticks":480}]}]}]}"#
-        ).await;
+            r#"{"command":"create-project","header":{"bpm":301,"loop_duration":1920},"tracks":[]}"#,
+        )
+        .await;
         let v: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
         assert_eq!(v["status"], "error");
         assert_eq!(v["code"], "validation_error");
         assert!(!v["message"].as_str().unwrap().is_empty());
     }
 
-    // T-15: create-project with bpm 120.5 → bpm_non_integer
-    #[tokio::test]
-    async fn create_project_bpm_non_integer() {
-        let response = send_command_get_response(
-            r#"{"command":"create-project","header":{"bpm":120.5,"time_signature":{"numerator":4,"denominator":4}},"tracks":[]}"#
-        ).await;
-        let v: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
-        assert_eq!(v["status"], "error");
-        assert_eq!(v["code"], "bpm_non_integer");
-    }
-
-    // T-17: modify-project → ok, store pending updated
+    // T-17: modify-project (new wire format) → ok, store pending updated
     #[tokio::test]
     async fn modify_project_returns_ok() {
         let response = send_command_get_response(
-            r#"{"command":"modify-project","header":{"bpm":140,"time_signature":{"numerator":4,"denominator":4}},"tracks":[{"name":"t","channel":1,"instrument":0,"bars":[{"notes":[{"pitch":60,"velocity":80,"duration_ticks":480}]}]}]}"#
-        ).await;
+            r#"{"command":"modify-project","header":{"bpm":140,"loop_duration":1920},"tracks":[{"name":"t","channel":1,"instrument":0,"notes":[[0,480,60,80]]}]}"#,
+        )
+        .await;
         let v: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
         assert_eq!(v["status"], "ok");
     }
@@ -640,19 +615,20 @@ mod tests {
         assert_eq!(engine.state(), EngineState::Stopped);
     }
 
-    // T-29: status with active project, loop stopped
+    // T-29: status with active project — loop_duration present, time_signature absent (AC-8, F-14)
     #[tokio::test]
     async fn status_with_project_stopped() {
         let (store, engine, settings, shutdown_tx) = make_shared_state();
 
-        // Load a project
         {
             use crate::domain::*;
             let project = Project {
-                header: Header { bpm: 120, time_signature: TimeSignature { numerator: 4, denominator: 4 } },
+                header: Header { bpm: 120, loop_duration: 1920 },
                 tracks: vec![Track {
-                    name: "t".to_string(), channel: 1, instrument: 0,
-                    bars: vec![Bar { notes: vec![Note { event: NoteEvent::Note { pitch: 60, velocity: 80 }, duration_ticks: 480 }] }],
+                    name: "t".to_string(),
+                    channel: 1,
+                    instrument: 0,
+                    notes: vec![Note { start_tick: 0, duration: 480, pitch: 60, velocity: 80 }],
                 }],
             };
             store.write().unwrap().set_pending(project).unwrap();
@@ -679,7 +655,8 @@ mod tests {
         assert_eq!(v["status"], "ok");
         assert!(v.get("mode").is_some());
         assert!(v.get("bpm").is_some());
-        assert!(v.get("time_signature").is_some());
+        assert_eq!(v["loop_duration"], 1920);
+        assert!(v.get("time_signature").is_none());
         assert_eq!(v["clock_state"], "stopped");
         assert_eq!(v["project_present"], true);
     }
@@ -711,7 +688,8 @@ mod tests {
         assert_eq!(v["clock_state"], "started");
     }
 
-    // T-31: status with no active project → project_present false, time_signature null
+    // T-31: status with no active project → project_present false, time_signature absent,
+    //        loop_duration absent (AC-9, F-14)
     #[tokio::test]
     async fn status_no_project() {
         let (store, engine, settings, shutdown_tx) = make_shared_state();
@@ -735,7 +713,8 @@ mod tests {
 
         let v: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
         assert_eq!(v["project_present"], false);
-        assert!(v["time_signature"].is_null());
+        assert!(v.get("time_signature").is_none());
+        assert!(v.get("loop_duration").is_none(), "loop_duration must be absent when no project");
         assert_eq!(v["bpm"], 99);
     }
 
@@ -764,12 +743,12 @@ mod tests {
         {
             use crate::domain::*;
             let project = Project {
-                header: Header { bpm: 120, time_signature: TimeSignature { numerator: 4, denominator: 4 } },
+                header: Header { bpm: 120, loop_duration: 1920 },
                 tracks: vec![Track {
-                    name: "t".to_string(), channel: 1, instrument: 0,
-                    bars: vec![Bar { notes: vec![Note {
-                        event: NoteEvent::Note { pitch: 60, velocity: 80 }, duration_ticks: 480,
-                    }] }],
+                    name: "t".to_string(),
+                    channel: 1,
+                    instrument: 0,
+                    notes: vec![Note { start_tick: 0, duration: 480, pitch: 60, velocity: 80 }],
                 }],
             };
             store.write().unwrap().set_pending(project).unwrap();
@@ -825,7 +804,7 @@ mod tests {
         assert_eq!(v["mode"], "standalone");
     }
 
-    // T-9 (EP-7): set-mode clock while standalone with loop Running → engine stays Running (F-6, F-11, AC-3)
+    // T-9 (EP-7): set-mode clock while standalone with loop Running → engine stays Running
     #[tokio::test]
     async fn set_mode_clock_while_loop_running_does_not_stop_engine() {
         let (store, engine, settings, shutdown_tx) = make_shared_state();
@@ -860,17 +839,19 @@ mod tests {
         engine_clone.stop();
     }
 
-    // T-11 (EP-7): set-mode standalone from clock while Running → engine.clock_stop() called (F-12, AC-9)
+    // T-11 (EP-7): set-mode standalone from clock while Running → engine.clock_stop() called
     #[tokio::test]
     async fn set_mode_standalone_from_clock_while_running_calls_clock_stop() {
         let (store, engine, settings, shutdown_tx) = make_shared_state();
         {
             use crate::domain::*;
             let project = Project {
-                header: Header { bpm: 300, time_signature: TimeSignature { numerator: 1, denominator: 4 } },
+                header: Header { bpm: 300, loop_duration: 480 },
                 tracks: vec![Track {
-                    name: "t".to_string(), channel: 1, instrument: 0,
-                    bars: vec![Bar { notes: vec![Note { event: NoteEvent::Note { pitch: 60, velocity: 80 }, duration_ticks: 480 }] }],
+                    name: "t".to_string(),
+                    channel: 1,
+                    instrument: 0,
+                    notes: vec![Note { start_tick: 0, duration: 480, pitch: 60, velocity: 80 }],
                 }],
             };
             store.write().unwrap().set_pending(project).unwrap();
@@ -1035,10 +1016,221 @@ mod tests {
     // T-41 (EP-6): SetMode "sync" without a MidiClockReceiver → sync_requires_port error
     #[tokio::test]
     async fn set_mode_sync_without_receiver_returns_error() {
-        // settings.sync_clock_state is None (no receiver running)
         let response = send_command_get_response(r#"{"command":"set-mode","mode":"sync"}"#).await;
         let v: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
         assert_eq!(v["status"], "error");
         assert_eq!(v["code"], "sync_requires_port");
+    }
+
+    // T-5: validation_error_response with LoopDurationZero → non-empty message (AC-10)
+    #[test]
+    fn validation_error_response_loop_duration_zero() {
+        let v = validation_error_response(ValidationError::LoopDurationZero);
+        assert_eq!(v["status"], "error");
+        assert_eq!(v["code"], "validation_error");
+        assert!(!v["message"].as_str().unwrap().is_empty());
+    }
+
+    // T-5: NoteStartTickOutOfRange → message includes start_tick and loop_duration (AC-11)
+    #[test]
+    fn validation_error_response_note_start_tick_out_of_range() {
+        let v = validation_error_response(ValidationError::NoteStartTickOutOfRange {
+            track: 0,
+            note: 0,
+            start_tick: 100,
+            loop_duration: 50,
+        });
+        assert_eq!(v["status"], "error");
+        assert_eq!(v["code"], "validation_error");
+        let msg = v["message"].as_str().unwrap();
+        assert!(!msg.is_empty());
+        assert!(msg.contains("100"), "message should include start_tick 100, got: {msg}");
+        assert!(msg.contains("50"), "message should include loop_duration 50, got: {msg}");
+    }
+
+    // T-5: NoteDurationExceedsLimit → message includes duration and limit (AC-12)
+    #[test]
+    fn validation_error_response_note_duration_exceeds_limit() {
+        let v = validation_error_response(ValidationError::NoteDurationExceedsLimit {
+            track: 0,
+            note: 0,
+            duration: 5000,
+            limit: 3840,
+        });
+        assert_eq!(v["status"], "error");
+        assert_eq!(v["code"], "validation_error");
+        let msg = v["message"].as_str().unwrap();
+        assert!(!msg.is_empty());
+        assert!(msg.contains("5000"), "message should include duration 5000, got: {msg}");
+        assert!(msg.contains("3840"), "message should include limit 3840, got: {msg}");
+    }
+
+    // T-7: create-project with loop_duration 0 → validation_error (AC-1)
+    #[tokio::test]
+    async fn create_project_loop_duration_zero() {
+        let response = send_command_get_response(
+            r#"{"command":"create-project","header":{"bpm":120,"loop_duration":0},"tracks":[]}"#,
+        )
+        .await;
+        let v: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+        assert_eq!(v["status"], "error");
+        assert_eq!(v["code"], "validation_error");
+        assert!(!v["message"].as_str().unwrap().is_empty());
+    }
+
+    // T-7: note with start_tick >= loop_duration → validation_error (AC-2)
+    #[tokio::test]
+    async fn create_project_note_start_tick_out_of_range() {
+        let response = send_command_get_response(
+            r#"{"command":"create-project","header":{"bpm":120,"loop_duration":1920},"tracks":[{"name":"t","channel":1,"instrument":0,"notes":[[1920,480,60,80]]}]}"#,
+        )
+        .await;
+        let v: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+        assert_eq!(v["status"], "error");
+        assert_eq!(v["code"], "validation_error");
+    }
+
+    // T-7: note with duration 0 → validation_error (AC-3)
+    #[tokio::test]
+    async fn create_project_note_duration_zero() {
+        let response = send_command_get_response(
+            r#"{"command":"create-project","header":{"bpm":120,"loop_duration":1920},"tracks":[{"name":"t","channel":1,"instrument":0,"notes":[[0,0,60,80]]}]}"#,
+        )
+        .await;
+        let v: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+        assert_eq!(v["status"], "error");
+        assert_eq!(v["code"], "validation_error");
+    }
+
+    // T-7: start_tick + duration > 2 * loop_duration → validation_error (AC-4)
+    #[tokio::test]
+    async fn create_project_note_duration_exceeds_limit() {
+        let response = send_command_get_response(
+            r#"{"command":"create-project","header":{"bpm":120,"loop_duration":1920},"tracks":[{"name":"t","channel":1,"instrument":0,"notes":[[0,3841,60,80]]}]}"#,
+        )
+        .await;
+        let v: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+        assert_eq!(v["status"], "error");
+        assert_eq!(v["code"], "validation_error");
+    }
+
+    // T-7: overlapping notes (same start_tick) → ok (AC-5)
+    #[tokio::test]
+    async fn create_project_overlapping_notes_ok() {
+        let response = send_command_get_response(
+            r#"{"command":"create-project","header":{"bpm":120,"loop_duration":1920},"tracks":[{"name":"t","channel":1,"instrument":0,"notes":[[0,480,60,80],[0,480,64,80]]}]}"#,
+        )
+        .await;
+        let v: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+        assert_eq!(v["status"], "ok");
+    }
+
+    // T-7: boundary note start_tick + duration == 2 * loop_duration → ok (AC-6)
+    #[tokio::test]
+    async fn create_project_boundary_note_ok() {
+        let response = send_command_get_response(
+            r#"{"command":"create-project","header":{"bpm":120,"loop_duration":1920},"tracks":[{"name":"t","channel":1,"instrument":0,"notes":[[0,3840,60,80]]}]}"#,
+        )
+        .await;
+        let v: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+        assert_eq!(v["status"], "ok");
+    }
+
+    // T-7: duration 0 AND start_tick >= loop_duration → NoteDurationZero wins (AC-14)
+    #[tokio::test]
+    async fn create_project_priority_duration_zero_wins() {
+        let response = send_command_get_response(
+            r#"{"command":"create-project","header":{"bpm":120,"loop_duration":1920},"tracks":[{"name":"t","channel":1,"instrument":0,"notes":[[2000,0,60,80]]}]}"#,
+        )
+        .await;
+        let v: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+        assert_eq!(v["status"], "error");
+        assert_eq!(v["code"], "validation_error");
+        let msg = v["message"].as_str().unwrap();
+        assert!(msg.contains("duration"), "message should mention duration, got: {msg}");
+    }
+
+    // T-9: set-bpm while project active → reconstructed project retains loop_duration (AC-7)
+    #[tokio::test]
+    async fn set_bpm_retains_loop_duration() {
+        let (store, engine, settings, shutdown_tx) = make_shared_state();
+        {
+            use crate::domain::*;
+            let project = Project {
+                header: Header { bpm: 120, loop_duration: 1920 },
+                tracks: vec![],
+            };
+            store.write().unwrap().set_pending(project).unwrap();
+            store.write().unwrap().commit_pending();
+        }
+
+        let store_clone = Arc::clone(&store);
+        let (client, server) = UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            connection_handler(server, store_clone, engine, settings, shutdown_tx).await;
+        });
+
+        let cmd = r#"{"command":"set-bpm","bpm":140}"#.to_string() + "\n";
+        let mut client = client;
+        use tokio::io::AsyncWriteExt;
+        client.write_all(cmd.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        client.read_to_string(&mut resp).await.unwrap();
+
+        let v: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
+        assert_eq!(v["status"], "ok");
+
+        // Commit the pending project (created by set-bpm) and verify it retains loop_duration.
+        store.write().unwrap().commit_pending();
+        let store_r = store.read().unwrap();
+        let project = store_r.active().expect("project should be active after commit");
+        assert_eq!(project.header.bpm, 140);
+        assert_eq!(project.header.loop_duration, 1920);
+    }
+
+    // T-11: status with active project → response includes loop_duration (AC-8)
+    #[tokio::test]
+    async fn status_with_project_includes_loop_duration() {
+        let (store, engine, settings, shutdown_tx) = make_shared_state();
+        {
+            use crate::domain::*;
+            let project = Project {
+                header: Header { bpm: 120, loop_duration: 1920 },
+                tracks: vec![],
+            };
+            store.write().unwrap().set_pending(project).unwrap();
+            store.write().unwrap().commit_pending();
+        }
+
+        let (client, server) = UnixStream::pair().unwrap();
+        let store_clone = Arc::clone(&store);
+        let engine_clone = Arc::clone(&engine);
+        let settings_clone = Arc::clone(&settings);
+
+        tokio::spawn(async move {
+            connection_handler(server, store_clone, engine_clone, settings_clone, shutdown_tx).await;
+        });
+
+        let cmd = r#"{"command":"status"}"#.to_string() + "\n";
+        let mut client = client;
+        use tokio::io::AsyncWriteExt;
+        client.write_all(cmd.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        client.read_to_string(&mut resp).await.unwrap();
+
+        let v: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["loop_duration"], 1920);
+        assert!(v.get("time_signature").is_none());
+    }
+
+    // T-11: status with no project → loop_duration key absent (AC-9)
+    #[tokio::test]
+    async fn status_no_project_excludes_loop_duration() {
+        let response = send_command_get_response(r#"{"command":"status"}"#).await;
+        let v: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+        assert_eq!(v["status"], "ok");
+        assert!(v.get("loop_duration").is_none(), "loop_duration must be absent when no project");
+        assert!(v.get("time_signature").is_none());
     }
 }

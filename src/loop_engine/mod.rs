@@ -116,20 +116,12 @@ fn make_test_store_with_project() -> Arc<RwLock<ProjectStore>> {
     use crate::domain::*;
     let store = Arc::new(RwLock::new(ProjectStore::new()));
     let project = Project {
-        header: Header {
-            bpm: 300,
-            time_signature: TimeSignature { numerator: 1, denominator: 4 },
-        },
+        header: Header { bpm: 300, loop_duration: 480 },
         tracks: vec![Track {
             name: "t".to_string(),
             channel: 1,
             instrument: 0,
-            bars: vec![Bar {
-                notes: vec![Note {
-                    event: NoteEvent::Note { pitch: 60, velocity: 80 },
-                    duration_ticks: 480,
-                }],
-            }],
+            notes: vec![Note { start_tick: 0, duration: 480, pitch: 60, velocity: 80 }],
         }],
     };
     store.write().unwrap().set_pending(project).unwrap();
@@ -156,7 +148,7 @@ fn wait_for_state(engine: &LoopEngine, target: EngineState, timeout_ms: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::*;
+    use crate::domain::{Header, Note, Project, ProjectStore, Track};
     use crate::loop_engine::midi::{MidiSendError, MockMidiOutput};
     use std::sync::{Arc, Mutex, RwLock};
     use std::time::{Duration, Instant};
@@ -272,22 +264,17 @@ mod tests {
         assert!(first_on.unwrap() < first_off.unwrap(), "NoteOn should precede NoteOff");
     }
 
-    // T-19: rest note bar → no MIDI note events
+    // T-19: track with no notes → no MIDI note events (equivalent to old rest bar)
     #[test]
     fn rest_note_bar_emits_no_events() {
         let store = Arc::new(RwLock::new(ProjectStore::new()));
         let project = Project {
-            header: Header {
-                bpm: 300,
-                time_signature: TimeSignature { numerator: 1, denominator: 4 },
-            },
+            header: Header { bpm: 300, loop_duration: 480 },
             tracks: vec![Track {
                 name: "t".to_string(),
                 channel: 1,
                 instrument: 0,
-                bars: vec![Bar {
-                    notes: vec![Note { event: NoteEvent::Rest, duration_ticks: 480 }],
-                }],
+                notes: vec![],
             }],
         };
         store.write().unwrap().set_pending(project).unwrap();
@@ -311,18 +298,15 @@ mod tests {
     fn two_tracks_both_emit_note_on() {
         let store = Arc::new(RwLock::new(ProjectStore::new()));
         let project = Project {
-            header: Header {
-                bpm: 300,
-                time_signature: TimeSignature { numerator: 1, denominator: 4 },
-            },
+            header: Header { bpm: 300, loop_duration: 480 },
             tracks: vec![
                 Track {
                     name: "t1".to_string(), channel: 1, instrument: 0,
-                    bars: vec![Bar { notes: vec![Note { event: NoteEvent::Note { pitch: 60, velocity: 80 }, duration_ticks: 480 }] }],
+                    notes: vec![Note { start_tick: 0, duration: 480, pitch: 60, velocity: 80 }],
                 },
                 Track {
                     name: "t2".to_string(), channel: 2, instrument: 1,
-                    bars: vec![Bar { notes: vec![Note { event: NoteEvent::Note { pitch: 64, velocity: 80 }, duration_ticks: 480 }] }],
+                    notes: vec![Note { start_tick: 0, duration: 480, pitch: 64, velocity: 80 }],
                 },
             ],
         };
@@ -390,17 +374,12 @@ mod tests {
 
         // Submit a new project with pitch 62
         let new_project = Project {
-            header: Header {
-                bpm: 300,
-                time_signature: TimeSignature { numerator: 1, denominator: 4 },
-            },
+            header: Header { bpm: 300, loop_duration: 480 },
             tracks: vec![Track {
                 name: "t".to_string(),
                 channel: 1,
                 instrument: 0,
-                bars: vec![Bar {
-                    notes: vec![Note { event: NoteEvent::Note { pitch: 62, velocity: 80 }, duration_ticks: 480 }],
-                }],
+                notes: vec![Note { start_tick: 0, duration: 480, pitch: 62, velocity: 80 }],
             }],
         };
         store.write().unwrap().set_pending(new_project).unwrap();
@@ -426,15 +405,10 @@ mod tests {
         std::thread::sleep(Duration::from_millis(200));
 
         let new_project = Project {
-            header: Header {
-                bpm: 200, // changed BPM
-                time_signature: TimeSignature { numerator: 1, denominator: 4 },
-            },
+            header: Header { bpm: 200, loop_duration: 480 },
             tracks: vec![Track {
                 name: "t".to_string(), channel: 1, instrument: 0,
-                bars: vec![Bar {
-                    notes: vec![Note { event: NoteEvent::Note { pitch: 60, velocity: 80 }, duration_ticks: 480 }],
-                }],
+                notes: vec![Note { start_tick: 0, duration: 480, pitch: 60, velocity: 80 }],
             }],
         };
         store.write().unwrap().set_pending(new_project).unwrap();
@@ -460,15 +434,10 @@ mod tests {
             .filter(|e| matches!(e, midi::MidiEvent::ProgramChange { .. })).count();
 
         let new_project = Project {
-            header: Header {
-                bpm: 300,
-                time_signature: TimeSignature { numerator: 1, denominator: 4 },
-            },
+            header: Header { bpm: 300, loop_duration: 480 },
             tracks: vec![Track {
                 name: "t".to_string(), channel: 1, instrument: 42, // changed instrument
-                bars: vec![Bar {
-                    notes: vec![Note { event: NoteEvent::Note { pitch: 60, velocity: 80 }, duration_ticks: 480 }],
-                }],
+                notes: vec![Note { start_tick: 0, duration: 480, pitch: 60, velocity: 80 }],
             }],
         };
         store.write().unwrap().set_pending(new_project).unwrap();
@@ -496,10 +465,10 @@ mod tests {
 
         // Load a project
         let project = Project {
-            header: Header { bpm: 300, time_signature: TimeSignature { numerator: 1, denominator: 4 } },
+            header: Header { bpm: 300, loop_duration: 480 },
             tracks: vec![Track {
                 name: "t".to_string(), channel: 1, instrument: 0,
-                bars: vec![Bar { notes: vec![Note { event: NoteEvent::Note { pitch: 60, velocity: 80 }, duration_ticks: 480 }] }],
+                notes: vec![Note { start_tick: 0, duration: 480, pitch: 60, velocity: 80 }],
             }],
         };
         store.write().unwrap().set_pending(project).unwrap();
@@ -516,15 +485,10 @@ mod tests {
         // Use a very long note (longer than the bar) to ensure it's sounding when we stop
         let store = Arc::new(RwLock::new(ProjectStore::new()));
         let project = Project {
-            header: Header {
-                bpm: 60, // slow tempo so note lasts a long time
-                time_signature: TimeSignature { numerator: 4, denominator: 4 },
-            },
+            header: Header { bpm: 60, loop_duration: 1920 },
             tracks: vec![Track {
                 name: "t".to_string(), channel: 1, instrument: 0,
-                bars: vec![Bar {
-                    notes: vec![Note { event: NoteEvent::Note { pitch: 60, velocity: 80 }, duration_ticks: 1920 }],
-                }],
+                notes: vec![Note { start_tick: 0, duration: 1920, pitch: 60, velocity: 80 }],
             }],
         };
         store.write().unwrap().set_pending(project).unwrap();
@@ -550,20 +514,18 @@ mod tests {
     // T-37: NoteOff and NoteOn at same tick → NoteOff emitted before NoteOn
     #[test]
     fn note_off_before_note_on_at_same_tick() {
-        // Two consecutive notes at the same tick boundary:
-        // note1: pitch 60, duration 480 (NoteOff at tick 480)
-        // note2: pitch 62, duration 480 (NoteOn at tick 480)
+        // Two notes at adjacent start_ticks:
+        // note1: pitch 60, start_tick 0, duration 480 (NoteOff at tick 480)
+        // note2: pitch 62, start_tick 480, duration 480 (NoteOn at tick 480)
         let store = Arc::new(RwLock::new(ProjectStore::new()));
         let project = Project {
-            header: Header { bpm: 300, time_signature: TimeSignature { numerator: 2, denominator: 4 } },
+            header: Header { bpm: 300, loop_duration: 960 },
             tracks: vec![Track {
                 name: "t".to_string(), channel: 1, instrument: 0,
-                bars: vec![Bar {
-                    notes: vec![
-                        Note { event: NoteEvent::Note { pitch: 60, velocity: 80 }, duration_ticks: 480 },
-                        Note { event: NoteEvent::Note { pitch: 62, velocity: 80 }, duration_ticks: 480 },
-                    ],
-                }],
+                notes: vec![
+                    Note { start_tick: 0, duration: 480, pitch: 60, velocity: 80 },
+                    Note { start_tick: 480, duration: 480, pitch: 62, velocity: 80 },
+                ],
             }],
         };
         store.write().unwrap().set_pending(project).unwrap();
@@ -660,18 +622,18 @@ mod tests {
             fn clock_stop(&mut self) -> Result<(), MidiSendError> { Ok(()) }
         }
 
-        // BPM 480 → micros_per_tick = 60_000_000/(480*480) = 260μs; 1/4 bar = ~125ms
+        // BPM 480 → micros_per_tick = 60_000_000/(480*480) = 260μs; loop_duration=1920 ≈ 500ms
         let store = Arc::new(RwLock::new(ProjectStore::new()));
         let project = Project {
-            header: Header { bpm: 480, time_signature: TimeSignature { numerator: 4, denominator: 4 } },
+            header: Header { bpm: 480, loop_duration: 1920 },
             tracks: vec![Track {
                 name: "t".to_string(), channel: 1, instrument: 0,
-                bars: vec![Bar { notes: vec![
-                    Note { event: NoteEvent::Note { pitch: 60, velocity: 80 }, duration_ticks: 480 },
-                    Note { event: NoteEvent::Note { pitch: 62, velocity: 80 }, duration_ticks: 480 },
-                    Note { event: NoteEvent::Note { pitch: 64, velocity: 80 }, duration_ticks: 480 },
-                    Note { event: NoteEvent::Note { pitch: 65, velocity: 80 }, duration_ticks: 480 },
-                ]}],
+                notes: vec![
+                    Note { start_tick: 0, duration: 480, pitch: 60, velocity: 80 },
+                    Note { start_tick: 480, duration: 480, pitch: 62, velocity: 80 },
+                    Note { start_tick: 960, duration: 480, pitch: 64, velocity: 80 },
+                    Note { start_tick: 1440, duration: 480, pitch: 65, velocity: 80 },
+                ],
             }],
         };
         store.write().unwrap().set_pending(project).unwrap();
@@ -767,12 +729,10 @@ mod tests {
     fn clock_pause_transitions_to_paused_and_flushes_notes() {
         let store = Arc::new(RwLock::new(ProjectStore::new()));
         let project = Project {
-            header: Header { bpm: 60, time_signature: TimeSignature { numerator: 4, denominator: 4 } },
+            header: Header { bpm: 60, loop_duration: 1920 },
             tracks: vec![Track {
                 name: "t".to_string(), channel: 1, instrument: 0,
-                bars: vec![Bar { notes: vec![Note {
-                    event: NoteEvent::Note { pitch: 60, velocity: 80 }, duration_ticks: 1920,
-                }] }],
+                notes: vec![Note { start_tick: 0, duration: 1920, pitch: 60, velocity: 80 }],
             }],
         };
         store.write().unwrap().set_pending(project).unwrap();
@@ -853,12 +813,10 @@ mod tests {
     fn clock_stop_while_running_emits_clock_stop() {
         let store = Arc::new(RwLock::new(ProjectStore::new()));
         let project = Project {
-            header: Header { bpm: 60, time_signature: TimeSignature { numerator: 4, denominator: 4 } },
+            header: Header { bpm: 60, loop_duration: 1920 },
             tracks: vec![Track {
                 name: "t".to_string(), channel: 1, instrument: 0,
-                bars: vec![Bar { notes: vec![Note {
-                    event: NoteEvent::Note { pitch: 60, velocity: 80 }, duration_ticks: 1920,
-                }] }],
+                notes: vec![Note { start_tick: 0, duration: 1920, pitch: 60, velocity: 80 }],
             }],
         };
         store.write().unwrap().set_pending(project).unwrap();
@@ -910,12 +868,10 @@ mod tests {
         std::thread::sleep(Duration::from_millis(200));
 
         let new_project = Project {
-            header: Header { bpm: 200, time_signature: TimeSignature { numerator: 1, denominator: 4 } },
+            header: Header { bpm: 200, loop_duration: 480 },
             tracks: vec![Track {
                 name: "t".to_string(), channel: 1, instrument: 0,
-                bars: vec![Bar { notes: vec![Note {
-                    event: NoteEvent::Note { pitch: 60, velocity: 80 }, duration_ticks: 480,
-                }] }],
+                notes: vec![Note { start_tick: 0, duration: 480, pitch: 60, velocity: 80 }],
             }],
         };
         store.write().unwrap().set_pending(new_project).unwrap();
@@ -1046,12 +1002,10 @@ mod tests {
     fn sync_stop_transitions_to_stopped_and_flushes_notes() {
         let store = Arc::new(RwLock::new(ProjectStore::new()));
         let project = Project {
-            header: Header { bpm: 60, time_signature: TimeSignature { numerator: 4, denominator: 4 } },
+            header: Header { bpm: 60, loop_duration: 1920 },
             tracks: vec![Track {
                 name: "t".to_string(), channel: 1, instrument: 0,
-                bars: vec![Bar { notes: vec![Note {
-                    event: NoteEvent::Note { pitch: 60, velocity: 80 }, duration_ticks: 1920,
-                }] }],
+                notes: vec![Note { start_tick: 0, duration: 1920, pitch: 60, velocity: 80 }],
             }],
         };
         store.write().unwrap().set_pending(project).unwrap();

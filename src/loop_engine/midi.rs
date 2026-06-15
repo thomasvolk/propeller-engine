@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Thomas Volk
 
+#[cfg(test)]
+use std::sync::{Arc, Mutex};
+
 #[derive(Debug)]
 pub struct MidiSendError(String);
 
@@ -86,6 +89,56 @@ impl MidiOutput for MockMidiOutput {
 
     fn clock_stop(&mut self) -> Result<(), MidiSendError> {
         self.events.push(MidiEvent::ClockStop);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+pub struct CapturingMidiOutput {
+    events: Arc<Mutex<Vec<MidiEvent>>>,
+}
+
+#[cfg(test)]
+impl CapturingMidiOutput {
+    pub fn new(events: Arc<Mutex<Vec<MidiEvent>>>) -> Self {
+        CapturingMidiOutput { events }
+    }
+}
+
+#[cfg(test)]
+impl MidiOutput for CapturingMidiOutput {
+    fn note_on(&mut self, channel: u8, pitch: u8, velocity: u8) -> Result<(), MidiSendError> {
+        self.events.lock().unwrap().push(MidiEvent::NoteOn { channel, pitch, velocity });
+        Ok(())
+    }
+
+    fn note_off(&mut self, channel: u8, pitch: u8) -> Result<(), MidiSendError> {
+        self.events.lock().unwrap().push(MidiEvent::NoteOff { channel, pitch });
+        Ok(())
+    }
+
+    fn program_change(&mut self, channel: u8, program: u8) -> Result<(), MidiSendError> {
+        self.events.lock().unwrap().push(MidiEvent::ProgramChange { channel, program });
+        Ok(())
+    }
+
+    fn clock_tick(&mut self) -> Result<(), MidiSendError> {
+        self.events.lock().unwrap().push(MidiEvent::ClockTick);
+        Ok(())
+    }
+
+    fn clock_start(&mut self) -> Result<(), MidiSendError> {
+        self.events.lock().unwrap().push(MidiEvent::ClockStart);
+        Ok(())
+    }
+
+    fn clock_continue(&mut self) -> Result<(), MidiSendError> {
+        self.events.lock().unwrap().push(MidiEvent::ClockContinue);
+        Ok(())
+    }
+
+    fn clock_stop(&mut self) -> Result<(), MidiSendError> {
+        self.events.lock().unwrap().push(MidiEvent::ClockStop);
         Ok(())
     }
 }

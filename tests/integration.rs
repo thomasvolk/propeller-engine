@@ -388,7 +388,7 @@ fn runtime_protocol_create_start_status_stop() {
     let _guard = DaemonGuard::start(sock.clone());
 
     let create = send_command(&sock,
-        r#"{"command":"create-project","header":{"bpm":120,"time_signature":{"numerator":4,"denominator":4}},"tracks":[{"name":"piano","channel":1,"instrument":0,"bars":[{"notes":[{"pitch":60,"velocity":80,"duration_ticks":480}]}]}]}"#);
+        r#"{"command":"create-project","header":{"bpm":120,"loop_duration":1920},"tracks":[{"name":"piano","channel":1,"instrument":0,"notes":[[0,480,60,80]]}]}"#);
     assert_eq!(create["status"], "ok", "create-project failed");
 
     let start = send_command(&sock, r#"{"command":"loop-start"}"#);
@@ -487,7 +487,7 @@ fn status_exits_nonzero_and_reports_not_running_when_daemon_is_down() {
 
 // ── EP-9: CLI convenience commands ─────────────────────────────────────────
 
-const EP9_PROJECT_JSON: &str = r#"{"header":{"bpm":120,"time_signature":{"numerator":4,"denominator":4}},"tracks":[]}"#;
+const EP9_PROJECT_JSON: &str = r#"{"header":{"bpm":120,"loop_duration":1920},"tracks":[]}"#;
 
 /// Binds a UnixListener on `sock_path`, spawns a thread that accepts one
 /// connection, records the first line received, sends `response`, then exits.
