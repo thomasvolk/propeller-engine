@@ -1,50 +1,34 @@
 {
-  "header": { "bpm": 100, "time_signature": { "numerator": 4, "denominator": 4 } },
+  "header": { "bpm": 100, "loop_duration": 3840 },
   "tracks": [
     {
       "name": "melody",
       "channel": 2,
       "instrument": 0,
-      "bars": [
-        {
-          "notes": [
-            { "pitch": 60, "velocity": 120, "duration_ticks": 480 },
-            { "pitch": 62, "velocity": 80, "duration_ticks": 480 },
-            { "pitch": 64, "velocity": 80, "duration_ticks": 480 },
-            { "pitch": 65, "velocity": 80, "duration_ticks": 480 }
-          ]
-        },
-        {
-          "notes": [
-            { "pitch": 67, "velocity": 120, "duration_ticks": 480 },
-            { "pitch": 65, "velocity": 80, "duration_ticks": 480 },
-            { "pitch": 64, "velocity": 80, "duration_ticks": 480 },
-            { "pitch": 62, "velocity": 80, "duration_ticks": 480 }
-          ]
-        }
+      "notes": [
+        [0,    480, 60, 120],
+        [480,  480, 62,  80],
+        [960,  480, 64,  80],
+        [1440, 480, 65,  80],
+        [1920, 480, 67, 120],
+        [2400, 480, 65,  80],
+        [2880, 480, 64,  80],
+        [3360, 480, 62,  80]
       ]
     },
     {
       "name": "bass",
       "channel": 4,
       "instrument": 0,
-      "bars": [
-        {
-          "notes": [
-            { "pitch": 60, "velocity": 120, "duration_ticks": 480 },
-            { "pitch": 62, "velocity": 80, "duration_ticks": 480 },
-            { "pitch": 64, "velocity": 80, "duration_ticks": 480 },
-            { "pitch": 65, "velocity": 80, "duration_ticks": 480 }
-          ]
-        },
-        {
-          "notes": [
-            { "pitch": 67, "velocity": 120, "duration_ticks": 480 },
-            { "pitch": 65, "velocity": 80, "duration_ticks": 480 },
-            { "pitch": 64, "velocity": 80, "duration_ticks": 480 },
-            { "pitch": 62, "velocity": 80, "duration_ticks": 480 }
-          ]
-        }
+      "notes": [
+        [0,    480, 60, 120],
+        [480,  480, 62,  80],
+        [960,  480, 64,  80],
+        [1440, 480, 65,  80],
+        [1920, 480, 67, 120],
+        [2400, 480, 65,  80],
+        [2880, 480, 64,  80],
+        [3360, 480, 62,  80]
       ]
     }
   ]
