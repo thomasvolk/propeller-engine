@@ -9,7 +9,7 @@ use tokio::sync::oneshot;
 use tracing::info;
 
 use crate::domain::ProjectStore;
-use crate::ipc::{run_ipc_server, EngineMode, EngineSettings};
+use crate::ipc::{EngineMode, EngineSettings, run_ipc_server};
 use crate::loop_engine::{LoopEngine, midi::MidiOutput};
 use crate::midi_clock::MidiClockReceiver;
 
@@ -67,7 +67,7 @@ pub async fn run(
         }
     }
 
-    // T-30 (EP-5): send MIDI Stop before removing socket so connected devices don't hang
+    // Send MIDI Stop before removing socket so connected devices don't hang.
     engine_for_shutdown.clock_stop_on_shutdown();
     let _ = std::fs::remove_file(&sock_path);
     info!("daemon stopped");

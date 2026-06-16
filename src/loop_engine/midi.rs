@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Thomas Volk
 
+#[cfg(test)]
+use std::sync::{Arc, Mutex};
+
 #[derive(Debug)]
 pub struct MidiSendError(String);
 
@@ -31,9 +34,19 @@ pub trait MidiOutput: Send + 'static {
 #[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum MidiEvent {
-    NoteOn { channel: u8, pitch: u8, velocity: u8 },
-    NoteOff { channel: u8, pitch: u8 },
-    ProgramChange { channel: u8, program: u8 },
+    NoteOn {
+        channel: u8,
+        pitch: u8,
+        velocity: u8,
+    },
+    NoteOff {
+        channel: u8,
+        pitch: u8,
+    },
+    ProgramChange {
+        channel: u8,
+        program: u8,
+    },
     ClockTick,
     ClockStart,
     ClockContinue,
@@ -55,7 +68,11 @@ impl MockMidiOutput {
 #[cfg(test)]
 impl MidiOutput for MockMidiOutput {
     fn note_on(&mut self, channel: u8, pitch: u8, velocity: u8) -> Result<(), MidiSendError> {
-        self.events.push(MidiEvent::NoteOn { channel, pitch, velocity });
+        self.events.push(MidiEvent::NoteOn {
+            channel,
+            pitch,
+            velocity,
+        });
         Ok(())
     }
 
@@ -65,7 +82,8 @@ impl MidiOutput for MockMidiOutput {
     }
 
     fn program_change(&mut self, channel: u8, program: u8) -> Result<(), MidiSendError> {
-        self.events.push(MidiEvent::ProgramChange { channel, program });
+        self.events
+            .push(MidiEvent::ProgramChange { channel, program });
         Ok(())
     }
 
@@ -91,24 +109,95 @@ impl MidiOutput for MockMidiOutput {
 }
 
 #[cfg(test)]
+pub struct CapturingMidiOutput {
+    events: Arc<Mutex<Vec<MidiEvent>>>,
+}
+
+#[cfg(test)]
+impl CapturingMidiOutput {
+    pub fn new(events: Arc<Mutex<Vec<MidiEvent>>>) -> Self {
+        CapturingMidiOutput { events }
+    }
+}
+
+#[cfg(test)]
+impl MidiOutput for CapturingMidiOutput {
+    fn note_on(&mut self, channel: u8, pitch: u8, velocity: u8) -> Result<(), MidiSendError> {
+        self.events.lock().unwrap().push(MidiEvent::NoteOn {
+            channel,
+            pitch,
+            velocity,
+        });
+        Ok(())
+    }
+
+    fn note_off(&mut self, channel: u8, pitch: u8) -> Result<(), MidiSendError> {
+        self.events
+            .lock()
+            .unwrap()
+            .push(MidiEvent::NoteOff { channel, pitch });
+        Ok(())
+    }
+
+    fn program_change(&mut self, channel: u8, program: u8) -> Result<(), MidiSendError> {
+        self.events
+            .lock()
+            .unwrap()
+            .push(MidiEvent::ProgramChange { channel, program });
+        Ok(())
+    }
+
+    fn clock_tick(&mut self) -> Result<(), MidiSendError> {
+        self.events.lock().unwrap().push(MidiEvent::ClockTick);
+        Ok(())
+    }
+
+    fn clock_start(&mut self) -> Result<(), MidiSendError> {
+        self.events.lock().unwrap().push(MidiEvent::ClockStart);
+        Ok(())
+    }
+
+    fn clock_continue(&mut self) -> Result<(), MidiSendError> {
+        self.events.lock().unwrap().push(MidiEvent::ClockContinue);
+        Ok(())
+    }
+
+    fn clock_stop(&mut self) -> Result<(), MidiSendError> {
+        self.events.lock().unwrap().push(MidiEvent::ClockStop);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
-    // T-9 (EP-3): MockMidiOutput records NoteOn, NoteOff, ProgramChange in insertion order
     #[test]
     fn mock_records_events_in_order() {
         let mut m = MockMidiOutput::new();
         m.note_on(1, 60, 80).unwrap();
         m.note_off(1, 60).unwrap();
         m.program_change(1, 42).unwrap();
-        assert_eq!(m.events, vec![
-            MidiEvent::NoteOn { channel: 1, pitch: 60, velocity: 80 },
-            MidiEvent::NoteOff { channel: 1, pitch: 60 },
-            MidiEvent::ProgramChange { channel: 1, program: 42 },
-        ]);
+        assert_eq!(
+            m.events,
+            vec![
+                MidiEvent::NoteOn {
+                    channel: 1,
+                    pitch: 60,
+                    velocity: 80
+                },
+                MidiEvent::NoteOff {
+                    channel: 1,
+                    pitch: 60
+                },
+                MidiEvent::ProgramChange {
+                    channel: 1,
+                    program: 42
+                },
+            ]
+        );
     }
 
-    // T-1 (EP-5): MockMidiOutput records ClockTick, ClockStart, ClockContinue, ClockStop in order
     #[test]
     fn mock_records_clock_events_in_order() {
         let mut m = MockMidiOutput::new();
@@ -118,13 +207,23 @@ mod tests {
         m.clock_continue().unwrap();
         m.clock_stop().unwrap();
         m.note_off(1, 60).unwrap();
-        assert_eq!(m.events, vec![
-            MidiEvent::NoteOn { channel: 1, pitch: 60, velocity: 80 },
-            MidiEvent::ClockStart,
-            MidiEvent::ClockTick,
-            MidiEvent::ClockContinue,
-            MidiEvent::ClockStop,
-            MidiEvent::NoteOff { channel: 1, pitch: 60 },
-        ]);
+        assert_eq!(
+            m.events,
+            vec![
+                MidiEvent::NoteOn {
+                    channel: 1,
+                    pitch: 60,
+                    velocity: 80
+                },
+                MidiEvent::ClockStart,
+                MidiEvent::ClockTick,
+                MidiEvent::ClockContinue,
+                MidiEvent::ClockStop,
+                MidiEvent::NoteOff {
+                    channel: 1,
+                    pitch: 60
+                },
+            ]
+        );
     }
 }

@@ -10,7 +10,9 @@ pub struct PulseTracker {
 
 impl PulseTracker {
     pub fn new() -> PulseTracker {
-        PulseTracker { history: VecDeque::new() }
+        PulseTracker {
+            history: VecDeque::new(),
+        }
     }
 
     pub fn update(&mut self, now: Instant) {
@@ -25,7 +27,9 @@ impl PulseTracker {
             return None;
         }
         let n = self.history.len();
-        let total_micros: u128 = self.history.iter()
+        let total_micros: u128 = self
+            .history
+            .iter()
             .zip(self.history.iter().skip(1))
             .map(|(a, b)| b.duration_since(*a).as_micros())
             .sum();
@@ -66,7 +70,6 @@ impl PulseTracker {
 mod tests {
     use super::*;
 
-    // T-1: bpm() returns None with fewer than 2 pulses; returns ~120 after 25 evenly-spaced pulses
     #[test]
     fn bpm_none_with_no_pulses() {
         let tracker = PulseTracker::new();
@@ -90,10 +93,12 @@ mod tests {
             tracker.update(base + interval * i);
         }
         let bpm = tracker.bpm().expect("should have BPM after 25 pulses");
-        assert!((bpm as i32 - 120).abs() <= 1, "expected ~120 BPM, got {bpm}");
+        assert!(
+            (bpm as i32 - 120).abs() <= 1,
+            "expected ~120 BPM, got {bpm}"
+        );
     }
 
-    // T-3: timeout_duration() returns None before 2 pulses; ~72.9 ms at 120 BPM
     #[test]
     fn timeout_duration_none_with_no_pulses() {
         assert_eq!(PulseTracker::new().timeout_duration(), None);
@@ -113,14 +118,22 @@ mod tests {
         let interval = Duration::from_micros(20_833);
         tracker.update(base);
         tracker.update(base + interval);
-        let timeout = tracker.timeout_duration().expect("should have timeout after 2 pulses");
+        let timeout = tracker
+            .timeout_duration()
+            .expect("should have timeout after 2 pulses");
         // 3.5 × 20_833 μs = 72_916 μs ≈ 72.9 ms
         let expected = Duration::from_micros(72_916);
-        let diff = if timeout > expected { timeout - expected } else { expected - timeout };
-        assert!(diff < Duration::from_millis(2), "expected ~72.9 ms, got {timeout:?}");
+        let diff = if timeout > expected {
+            timeout - expected
+        } else {
+            expected - timeout
+        };
+        assert!(
+            diff < Duration::from_millis(2),
+            "expected ~72.9 ms, got {timeout:?}"
+        );
     }
 
-    // T-5: is_clock_active() true just after a pulse; false after 4 intervals of silence
     #[test]
     fn is_clock_active_true_immediately_after_pulse() {
         let mut tracker = PulseTracker::new();
@@ -146,7 +159,6 @@ mod tests {
         assert!(!tracker.is_clock_active(after_silence));
     }
 
-    // T-7: reset() clears all state — bpm(), timeout_duration(), is_clock_active() all reset
     #[test]
     fn reset_clears_all_state() {
         let mut tracker = PulseTracker::new();

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock, mpsc};
 use std::time::{Duration, Instant};
 
-use crate::domain::{NoteEvent, ProjectStore};
+use crate::domain::ProjectStore;
 
 use super::midi::MidiOutput;
 use super::scheduler::Scheduler;
@@ -16,26 +16,32 @@ struct ActiveNote {
     pitch: u8,
 }
 
-// T-4 (EP-5): remaining unprocessed events at pause time, bar context for resume
+// Remaining unprocessed events at pause time with loop context for resume.
 struct PauseContext {
-    remaining_events: Vec<(u64, BarEvent)>,
-    bar_index: usize,
-    bar_ticks: u64,
+    remaining_events: Vec<(u64, LoopEvent)>,
+    loop_duration: u64,
 }
 
 #[derive(Clone)]
-enum BarEvent {
-    NoteOn { channel: u8, pitch: u8, velocity: u8 },
-    NoteOff { channel: u8, pitch: u8 },
+enum LoopEvent {
+    NoteOn {
+        channel: u8,
+        pitch: u8,
+        velocity: u8,
+    },
+    NoteOff {
+        channel: u8,
+        pitch: u8,
+    },
     ClockPulse,
 }
 
-impl BarEvent {
+impl LoopEvent {
     fn priority(&self) -> u8 {
         match self {
-            BarEvent::NoteOff { .. } => 0,
-            BarEvent::NoteOn { .. } => 1,
-            BarEvent::ClockPulse => 2,
+            LoopEvent::NoteOff { .. } => 0,
+            LoopEvent::NoteOn { .. } => 1,
+            LoopEvent::ClockPulse => 2,
         }
     }
 }
@@ -47,10 +53,11 @@ enum SleepResult {
     ClockStop,
     SyncStop,
     SyncStart,
+    SyncContinue,
     Disconnected,
 }
 
-enum BarOutcome {
+enum LoopOutcome {
     Complete,
     Stopped,
     Paused,
@@ -59,7 +66,7 @@ enum BarOutcome {
 }
 
 enum BuildResult {
-    Events(Vec<(u64, BarEvent)>, u64),
+    Events(Vec<(u64, LoopEvent)>),
     NoData,
     Disconnected,
 }
@@ -89,11 +96,9 @@ fn sleep_until_with_poll(
                 Ok(LoopCommand::ClockPause) => return SleepResult::ClockPause,
                 Ok(LoopCommand::SyncStop) => return SleepResult::SyncStop,
                 Ok(LoopCommand::SyncStart) => return SleepResult::SyncStart,
+                Ok(LoopCommand::SyncContinue) => return SleepResult::SyncContinue,
                 Ok(LoopCommand::SyncBpmUpdate(bpm)) => *pending_sync_bpm = Some(bpm),
-                Ok(LoopCommand::Start
-                    | LoopCommand::ClockStart
-                    | LoopCommand::ClockResume
-                    | LoopCommand::SyncContinue) => {}
+                Ok(LoopCommand::Start | LoopCommand::ClockStart | LoopCommand::ClockResume) => {}
                 Err(mpsc::TryRecvError::Disconnected) => return SleepResult::Disconnected,
                 Err(mpsc::TryRecvError::Empty) => {}
             }
@@ -112,12 +117,14 @@ struct PlayerLoop {
     state: EngineState,
     active_notes: Vec<ActiveNote>,
     last_instruments: HashMap<u8, u8>,
-    bar_index: usize,
     scheduler: Scheduler,
     anchor: Instant,
     is_clock_mode: bool,
     pause_context: Option<PauseContext>,
-    last_bar_ticks: u64,
+    loop_duration: u64,
+    carry_over: Vec<(u64, LoopEvent)>,
+    next_carry_over: Vec<(u64, LoopEvent)>,
+    loop_elapsed_ticks: u64,
     pending_sync_bpm: Option<u32>,
 }
 
@@ -136,12 +143,14 @@ impl PlayerLoop {
             state: EngineState::Stopped,
             active_notes: Vec::new(),
             last_instruments: HashMap::new(),
-            bar_index: 0,
             scheduler: Scheduler::new(120),
             anchor: Instant::now(),
             is_clock_mode: false,
             pause_context: None,
-            last_bar_ticks: 480,
+            loop_duration: 480,
+            carry_over: Vec::new(),
+            next_carry_over: Vec::new(),
+            loop_elapsed_ticks: 0,
             pending_sync_bpm: None,
         }
     }
@@ -161,91 +170,136 @@ impl PlayerLoop {
 
     fn do_stop(&mut self) {
         self.flush_notes();
+        self.carry_over.clear();
+        self.next_carry_over.clear();
         if self.is_clock_mode {
             if let Err(e) = self.output.clock_stop() {
                 eprintln!("MIDI clock_stop failed: {e}");
             }
             self.is_clock_mode = false;
         }
-        self.bar_index = 0;
         self.set_state(EngineState::Stopped);
     }
 
     fn do_clock_stop(&mut self) {
         self.flush_notes();
+        self.carry_over.clear();
+        self.next_carry_over.clear();
         if let Err(e) = self.output.clock_stop() {
             eprintln!("MIDI clock_stop failed: {e}");
         }
-        self.bar_index = 0;
         self.is_clock_mode = false;
         self.set_state(EngineState::Stopped);
     }
 
     fn do_sync_stop(&mut self) {
         self.flush_notes();
-        self.bar_index = 0;
+        self.carry_over.clear();
+        self.next_carry_over.clear();
         self.set_state(EngineState::Stopped);
     }
 
-    // T-15 (EP-6): SyncStart while Running — flush, reset to bar 0, restart; state stays Running
     fn do_sync_restart(&mut self) {
         self.flush_notes();
-        self.bar_index = 0;
+        self.carry_over.clear();
+        self.next_carry_over.clear();
         self.last_instruments.clear();
         self.anchor = Instant::now() + Duration::from_micros(START_LATENCY_MICROS);
     }
 
-    fn do_pause(&mut self, remaining: Vec<(u64, BarEvent)>, bar_ticks: u64) {
+    fn do_pause(&mut self, remaining: Vec<(u64, LoopEvent)>) {
         self.flush_notes();
         self.pause_context = Some(PauseContext {
             remaining_events: remaining,
-            bar_index: self.bar_index,
-            bar_ticks,
+            loop_duration: self.loop_duration,
         });
         self.set_state(EngineState::Paused);
+    }
+
+    fn do_sync_continue(&mut self) {
+        if let BuildResult::Events(events) = self.build_loop_events() {
+            let elapsed = self.loop_elapsed_ticks;
+            let filtered: Vec<_> = events
+                .into_iter()
+                .filter(|(tick, _)| *tick >= elapsed)
+                .collect();
+            self.pause_context = Some(PauseContext {
+                remaining_events: filtered,
+                loop_duration: self.loop_duration,
+            });
+        }
     }
 
     fn handle_sleep_result(
         &mut self,
         result: SleepResult,
-        remaining: &[(u64, BarEvent)],
-        bar_ticks: u64,
-    ) -> Option<BarOutcome> {
+        remaining: &[(u64, LoopEvent)],
+    ) -> Option<LoopOutcome> {
         match result {
             SleepResult::Elapsed => None,
-            SleepResult::Stop => { self.do_stop(); Some(BarOutcome::Stopped) }
-            SleepResult::ClockStop => { self.do_clock_stop(); Some(BarOutcome::Stopped) }
-            SleepResult::SyncStop => { self.do_sync_stop(); Some(BarOutcome::Stopped) }
-            SleepResult::SyncStart => { self.do_sync_restart(); Some(BarOutcome::SyncRestart) }
-            SleepResult::ClockPause => {
-                self.do_pause(remaining.to_vec(), bar_ticks);
-                Some(BarOutcome::Paused)
+            SleepResult::Stop => {
+                self.do_stop();
+                Some(LoopOutcome::Stopped)
             }
-            SleepResult::Disconnected => Some(BarOutcome::Disconnected),
+            SleepResult::ClockStop => {
+                self.do_clock_stop();
+                Some(LoopOutcome::Stopped)
+            }
+            SleepResult::SyncStop => {
+                self.do_sync_stop();
+                Some(LoopOutcome::Stopped)
+            }
+            SleepResult::SyncStart => {
+                self.do_sync_restart();
+                Some(LoopOutcome::SyncRestart)
+            }
+            SleepResult::SyncContinue => {
+                self.do_sync_continue();
+                Some(LoopOutcome::SyncRestart)
+            }
+            SleepResult::ClockPause => {
+                self.do_pause(remaining.to_vec());
+                Some(LoopOutcome::Paused)
+            }
+            SleepResult::Disconnected => Some(LoopOutcome::Disconnected),
         }
     }
 
-    // Returns Some(BarOutcome) if the command ends the current bar, None to continue.
-    fn handle_command_in_bar(
+    fn handle_mid_loop_command(
         &mut self,
         cmd: LoopCommand,
-        remaining: &[(u64, BarEvent)],
-        bar_ticks: u64,
-    ) -> Option<BarOutcome> {
+        remaining: &[(u64, LoopEvent)],
+    ) -> Option<LoopOutcome> {
         match cmd {
-            LoopCommand::Stop => { self.do_stop(); Some(BarOutcome::Stopped) }
-            LoopCommand::ClockStop => { self.do_clock_stop(); Some(BarOutcome::Stopped) }
-            LoopCommand::SyncStop => { self.do_sync_stop(); Some(BarOutcome::Stopped) }
-            LoopCommand::SyncStart => { self.do_sync_restart(); Some(BarOutcome::SyncRestart) }
-            LoopCommand::ClockPause => {
-                self.do_pause(remaining.to_vec(), bar_ticks);
-                Some(BarOutcome::Paused)
+            LoopCommand::Stop => {
+                self.do_stop();
+                Some(LoopOutcome::Stopped)
             }
-            LoopCommand::SyncBpmUpdate(bpm) => { self.pending_sync_bpm = Some(bpm); None }
-            LoopCommand::Start
-            | LoopCommand::ClockStart
-            | LoopCommand::ClockResume
-            | LoopCommand::SyncContinue => None,
+            LoopCommand::ClockStop => {
+                self.do_clock_stop();
+                Some(LoopOutcome::Stopped)
+            }
+            LoopCommand::SyncStop => {
+                self.do_sync_stop();
+                Some(LoopOutcome::Stopped)
+            }
+            LoopCommand::SyncStart => {
+                self.do_sync_restart();
+                Some(LoopOutcome::SyncRestart)
+            }
+            LoopCommand::SyncContinue => {
+                self.do_sync_continue();
+                Some(LoopOutcome::SyncRestart)
+            }
+            LoopCommand::ClockPause => {
+                self.do_pause(remaining.to_vec());
+                Some(LoopOutcome::Paused)
+            }
+            LoopCommand::SyncBpmUpdate(bpm) => {
+                self.pending_sync_bpm = Some(bpm);
+                None
+            }
+            LoopCommand::Start | LoopCommand::ClockStart | LoopCommand::ClockResume => None,
         }
     }
 
@@ -253,32 +307,40 @@ impl PlayerLoop {
         let store_r = self.store.read().unwrap();
         let project = store_r.active().unwrap();
         self.scheduler = Scheduler::new(project.header.bpm);
-        self.last_bar_ticks = project.header.time_signature.bar_ticks() as u64;
+        self.loop_duration = project.header.loop_duration as u64;
     }
 
-    fn emit_event(&mut self, event: &BarEvent) {
+    fn emit_event(&mut self, event: &LoopEvent) {
         match event {
-            BarEvent::ClockPulse => {
+            LoopEvent::ClockPulse => {
                 if let Err(e) = self.output.clock_tick() {
                     eprintln!("MIDI clock_tick failed: {e}");
                 }
             }
-            BarEvent::NoteOn { channel, pitch, velocity } => {
+            LoopEvent::NoteOn {
+                channel,
+                pitch,
+                velocity,
+            } => {
                 if let Err(e) = self.output.note_on(*channel, *pitch, *velocity) {
                     eprintln!("MIDI note_on failed: {e}");
                 }
-                self.active_notes.push(ActiveNote { channel: *channel, pitch: *pitch });
+                self.active_notes.push(ActiveNote {
+                    channel: *channel,
+                    pitch: *pitch,
+                });
             }
-            BarEvent::NoteOff { channel, pitch } => {
+            LoopEvent::NoteOff { channel, pitch } => {
                 if let Err(e) = self.output.note_off(*channel, *pitch) {
                     eprintln!("MIDI note_off failed: {e}");
                 }
-                self.active_notes.retain(|n| !(n.channel == *channel && n.pitch == *pitch));
+                self.active_notes
+                    .retain(|n| !(n.channel == *channel && n.pitch == *pitch));
             }
         }
     }
 
-    fn play_events(&mut self, events: Vec<(u64, BarEvent)>, bar_ticks: u64) -> BarOutcome {
+    fn play_events(&mut self, events: Vec<(u64, LoopEvent)>) -> LoopOutcome {
         let n = events.len();
         let mut i = 0;
         while i < n {
@@ -291,41 +353,44 @@ impl PlayerLoop {
                 &self.scheduler,
                 &mut self.pending_sync_bpm,
             );
-            if let Some(outcome) = self.handle_sleep_result(sleep_result, &events[i..], bar_ticks) {
+            if let Some(outcome) = self.handle_sleep_result(sleep_result, &events[i..]) {
                 return outcome;
             }
 
+            self.loop_elapsed_ticks = tick;
             let event = &events[i].1;
             self.emit_event(event);
 
             match self.receiver.try_recv() {
                 Ok(cmd) => {
-                    if let Some(outcome) = self.handle_command_in_bar(cmd, &events[i + 1..], bar_ticks) {
+                    if let Some(outcome) = self.handle_mid_loop_command(cmd, &events[i + 1..]) {
                         return outcome;
                     }
                 }
-                Err(mpsc::TryRecvError::Disconnected) => return BarOutcome::Disconnected,
+                Err(mpsc::TryRecvError::Disconnected) => return LoopOutcome::Disconnected,
                 Err(mpsc::TryRecvError::Empty) => {}
             }
 
             i += 1;
         }
-        BarOutcome::Complete
+        LoopOutcome::Complete
     }
 
-    // Builds the event list for the current bar from the store. Returns NoData when the
-    // bar should be skipped (state may have changed) and Disconnected when the channel dropped.
-    fn build_normal_bar(&mut self) -> BuildResult {
+    // Builds the event list for the current loop pass from the store. Returns NoData when the
+    // loop should be skipped (state may have changed) and Disconnected when the channel dropped.
+    fn build_loop_events(&mut self) -> BuildResult {
         {
             let store_r = self.store.read().unwrap();
             if let Some(project) = store_r.active() {
                 for track in &project.tracks {
                     let last = self.last_instruments.get(&track.channel).copied();
                     if last != Some(track.instrument) {
-                        if let Err(e) = self.output.program_change(track.channel, track.instrument) {
+                        if let Err(e) = self.output.program_change(track.channel, track.instrument)
+                        {
                             eprintln!("MIDI program_change failed: {e}");
                         }
-                        self.last_instruments.insert(track.channel, track.instrument);
+                        self.last_instruments
+                            .insert(track.channel, track.instrument);
                     }
                 }
             }
@@ -334,81 +399,97 @@ impl PlayerLoop {
         let store_r = self.store.read().unwrap();
         match store_r.active() {
             Some(project) => {
-                let cycle_len = project.cycle_length();
-                if cycle_len == 0 {
+                let loop_duration = project.header.loop_duration as u64;
+                if loop_duration == 0 {
                     drop(store_r);
                     match self.receiver.try_recv() {
                         Ok(cmd) => {
-                            if let Some(outcome) = self.handle_command_in_bar(cmd, &[], 0) {
-                                if matches!(outcome, BarOutcome::Disconnected) {
+                            if let Some(outcome) = self.handle_mid_loop_command(cmd, &[]) {
+                                if matches!(outcome, LoopOutcome::Disconnected) {
                                     return BuildResult::Disconnected;
                                 }
                             }
                         }
                         Err(mpsc::TryRecvError::Disconnected) => return BuildResult::Disconnected,
-                        Err(mpsc::TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(10)),
+                        Err(mpsc::TryRecvError::Empty) => {
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
                     }
                     return BuildResult::NoData;
                 }
 
-                let bt = project.header.time_signature.bar_ticks() as u64;
-                self.last_bar_ticks = bt;
-                let mut events: Vec<(u64, BarEvent)> = Vec::new();
+                self.loop_duration = loop_duration;
+
+                // Prepend carry-over NoteOff events from the previous loop iteration.
+                let carry = std::mem::take(&mut self.carry_over);
+                let mut events: Vec<(u64, LoopEvent)> = carry;
+                let mut overflow: Vec<(u64, LoopEvent)> = Vec::new();
 
                 for track in &project.tracks {
-                    let bar = track.bar_at(self.bar_index);
-                    let mut tick: u64 = 0;
-                    for note in &bar.notes {
-                        match &note.event {
-                            NoteEvent::Note { pitch, velocity } => {
-                                events.push((tick, BarEvent::NoteOn {
+                    for note in &track.notes {
+                        events.push((
+                            note.start_tick as u64,
+                            LoopEvent::NoteOn {
+                                channel: track.channel,
+                                pitch: note.pitch,
+                                velocity: note.velocity,
+                            },
+                        ));
+                        let note_off_tick = note.start_tick as u64 + note.duration as u64;
+                        if note_off_tick > loop_duration {
+                            overflow.push((
+                                note_off_tick,
+                                LoopEvent::NoteOff {
                                     channel: track.channel,
-                                    pitch: *pitch,
-                                    velocity: *velocity,
-                                }));
-                                events.push((
-                                    tick + note.duration_ticks as u64,
-                                    BarEvent::NoteOff {
-                                        channel: track.channel,
-                                        pitch: *pitch,
-                                    },
-                                ));
-                            }
-                            NoteEvent::Rest => {}
+                                    pitch: note.pitch,
+                                },
+                            ));
+                        } else {
+                            events.push((
+                                note_off_tick,
+                                LoopEvent::NoteOff {
+                                    channel: track.channel,
+                                    pitch: note.pitch,
+                                },
+                            ));
                         }
-                        tick += note.duration_ticks as u64;
                     }
                 }
 
-                // T-10 (EP-5): insert ClockPulse every 20 ticks in clock mode
                 if self.is_clock_mode {
                     let mut cp = 0u64;
-                    while cp < bt {
-                        events.push((cp, BarEvent::ClockPulse));
+                    while cp < loop_duration {
+                        events.push((cp, LoopEvent::ClockPulse));
                         cp += 20;
                     }
                 }
 
                 events.sort_unstable_by_key(|(tick, ev)| (*tick, ev.priority()));
-                BuildResult::Events(events, bt)
+                self.next_carry_over = overflow;
+                BuildResult::Events(events)
             }
             None => {
-                // T-28 (EP-5): no project in clock mode → ClockPulse-only bar
                 if self.is_clock_mode {
-                    let bt = self.last_bar_ticks;
-                    let mut events = Vec::new();
+                    let ld = self.loop_duration;
+                    let carry = std::mem::take(&mut self.carry_over);
+                    let mut events: Vec<(u64, LoopEvent)> = carry;
                     let mut cp = 0u64;
-                    while cp < bt {
-                        events.push((cp, BarEvent::ClockPulse));
+                    while cp < ld {
+                        events.push((cp, LoopEvent::ClockPulse));
                         cp += 20;
                     }
-                    BuildResult::Events(events, bt)
+                    events.sort_unstable_by_key(|(tick, ev)| (*tick, ev.priority()));
+                    BuildResult::Events(events)
                 } else {
                     drop(store_r);
                     match self.receiver.try_recv() {
-                        Ok(cmd) => { self.handle_command_in_bar(cmd, &[], 0); }
+                        Ok(cmd) => {
+                            self.handle_mid_loop_command(cmd, &[]);
+                        }
                         Err(mpsc::TryRecvError::Disconnected) => return BuildResult::Disconnected,
-                        Err(mpsc::TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(10)),
+                        Err(mpsc::TryRecvError::Empty) => {
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
                     }
                     BuildResult::NoData
                 }
@@ -416,8 +497,10 @@ impl PlayerLoop {
         }
     }
 
-    fn advance_bar(&mut self, bar_ticks: u64) {
-        self.anchor = self.scheduler.deadline_for_tick(self.anchor, bar_ticks);
+    fn advance_loop(&mut self) {
+        self.anchor = self
+            .scheduler
+            .deadline_for_tick(self.anchor, self.loop_duration);
 
         self.store.write().unwrap().commit_pending();
 
@@ -437,13 +520,16 @@ impl PlayerLoop {
             }
         }
 
-        let cycle_len = {
-            let store_r = self.store.read().unwrap();
-            store_r.active().map(|p| p.cycle_length()).unwrap_or(1)
-        };
-        if cycle_len > 0 {
-            self.bar_index = (self.bar_index + 1) % cycle_len;
-        }
+        // Convert absolute overflow ticks to offsets relative to the next loop start.
+        let ld = self.loop_duration;
+        self.carry_over = self
+            .next_carry_over
+            .drain(..)
+            .map(|(tick, event)| (tick - ld, event))
+            .collect();
+        self.carry_over.sort_unstable_by_key(|(offset, _)| *offset);
+
+        self.loop_elapsed_ticks = 0;
     }
 
     // Returns false when the player thread should exit.
@@ -452,7 +538,6 @@ impl PlayerLoop {
             Ok(LoopCommand::Start) => {
                 let has_project = self.store.read().unwrap().active().is_some();
                 if has_project {
-                    self.bar_index = 0;
                     self.last_instruments.clear();
                     self.init_running_from_project();
                     self.anchor = Instant::now() + Duration::from_micros(START_LATENCY_MICROS);
@@ -462,9 +547,7 @@ impl PlayerLoop {
                     self.set_state(EngineState::Waiting);
                 }
             }
-            // T-8 (EP-5): ClockStart — IPC layer guarantees active project exists
             Ok(LoopCommand::ClockStart) => {
-                self.bar_index = 0;
                 self.last_instruments.clear();
                 self.init_running_from_project();
                 self.anchor = Instant::now() + Duration::from_micros(START_LATENCY_MICROS);
@@ -474,11 +557,9 @@ impl PlayerLoop {
                 }
                 self.set_state(EngineState::Running);
             }
-            // T-13 (EP-6): SyncStart — start from bar 0 if project present, else Waiting
             Ok(LoopCommand::SyncStart) => {
                 let has_project = self.store.read().unwrap().active().is_some();
                 if has_project {
-                    self.bar_index = 0;
                     self.last_instruments.clear();
                     self.init_running_from_project();
                     self.anchor = Instant::now() + Duration::from_micros(START_LATENCY_MICROS);
@@ -487,7 +568,6 @@ impl PlayerLoop {
                     self.set_state(EngineState::Waiting);
                 }
             }
-            // T-17 (EP-6): SyncContinue — continue from current bar_index if project present
             Ok(LoopCommand::SyncContinue) => {
                 let has_project = self.store.read().unwrap().active().is_some();
                 if has_project {
@@ -502,11 +582,13 @@ impl PlayerLoop {
             Ok(LoopCommand::SyncBpmUpdate(bpm)) => {
                 self.pending_sync_bpm = Some(bpm);
             }
-            Ok(LoopCommand::Stop
+            Ok(
+                LoopCommand::Stop
                 | LoopCommand::ClockStop
                 | LoopCommand::SyncStop
                 | LoopCommand::ClockPause
-                | LoopCommand::ClockResume) => {}
+                | LoopCommand::ClockResume,
+            ) => {}
             Err(_) => return false,
         }
         true
@@ -524,7 +606,6 @@ impl PlayerLoop {
         let now_active = self.store.read().unwrap().active().is_some();
 
         if promoted || now_active {
-            self.bar_index = 0;
             self.last_instruments.clear();
             self.init_running_from_project();
             self.anchor = Instant::now() + Duration::from_micros(START_LATENCY_MICROS);
@@ -544,28 +625,30 @@ impl PlayerLoop {
     }
 
     fn handle_running(&mut self) -> bool {
-        let (events, bar_ticks) = if let Some(ctx) = self.pause_context.take() {
+        let events = if let Some(ctx) = self.pause_context.take() {
             let tick_of_next = ctx.remaining_events.first().map(|(t, _)| *t).unwrap_or(0);
             self.anchor = Instant::now()
                 - Duration::from_micros(tick_of_next * self.scheduler.micros_per_tick());
-            self.bar_index = ctx.bar_index;
-            (ctx.remaining_events, ctx.bar_ticks)
+            self.loop_duration = ctx.loop_duration;
+            ctx.remaining_events
         } else {
-            match self.build_normal_bar() {
-                BuildResult::Events(ev, bt) => (ev, bt),
+            match self.build_loop_events() {
+                BuildResult::Events(ev) => ev,
                 BuildResult::NoData => return true,
                 BuildResult::Disconnected => return false,
             }
         };
 
-        match self.play_events(events, bar_ticks) {
-            BarOutcome::Complete => { self.advance_bar(bar_ticks); true }
-            BarOutcome::Stopped | BarOutcome::Paused | BarOutcome::SyncRestart => true,
-            BarOutcome::Disconnected => false,
+        match self.play_events(events) {
+            LoopOutcome::Complete => {
+                self.advance_loop();
+                true
+            }
+            LoopOutcome::Stopped | LoopOutcome::Paused | LoopOutcome::SyncRestart => true,
+            LoopOutcome::Disconnected => false,
         }
     }
 
-    // T-24 (EP-5): Paused state — block waiting for ClockResume or ClockStop
     fn handle_paused(&mut self) -> bool {
         match self.receiver.recv() {
             Ok(LoopCommand::ClockResume) => {
@@ -579,7 +662,6 @@ impl PlayerLoop {
                 if let Err(e) = self.output.clock_stop() {
                     eprintln!("MIDI clock_stop failed: {e}");
                 }
-                self.bar_index = 0;
                 self.is_clock_mode = false;
                 self.set_state(EngineState::Stopped);
             }
@@ -611,4 +693,608 @@ pub fn run_player_loop(
     shared_state: Arc<Mutex<EngineState>>,
 ) {
     PlayerLoop::new(receiver, store, output, shared_state).run();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::{Header, Note, Project, ProjectStore, Track};
+    use crate::loop_engine::LoopEngine;
+    use crate::loop_engine::midi::{CapturingMidiOutput, MidiEvent};
+    use std::sync::{Arc, Mutex, RwLock};
+
+    fn make_store(project: Option<Project>) -> Arc<RwLock<ProjectStore>> {
+        let store = Arc::new(RwLock::new(ProjectStore::new()));
+        if let Some(p) = project {
+            store.write().unwrap().set_pending(p).unwrap();
+            store.write().unwrap().commit_pending();
+        }
+        store
+    }
+
+    fn make_player(
+        project: Option<Project>,
+    ) -> (
+        PlayerLoop,
+        mpsc::Sender<LoopCommand>,
+        Arc<Mutex<Vec<MidiEvent>>>,
+    ) {
+        let (tx, rx) = mpsc::channel();
+        let store = make_store(project);
+        let recorded: Arc<Mutex<Vec<MidiEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let output = Box::new(CapturingMidiOutput::new(Arc::clone(&recorded)));
+        let shared_state = Arc::new(Mutex::new(EngineState::Stopped));
+        let player = PlayerLoop::new(rx, store, output, shared_state);
+        (player, tx, recorded)
+    }
+
+    fn make_store_with_project(project: Project) -> Arc<RwLock<ProjectStore>> {
+        make_store(Some(project))
+    }
+
+    fn project_with_note(loop_duration: u32, note: Note) -> Project {
+        Project {
+            header: Header {
+                bpm: 120,
+                loop_duration,
+            },
+            tracks: vec![Track {
+                name: "t".to_string(),
+                channel: 1,
+                instrument: 0,
+                notes: vec![note],
+            }],
+        }
+    }
+
+    #[test]
+    fn test_loop_event_priority() {
+        assert_eq!(
+            LoopEvent::NoteOff {
+                channel: 1,
+                pitch: 60
+            }
+            .priority(),
+            0
+        );
+        assert_eq!(
+            LoopEvent::NoteOn {
+                channel: 1,
+                pitch: 60,
+                velocity: 80
+            }
+            .priority(),
+            1
+        );
+        assert_eq!(LoopEvent::ClockPulse.priority(), 2);
+    }
+
+    #[test]
+    fn test_player_loop_fields() {
+        let (player, _tx, _) = make_player(None);
+        assert_eq!(player.loop_duration, 480);
+        assert!(player.carry_over.is_empty());
+        assert_eq!(player.loop_elapsed_ticks, 0);
+    }
+
+    // start_tick + duration.
+    #[test]
+    fn test_build_loop_events_single_note() {
+        let p = project_with_note(
+            1920,
+            Note {
+                start_tick: 0,
+                duration: 480,
+                pitch: 60,
+                velocity: 80,
+            },
+        );
+        let (mut player, _tx, _) = make_player(Some(p));
+        let result = player.build_loop_events();
+        let BuildResult::Events(events) = result else {
+            panic!("expected Events")
+        };
+
+        let on_tick = events
+            .iter()
+            .find(|(_, e)| matches!(e, LoopEvent::NoteOn { pitch: 60, .. }))
+            .map(|(t, _)| *t);
+        let off_tick = events
+            .iter()
+            .find(|(_, e)| matches!(e, LoopEvent::NoteOff { pitch: 60, .. }))
+            .map(|(t, _)| *t);
+
+        assert_eq!(on_tick, Some(0), "NoteOn must be at tick 0");
+        assert_eq!(off_tick, Some(480), "NoteOff must be at tick 480");
+    }
+
+    #[test]
+    fn test_build_loop_events_two_notes_same_tick() {
+        let p = Project {
+            header: Header {
+                bpm: 120,
+                loop_duration: 1920,
+            },
+            tracks: vec![Track {
+                name: "t".to_string(),
+                channel: 1,
+                instrument: 0,
+                notes: vec![
+                    Note {
+                        start_tick: 0,
+                        duration: 480,
+                        pitch: 60,
+                        velocity: 80,
+                    },
+                    Note {
+                        start_tick: 0,
+                        duration: 480,
+                        pitch: 64,
+                        velocity: 80,
+                    },
+                ],
+            }],
+        };
+        let (mut player, _tx, _) = make_player(Some(p));
+        let BuildResult::Events(events) = player.build_loop_events() else {
+            panic!("expected Events")
+        };
+
+        let note_ons: Vec<_> = events
+            .iter()
+            .filter(|(t, e)| *t == 0 && matches!(e, LoopEvent::NoteOn { .. }))
+            .collect();
+        let note_offs: Vec<_> = events
+            .iter()
+            .filter(|(t, e)| *t == 480 && matches!(e, LoopEvent::NoteOff { .. }))
+            .collect();
+
+        assert_eq!(note_ons.len(), 2, "expected two NoteOn events at tick 0");
+        assert_eq!(
+            note_offs.len(),
+            2,
+            "expected two NoteOff events at tick 480"
+        );
+    }
+
+    // carry_over contains one entry at the correct tick offset.
+    #[test]
+    fn test_carry_over_collected() {
+        let p = project_with_note(
+            1920,
+            Note {
+                start_tick: 0,
+                duration: 1921,
+                pitch: 60,
+                velocity: 80,
+            },
+        );
+        let (mut player, _tx, _) = make_player(Some(p));
+
+        let BuildResult::Events(events) = player.build_loop_events() else {
+            panic!("expected Events")
+        };
+
+        let has_note_off = events
+            .iter()
+            .any(|(_, e)| matches!(e, LoopEvent::NoteOff { pitch: 60, .. }));
+        assert!(
+            !has_note_off,
+            "cross-loop NoteOff must not appear in main event list"
+        );
+
+        let has_note_on = events
+            .iter()
+            .any(|(_, e)| matches!(e, LoopEvent::NoteOn { pitch: 60, .. }));
+        assert!(has_note_on, "NoteOn must still appear in main event list");
+
+        player.advance_loop();
+
+        assert_eq!(
+            player.carry_over.len(),
+            1,
+            "carry_over must have one entry after advance_loop"
+        );
+        assert_eq!(
+            player.carry_over[0].0, 1,
+            "carry_over offset must be 1921 - 1920 = 1"
+        );
+        assert!(
+            matches!(player.carry_over[0].1, LoopEvent::NoteOff { pitch: 60, .. }),
+            "carry_over entry must be a NoteOff"
+        );
+    }
+
+    // cleared at the start of build_loop_events().
+    #[test]
+    fn test_carry_over_prepended() {
+        let p = project_with_note(
+            1920,
+            Note {
+                start_tick: 480,
+                duration: 480,
+                pitch: 62,
+                velocity: 80,
+            },
+        );
+        let (mut player, _tx, _) = make_player(Some(p));
+        player.carry_over = vec![(
+            1,
+            LoopEvent::NoteOff {
+                channel: 1,
+                pitch: 60,
+            },
+        )];
+
+        let BuildResult::Events(events) = player.build_loop_events() else {
+            panic!("expected Events")
+        };
+
+        assert!(
+            player.carry_over.is_empty(),
+            "carry_over must be cleared after build"
+        );
+
+        let has_carry = events
+            .iter()
+            .any(|(t, e)| *t == 1 && matches!(e, LoopEvent::NoteOff { pitch: 60, .. }));
+        assert!(
+            has_carry,
+            "carry_over NoteOff at tick 1 must appear in events"
+        );
+    }
+
+    #[test]
+    fn test_advance_loop_resets_elapsed_ticks() {
+        let p = project_with_note(
+            1920,
+            Note {
+                start_tick: 0,
+                duration: 480,
+                pitch: 60,
+                velocity: 80,
+            },
+        );
+        let (mut player, _tx, _) = make_player(Some(p));
+        player.loop_elapsed_ticks = 480;
+        player.advance_loop();
+        assert_eq!(player.loop_elapsed_ticks, 0);
+    }
+
+    #[test]
+    fn test_advance_loop_commits_pending() {
+        let initial = Project {
+            header: Header {
+                bpm: 120,
+                loop_duration: 960,
+            },
+            tracks: vec![],
+        };
+        let store = make_store_with_project(initial);
+
+        let pending = Project {
+            header: Header {
+                bpm: 140,
+                loop_duration: 960,
+            },
+            tracks: vec![],
+        };
+        store.write().unwrap().set_pending(pending).unwrap();
+
+        assert_eq!(store.read().unwrap().active().unwrap().header.bpm, 120);
+
+        let (tx, rx) = mpsc::channel();
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let mut player = PlayerLoop::new(
+            rx,
+            Arc::clone(&store),
+            Box::new(CapturingMidiOutput::new(recorded)),
+            Arc::new(Mutex::new(EngineState::Stopped)),
+        );
+        player.loop_duration = 960;
+        drop(tx);
+
+        player.advance_loop();
+
+        assert_eq!(
+            store.read().unwrap().active().unwrap().header.bpm,
+            140,
+            "pending project must be committed by advance_loop"
+        );
+        assert_eq!(player.loop_elapsed_ticks, 0);
+    }
+
+    #[test]
+    fn test_loop_duration_cached_without_project() {
+        let (mut player, _tx, _) = make_player(None);
+        player.loop_duration = 1920;
+        player.is_clock_mode = true;
+
+        let BuildResult::Events(events) = player.build_loop_events() else {
+            panic!("expected Events")
+        };
+
+        let pulse_count = events
+            .iter()
+            .filter(|(_, e)| matches!(e, LoopEvent::ClockPulse))
+            .count();
+        assert_eq!(
+            pulse_count, 96,
+            "expected 96 clock pulses for cached loop_duration 1920"
+        );
+        let last_tick = events
+            .iter()
+            .filter(|(_, e)| matches!(e, LoopEvent::ClockPulse))
+            .last()
+            .unwrap()
+            .0;
+        assert_eq!(last_tick, 1900);
+    }
+
+    // 0, 20, 40, …, 1900.
+    #[test]
+    fn test_clock_pulses_span_loop_duration() {
+        let p = Project {
+            header: Header {
+                bpm: 120,
+                loop_duration: 1920,
+            },
+            tracks: vec![],
+        };
+        let (mut player, _tx, _) = make_player(Some(p));
+        player.is_clock_mode = true;
+
+        let BuildResult::Events(events) = player.build_loop_events() else {
+            panic!("expected Events")
+        };
+
+        let pulses: Vec<u64> = events
+            .iter()
+            .filter(|(_, e)| matches!(e, LoopEvent::ClockPulse))
+            .map(|(t, _)| *t)
+            .collect();
+        assert_eq!(pulses.len(), 96, "expected exactly 96 clock pulses");
+        assert_eq!(pulses[0], 0);
+        assert_eq!(pulses[95], 1900);
+        for w in pulses.windows(2) {
+            assert_eq!(w[1] - w[0], 20, "pulses must be spaced 20 ticks apart");
+        }
+    }
+
+    #[test]
+    fn test_init_running_from_project_reads_loop_duration() {
+        let p = Project {
+            header: Header {
+                bpm: 140,
+                loop_duration: 3840,
+            },
+            tracks: vec![],
+        };
+        let store = make_store_with_project(p);
+        let (tx, rx) = mpsc::channel();
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let mut player = PlayerLoop::new(
+            rx,
+            Arc::clone(&store),
+            Box::new(CapturingMidiOutput::new(recorded)),
+            Arc::new(Mutex::new(EngineState::Stopped)),
+        );
+        drop(tx);
+
+        player.init_running_from_project();
+
+        assert_eq!(player.loop_duration, 3840);
+        assert_eq!(player.scheduler.bpm(), 140);
+    }
+
+    #[test]
+    fn test_sync_continue_resumes_mid_loop() {
+        let p = Project {
+            header: Header {
+                bpm: 120,
+                loop_duration: 1920,
+            },
+            tracks: vec![Track {
+                name: "t".to_string(),
+                channel: 1,
+                instrument: 0,
+                notes: vec![
+                    Note {
+                        start_tick: 0,
+                        duration: 480,
+                        pitch: 60,
+                        velocity: 80,
+                    },
+                    Note {
+                        start_tick: 480,
+                        duration: 480,
+                        pitch: 62,
+                        velocity: 80,
+                    },
+                    Note {
+                        start_tick: 960,
+                        duration: 480,
+                        pitch: 64,
+                        velocity: 80,
+                    },
+                    Note {
+                        start_tick: 1440,
+                        duration: 480,
+                        pitch: 65,
+                        velocity: 80,
+                    },
+                ],
+            }],
+        };
+        let (mut player, _tx, _) = make_player(Some(p));
+        player.loop_elapsed_ticks = 480;
+
+        player.do_sync_continue();
+
+        let ctx = player
+            .pause_context
+            .as_ref()
+            .expect("pause_context must be set by do_sync_continue");
+        let ticks: Vec<u64> = ctx.remaining_events.iter().map(|(t, _)| *t).collect();
+        assert!(!ticks.contains(&0), "tick 0 must be filtered out");
+        assert!(ticks.contains(&480), "tick 480 must be retained");
+        assert!(ticks.contains(&960), "tick 960 must be retained");
+        assert!(ticks.contains(&1440), "tick 1440 must be retained");
+    }
+
+    #[test]
+    fn test_do_stop_clears_carry_over() {
+        let (mut player, _tx, _) = make_player(None);
+        player.carry_over = vec![(
+            1,
+            LoopEvent::NoteOff {
+                channel: 1,
+                pitch: 60,
+            },
+        )];
+
+        player.do_stop();
+
+        assert!(
+            player.carry_over.is_empty(),
+            "carry_over must be empty after do_stop"
+        );
+    }
+
+    #[test]
+    fn test_do_sync_stop_clears_carry_over() {
+        let (mut player, _tx, _) = make_player(None);
+        player.carry_over = vec![(
+            1,
+            LoopEvent::NoteOff {
+                channel: 1,
+                pitch: 60,
+            },
+        )];
+
+        player.do_sync_stop();
+
+        assert!(
+            player.carry_over.is_empty(),
+            "carry_over must be empty after do_sync_stop"
+        );
+    }
+
+    #[test]
+    fn test_do_sync_restart_clears_carry_over() {
+        let (mut player, _tx, _) = make_player(None);
+        player.carry_over = vec![(
+            1,
+            LoopEvent::NoteOff {
+                channel: 1,
+                pitch: 60,
+            },
+        )];
+        player.last_instruments.insert(1, 42);
+
+        player.do_sync_restart();
+
+        assert!(
+            player.carry_over.is_empty(),
+            "carry_over must be empty after do_sync_restart"
+        );
+        assert!(
+            player.last_instruments.is_empty(),
+            "last_instruments must be cleared by do_sync_restart"
+        );
+    }
+
+    #[test]
+    fn test_pause_stores_context() {
+        let remaining = vec![
+            (
+                480,
+                LoopEvent::NoteOff {
+                    channel: 1,
+                    pitch: 60,
+                },
+            ),
+            (
+                960,
+                LoopEvent::NoteOn {
+                    channel: 1,
+                    pitch: 64,
+                    velocity: 80,
+                },
+            ),
+        ];
+        let (mut player, _tx, _) = make_player(None);
+        player.loop_duration = 1920;
+
+        player.do_pause(remaining.clone());
+
+        let ctx = player
+            .pause_context
+            .as_ref()
+            .expect("pause_context must be set");
+        assert_eq!(ctx.loop_duration, 1920);
+        assert_eq!(ctx.remaining_events.len(), 2);
+        assert_eq!(ctx.remaining_events[0].0, 480);
+        assert_eq!(ctx.remaining_events[1].0, 960);
+    }
+
+    // Integration: player emits NoteOn and NoteOff from Note.start_tick and Note.duration.
+    #[test]
+    fn player_emits_note_on_off_from_start_tick_and_duration() {
+        let project = Project {
+            header: Header {
+                bpm: 300,
+                loop_duration: 960,
+            },
+            tracks: vec![Track {
+                name: "t".to_string(),
+                channel: 1,
+                instrument: 0,
+                notes: vec![Note {
+                    start_tick: 0,
+                    duration: 480,
+                    pitch: 60,
+                    velocity: 80,
+                }],
+            }],
+        };
+        let store = make_store_with_project(project);
+        let recorded: Arc<Mutex<Vec<MidiEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let recorded_clone = Arc::clone(&recorded);
+
+        let engine = Arc::new(LoopEngine::new(
+            Arc::clone(&store),
+            Box::new(CapturingMidiOutput::new(recorded_clone)),
+        ));
+        engine.start();
+        // Allow one loop pass to complete (loop_duration=960 ticks at BPM 300 ≈ 384ms).
+        std::thread::sleep(Duration::from_millis(500));
+        engine.stop();
+        std::thread::sleep(Duration::from_millis(50));
+
+        let events = recorded.lock().unwrap().clone();
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                MidiEvent::NoteOn {
+                    channel: 1,
+                    pitch: 60,
+                    velocity: 80
+                }
+            )),
+            "expected NoteOn(ch=1, pitch=60, vel=80) in {:?}",
+            events
+        );
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                MidiEvent::NoteOff {
+                    channel: 1,
+                    pitch: 60
+                }
+            )),
+            "expected NoteOff(ch=1, pitch=60) in {:?}",
+            events
+        );
+    }
 }

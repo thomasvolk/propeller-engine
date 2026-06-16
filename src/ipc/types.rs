@@ -11,10 +11,20 @@ use crate::midi_clock::SyncClockState;
 #[derive(Debug, Deserialize)]
 #[serde(tag = "command", rename_all = "kebab-case")]
 pub enum Command {
-    CreateProject { header: WireHeader, tracks: Vec<WireTrack> },
-    ModifyProject { header: WireHeader, tracks: Vec<WireTrack> },
-    SetBpm { bpm: f64 },
-    SetMode { mode: String },
+    CreateProject {
+        header: WireHeader,
+        tracks: Vec<WireTrack>,
+    },
+    ModifyProject {
+        header: WireHeader,
+        tracks: Vec<WireTrack>,
+    },
+    SetBpm {
+        bpm: f64,
+    },
+    SetMode {
+        mode: String,
+    },
     LoopStart,
     LoopStop,
     ClockStart,
@@ -28,14 +38,8 @@ pub enum Command {
 
 #[derive(Debug, Deserialize)]
 pub struct WireHeader {
-    pub bpm: f64,
-    pub time_signature: WireTimeSignature,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct WireTimeSignature {
-    pub numerator: u32,
-    pub denominator: u32,
+    pub bpm: u32,
+    pub loop_duration: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -43,20 +47,7 @@ pub struct WireTrack {
     pub name: String,
     pub channel: u8,
     pub instrument: u8,
-    pub bars: Vec<WireBar>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct WireBar {
-    pub notes: Vec<WireNote>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct WireNote {
-    pub rest: Option<bool>,
-    pub pitch: Option<u8>,
-    pub velocity: Option<u8>,
-    pub duration_ticks: u32,
+    pub notes: Vec<[u32; 4]>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -94,7 +85,11 @@ pub struct EngineSettings {
 
 impl EngineSettings {
     pub fn new() -> Self {
-        EngineSettings { mode: EngineMode::Standalone, bpm: 120, sync_clock_state: None }
+        EngineSettings {
+            mode: EngineMode::Standalone,
+            bpm: 120,
+            sync_clock_state: None,
+        }
     }
 }
 
@@ -110,7 +105,6 @@ pub fn error_response(code: &str, message: &str) -> Value {
 mod tests {
     use super::*;
 
-    // T-1: deserialize loop-start and set-bpm commands
     #[test]
     fn deserialize_loop_start() {
         let cmd: Command = serde_json::from_str(r#"{"command":"loop-start"}"#).unwrap();
@@ -126,28 +120,24 @@ mod tests {
         }
     }
 
-    // T-3: missing "command" field → serde error
     #[test]
     fn deserialize_missing_command_field_fails() {
         let result: Result<Command, _> = serde_json::from_str(r#"{"bpm":120}"#);
         assert!(result.is_err());
     }
 
-    // T-4: unknown command → serde error
     #[test]
     fn deserialize_unknown_command_fails() {
         let result: Result<Command, _> = serde_json::from_str(r#"{"command":"unknownxyz"}"#);
         assert!(result.is_err());
     }
 
-    // T-12: list-midi-ports deserialises to Command::ListMidiPorts
     #[test]
     fn deserialize_list_midi_ports() {
         let cmd: Command = serde_json::from_str(r#"{"command":"list-midi-ports"}"#).unwrap();
         assert!(matches!(cmd, Command::ListMidiPorts));
     }
 
-    // T-11 (EP-5): clock command variants deserialise correctly
     #[test]
     fn deserialize_clock_start() {
         let cmd: Command = serde_json::from_str(r#"{"command":"clock-start"}"#).unwrap();
@@ -172,14 +162,12 @@ mod tests {
         assert!(matches!(cmd, Command::ClockStop));
     }
 
-    // T-1 (EP-7): EngineSettings::new() defaults to Standalone mode (F-1, F-10, AC-1)
     #[test]
     fn engine_settings_new_default_mode_is_standalone() {
         let settings = EngineSettings::new();
         assert_eq!(settings.mode, EngineMode::Standalone);
     }
 
-    // T-5: response helpers serialise correctly
     #[test]
     fn ok_response_shape() {
         let v = ok_response();
@@ -194,7 +182,6 @@ mod tests {
         assert_eq!(v["message"], "bad json");
     }
 
-    // EP-6: EngineMode::Sync serialises to "sync"
     #[test]
     fn engine_mode_sync_as_str() {
         assert_eq!(EngineMode::Sync.as_str(), "sync");
@@ -203,5 +190,42 @@ mod tests {
     #[test]
     fn engine_mode_sync_from_str() {
         assert_eq!(EngineMode::from_str("sync"), Some(EngineMode::Sync));
+    }
+
+    // EP-NP-2: WireHeader deserialises with bpm and loop_duration
+    #[test]
+    fn wire_header_deserialises() {
+        let h: WireHeader = serde_json::from_str(r#"{"bpm":120,"loop_duration":1920}"#).unwrap();
+        assert_eq!(h.bpm, 120);
+        assert_eq!(h.loop_duration, 1920);
+    }
+
+    // EP-NP-2: WireTrack notes are arrays of four u32
+    #[test]
+    fn wire_track_notes_deserialise() {
+        let t: WireTrack = serde_json::from_str(
+            r#"{"name":"piano","channel":1,"instrument":0,"notes":[[0,480,60,80]]}"#,
+        )
+        .unwrap();
+        assert_eq!(t.notes.len(), 1);
+        assert_eq!(t.notes[0], [0, 480, 60, 80]);
+    }
+
+    // EP-NP-2: create-project with new wire format deserialises correctly
+    #[test]
+    fn deserialize_create_project_new_format() {
+        let cmd: Command = serde_json::from_str(
+            r#"{"command":"create-project","header":{"bpm":120,"loop_duration":1920},"tracks":[{"name":"p","channel":1,"instrument":0,"notes":[[0,480,60,80]]}]}"#,
+        )
+        .unwrap();
+        match cmd {
+            Command::CreateProject { header, tracks } => {
+                assert_eq!(header.bpm, 120);
+                assert_eq!(header.loop_duration, 1920);
+                assert_eq!(tracks.len(), 1);
+                assert_eq!(tracks[0].notes[0], [0, 480, 60, 80]);
+            }
+            _ => panic!("expected CreateProject"),
+        }
     }
 }

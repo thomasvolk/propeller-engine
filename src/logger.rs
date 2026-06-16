@@ -73,7 +73,6 @@ mod tests {
         }
     }
 
-    /// T-1: logger writes diagnostic message to stderr (simulated via SharedBuf)
     #[test]
     fn logger_writes_diagnostic_message_to_stderr_layer() {
         let buf = SharedBuf::new();
@@ -89,7 +88,6 @@ mod tests {
         );
     }
 
-    /// T-2: logger writes diagnostic message to platform log file
     #[test]
     fn logger_writes_diagnostic_message_to_log_file() {
         let dir = tempdir().unwrap();

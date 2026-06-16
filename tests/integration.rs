@@ -179,7 +179,10 @@ fn stale_socket_cleared_on_start() {
     stop_daemon(&sock);
     let _ = std::fs::remove_file(&sock);
 
-    assert!(connectable, "daemon should start and socket should be connectable after stale clear");
+    assert!(
+        connectable,
+        "daemon should start and socket should be connectable after stale clear"
+    );
 }
 
 // ── T-13 : daemon remains running indefinitely (AC-3) ──────────────────────
@@ -321,10 +324,7 @@ fn idle_resource_usage_within_limits() {
         .expect("could not parse RSS from ps");
 
     let rss_mb = rss_kb / 1024;
-    assert!(
-        rss_mb < 50,
-        "idle RSS {rss_mb} MB exceeds 50 MB limit"
-    );
+    assert!(rss_mb < 50, "idle RSS {rss_mb} MB exceeds 50 MB limit");
 
     // CPU: sample with `ps` twice and take the reported %CPU (approximate)
     let cpu_out = Command::new("ps")
@@ -337,10 +337,7 @@ fn idle_resource_usage_within_limits() {
         .parse()
         .expect("could not parse %CPU from ps");
 
-    assert!(
-        cpu < 1.0,
-        "idle CPU {cpu:.2}% exceeds 1% limit"
-    );
+    assert!(cpu < 1.0, "idle CPU {cpu:.2}% exceeds 1% limit");
 }
 
 // ── T-20 : PROPELLER_SOCK env var routes to custom path ───────────────────
@@ -373,7 +370,9 @@ fn propeller_sock_env_var_uses_custom_path() {
 fn send_command(sock: &std::path::Path, cmd: &str) -> serde_json::Value {
     use std::io::{BufRead, BufReader, Write};
     let mut stream = UnixStream::connect(sock).expect("connect failed");
-    stream.write_all((cmd.to_string() + "\n").as_bytes()).unwrap();
+    stream
+        .write_all((cmd.to_string() + "\n").as_bytes())
+        .unwrap();
     stream.flush().unwrap();
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
@@ -387,8 +386,10 @@ fn runtime_protocol_create_start_status_stop() {
     let sock = unique_sock_path();
     let _guard = DaemonGuard::start(sock.clone());
 
-    let create = send_command(&sock,
-        r#"{"command":"create-project","header":{"bpm":120,"time_signature":{"numerator":4,"denominator":4}},"tracks":[{"name":"piano","channel":1,"instrument":0,"bars":[{"notes":[{"pitch":60,"velocity":80,"duration_ticks":480}]}]}]}"#);
+    let create = send_command(
+        &sock,
+        r#"{"command":"create-project","header":{"bpm":120,"loop_duration":1920},"tracks":[{"name":"piano","channel":1,"instrument":0,"notes":[[0,480,60,80]]}]}"#,
+    );
     assert_eq!(create["status"], "ok", "create-project failed");
 
     let start = send_command(&sock, r#"{"command":"loop-start"}"#);
@@ -487,7 +488,7 @@ fn status_exits_nonzero_and_reports_not_running_when_daemon_is_down() {
 
 // ── EP-9: CLI convenience commands ─────────────────────────────────────────
 
-const EP9_PROJECT_JSON: &str = r#"{"header":{"bpm":120,"time_signature":{"numerator":4,"denominator":4}},"tracks":[]}"#;
+const EP9_PROJECT_JSON: &str = r#"{"header":{"bpm":120,"loop_duration":1920},"tracks":[]}"#;
 
 /// Binds a UnixListener on `sock_path`, spawns a thread that accepts one
 /// connection, records the first line received, sends `response`, then exits.
@@ -525,7 +526,11 @@ fn ep9_project_create_from_file() {
         .output()
         .expect("run propeller project create");
 
-    assert!(output.status.success(), "expected exit 0, got {:?}", output.status.code());
+    assert!(
+        output.status.success(),
+        "expected exit 0, got {:?}",
+        output.status.code()
+    );
     assert!(output.stdout.is_empty(), "expected no stdout");
     assert!(output.stderr.is_empty(), "expected no stderr");
 
@@ -555,7 +560,11 @@ fn ep9_project_create_from_stdin() {
         .output()
         .expect("run propeller project create (stdin)");
 
-    assert!(output.status.success(), "expected exit 0, got {:?}", output.status.code());
+    assert!(
+        output.status.success(),
+        "expected exit 0, got {:?}",
+        output.status.code()
+    );
     assert!(output.stdout.is_empty(), "expected no stdout");
     assert!(output.stderr.is_empty(), "expected no stderr");
 
@@ -580,7 +589,11 @@ fn ep9_project_modify_from_file() {
         .output()
         .expect("run propeller project modify");
 
-    assert!(output.status.success(), "expected exit 0, got {:?}", output.status.code());
+    assert!(
+        output.status.success(),
+        "expected exit 0, got {:?}",
+        output.status.code()
+    );
     assert!(output.stdout.is_empty(), "expected no stdout");
     assert!(output.stderr.is_empty(), "expected no stderr");
 
@@ -610,7 +623,11 @@ fn ep9_project_modify_from_stdin() {
         .output()
         .expect("run propeller project modify (stdin)");
 
-    assert!(output.status.success(), "expected exit 0, got {:?}", output.status.code());
+    assert!(
+        output.status.success(),
+        "expected exit 0, got {:?}",
+        output.status.code()
+    );
     assert!(output.stdout.is_empty(), "expected no stdout");
     assert!(output.stderr.is_empty(), "expected no stderr");
 
@@ -632,7 +649,11 @@ fn ep9_loop_start() {
         .output()
         .expect("run propeller loop start");
 
-    assert!(output.status.success(), "expected exit 0, got {:?}", output.status.code());
+    assert!(
+        output.status.success(),
+        "expected exit 0, got {:?}",
+        output.status.code()
+    );
     assert!(output.stdout.is_empty(), "expected no stdout");
     assert!(output.stderr.is_empty(), "expected no stderr");
 
@@ -654,7 +675,11 @@ fn ep9_loop_stop() {
         .output()
         .expect("run propeller loop stop");
 
-    assert!(output.status.success(), "expected exit 0, got {:?}", output.status.code());
+    assert!(
+        output.status.success(),
+        "expected exit 0, got {:?}",
+        output.status.code()
+    );
     assert!(output.stdout.is_empty(), "expected no stdout");
     assert!(output.stderr.is_empty(), "expected no stderr");
 
@@ -766,7 +791,10 @@ fn start_with_sync_flag_and_nonexistent_port_exits_nonzero() {
 fn ep9_error_when_daemon_returns_error() {
     let dir = tempfile::TempDir::new().unwrap();
     let sock = dir.path().join("test.sock");
-    spawn_cli_mock(&sock, r#"{"status":"error","message":"intentional test error"}"#);
+    spawn_cli_mock(
+        &sock,
+        r#"{"status":"error","message":"intentional test error"}"#,
+    );
 
     let output = Command::new(propeller_bin())
         .args(["loop", "start"])

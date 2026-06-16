@@ -2,7 +2,7 @@
 // Copyright 2026 Thomas Volk
 
 use super::project::Project;
-use super::validation::{validate, ValidationError};
+use super::validation::{ValidationError, validate};
 
 pub struct ProjectStore {
     active: Option<Project>,
@@ -11,7 +11,10 @@ pub struct ProjectStore {
 
 impl ProjectStore {
     pub fn new() -> Self {
-        ProjectStore { active: None, pending: None }
+        ProjectStore {
+            active: None,
+            pending: None,
+        }
     }
 
     pub fn active(&self) -> Option<&Project> {
@@ -42,37 +45,35 @@ impl ProjectStore {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::project::*;
+    use super::*;
 
     fn make_valid_project() -> Project {
         Project {
             header: Header {
                 bpm: 120,
-                time_signature: TimeSignature { numerator: 4, denominator: 4 },
+                loop_duration: 1920,
             },
             tracks: vec![Track {
                 name: "piano".to_string(),
                 channel: 1,
                 instrument: 0,
-                bars: vec![Bar {
-                    notes: vec![Note {
-                        event: NoteEvent::Note { pitch: 60, velocity: 80 },
-                        duration_ticks: 480,
-                    }],
+                notes: vec![Note {
+                    start_tick: 0,
+                    duration: 480,
+                    pitch: 60,
+                    velocity: 80,
                 }],
             }],
         }
     }
 
-    // T-17: new ProjectStore has active = None
     #[test]
     fn test_new_store_has_no_active() {
         let store = ProjectStore::new();
         assert!(store.active().is_none());
     }
 
-    // T-19: set_pending with valid project returns Ok; active still None
     #[test]
     fn test_set_pending_valid() {
         let mut store = ProjectStore::new();
@@ -80,14 +81,13 @@ mod tests {
         assert!(store.active().is_none());
     }
 
-    // T-20: set_pending with invalid project returns Err; active unchanged
     #[test]
     fn test_set_pending_invalid() {
         let mut store = ProjectStore::new();
         let invalid = Project {
             header: Header {
                 bpm: 0,
-                time_signature: TimeSignature { numerator: 4, denominator: 4 },
+                loop_duration: 1920,
             },
             tracks: vec![],
         };
@@ -95,7 +95,6 @@ mod tests {
         assert!(store.active().is_none());
     }
 
-    // T-22: commit_pending moves pending to active, clears pending, returns true
     #[test]
     fn test_commit_pending_swap() {
         let mut store = ProjectStore::new();
@@ -104,7 +103,6 @@ mod tests {
         assert!(store.active().is_some());
     }
 
-    // T-23: commit_pending with no pending is no-op, returns false
     #[test]
     fn test_commit_pending_no_pending() {
         let mut store = ProjectStore::new();
@@ -112,7 +110,6 @@ mod tests {
         assert!(store.active().is_none());
     }
 
-    // T-25: set_pending twice retains only the second (most recent) project
     #[test]
     fn test_set_pending_twice_retains_last() {
         let mut store = ProjectStore::new();

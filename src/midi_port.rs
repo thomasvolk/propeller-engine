@@ -14,7 +14,10 @@ pub struct MidiPortInfo {
 
 #[derive(Debug)]
 pub enum MidiPortError {
-    NotFound { requested: String, available: Vec<String> },
+    NotFound {
+        requested: String,
+        available: Vec<String>,
+    },
     ConnectionFailed(midir::ConnectError<midir::MidiOutput>),
     InitFailed(midir::InitError),
 }
@@ -22,7 +25,10 @@ pub enum MidiPortError {
 impl std::fmt::Display for MidiPortError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            MidiPortError::NotFound { requested, available } => {
+            MidiPortError::NotFound {
+                requested,
+                available,
+            } => {
                 write!(
                     f,
                     "MIDI port {:?} not found; available ports: [{}]",
@@ -40,15 +46,21 @@ pub struct MidiPortOutput(midir::MidiOutputConnection);
 
 impl MidiOutput for MidiPortOutput {
     fn note_on(&mut self, channel: u8, pitch: u8, velocity: u8) -> Result<(), MidiSendError> {
-        self.0.send(&note_on_bytes(channel, pitch, velocity)).map_err(MidiSendError::new)
+        self.0
+            .send(&note_on_bytes(channel, pitch, velocity))
+            .map_err(MidiSendError::new)
     }
 
     fn note_off(&mut self, channel: u8, pitch: u8) -> Result<(), MidiSendError> {
-        self.0.send(&note_off_bytes(channel, pitch)).map_err(MidiSendError::new)
+        self.0
+            .send(&note_off_bytes(channel, pitch))
+            .map_err(MidiSendError::new)
     }
 
     fn program_change(&mut self, channel: u8, program: u8) -> Result<(), MidiSendError> {
-        self.0.send(&program_change_bytes(channel, program)).map_err(MidiSendError::new)
+        self.0
+            .send(&program_change_bytes(channel, program))
+            .map_err(MidiSendError::new)
     }
 
     fn clock_tick(&mut self) -> Result<(), MidiSendError> {
@@ -56,11 +68,15 @@ impl MidiOutput for MidiPortOutput {
     }
 
     fn clock_start(&mut self) -> Result<(), MidiSendError> {
-        self.0.send(&clock_start_bytes()).map_err(MidiSendError::new)
+        self.0
+            .send(&clock_start_bytes())
+            .map_err(MidiSendError::new)
     }
 
     fn clock_continue(&mut self) -> Result<(), MidiSendError> {
-        self.0.send(&clock_continue_bytes()).map_err(MidiSendError::new)
+        self.0
+            .send(&clock_continue_bytes())
+            .map_err(MidiSendError::new)
     }
 
     fn clock_stop(&mut self) -> Result<(), MidiSendError> {
@@ -84,10 +100,18 @@ fn program_change_bytes(channel: u8, program: u8) -> [u8; 2] {
     [0xC0 | (channel - 1), program]
 }
 
-fn clock_tick_bytes() -> [u8; 1] { [0xF8] }
-fn clock_start_bytes() -> [u8; 1] { [0xFA] }
-fn clock_continue_bytes() -> [u8; 1] { [0xFB] }
-fn clock_stop_bytes() -> [u8; 1] { [0xFC] }
+fn clock_tick_bytes() -> [u8; 1] {
+    [0xF8]
+}
+fn clock_start_bytes() -> [u8; 1] {
+    [0xFA]
+}
+fn clock_continue_bytes() -> [u8; 1] {
+    [0xFB]
+}
+fn clock_stop_bytes() -> [u8; 1] {
+    [0xFC]
+}
 
 pub fn list_ports() -> Vec<MidiPortInfo> {
     let output = match midir::MidiOutput::new("propeller-list") {
@@ -99,7 +123,10 @@ pub fn list_ports() -> Vec<MidiPortInfo> {
         .iter()
         .enumerate()
         .filter_map(|(i, p)| {
-            output.port_name(p).ok().map(|name| MidiPortInfo { index: i, name })
+            output
+                .port_name(p)
+                .ok()
+                .map(|name| MidiPortInfo { index: i, name })
         })
         .collect()
 }
@@ -138,7 +165,6 @@ pub fn open_virtual() -> Result<MidiPortOutput, MidiPortError> {
 mod tests {
     use super::*;
 
-    // T-2: find_port_by_name exact match, order matters
     #[test]
     fn find_port_exact_match_first() {
         let names: Vec<String> = vec!["Surge XT".into(), "Surge".into()];
@@ -151,20 +177,17 @@ mod tests {
         assert_eq!(find_port_by_name(&names, "Surge XT"), Some(1));
     }
 
-    // T-3: prefix alone does not match
     #[test]
     fn find_port_prefix_not_matched() {
         let names: Vec<String> = vec!["Surge XT".into()];
         assert_eq!(find_port_by_name(&names, "Surge"), None);
     }
 
-    // T-4: empty slice → None
     #[test]
     fn find_port_empty_slice() {
         assert_eq!(find_port_by_name(&[], "anything"), None);
     }
 
-    // T-6: note_on_bytes
     #[test]
     fn note_on_bytes_ch1() {
         assert_eq!(note_on_bytes(1, 60, 80), [0x90, 60, 80]);
@@ -175,7 +198,6 @@ mod tests {
         assert_eq!(note_on_bytes(16, 60, 80), [0x9F, 60, 80]);
     }
 
-    // T-7: note_off_bytes
     #[test]
     fn note_off_bytes_ch1() {
         assert_eq!(note_off_bytes(1, 60), [0x80, 60, 0]);
@@ -186,7 +208,6 @@ mod tests {
         assert_eq!(note_off_bytes(16, 60), [0x8F, 60, 0]);
     }
 
-    // T-8: program_change_bytes
     #[test]
     fn program_change_bytes_ch1() {
         assert_eq!(program_change_bytes(1, 42), [0xC0, 42]);
@@ -197,7 +218,6 @@ mod tests {
         assert_eq!(program_change_bytes(2, 0), [0xC1, 0]);
     }
 
-    // T-31 (EP-5): clock byte helpers return correct single-byte MIDI status values
     #[test]
     fn clock_tick_byte() {
         assert_eq!(clock_tick_bytes(), [0xF8]);
@@ -218,22 +238,26 @@ mod tests {
         assert_eq!(clock_stop_bytes(), [0xFC]);
     }
 
-    // T-10: MidiPortInfo serialises to {"index":0,"name":"Surge XT"}
     #[test]
     fn midi_port_info_serialises() {
-        let info = MidiPortInfo { index: 0, name: "Surge XT".into() };
+        let info = MidiPortInfo {
+            index: 0,
+            name: "Surge XT".into(),
+        };
         let s = serde_json::to_string(&info).unwrap();
         let v: serde_json::Value = serde_json::from_str(&s).unwrap();
         assert_eq!(v["index"], 0);
         assert_eq!(v["name"], "Surge XT");
     }
 
-    // T-19: open_port with non-existent name → NotFound error
     #[test]
     fn open_port_not_found() {
         let result = open_port("__propeller_nonexistent__");
         match result {
-            Err(MidiPortError::NotFound { requested, available: _ }) => {
+            Err(MidiPortError::NotFound {
+                requested,
+                available: _,
+            }) => {
                 assert_eq!(requested, "__propeller_nonexistent__");
             }
             Err(MidiPortError::InitFailed(_)) => {
@@ -243,7 +267,6 @@ mod tests {
         }
     }
 
-    // T-17: #[ignore] integration — MidiPortOutput loopback via virtual port
     #[test]
     #[ignore]
     fn midi_port_output_loopback() {
@@ -287,12 +310,20 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(100));
 
         let msgs = received.lock().unwrap().clone();
-        assert!(msgs.iter().any(|m| m == &[0x90, 60, 80]), "note_on not received");
-        assert!(msgs.iter().any(|m| m == &[0x80, 60, 0]), "note_off not received");
-        assert!(msgs.iter().any(|m| m == &[0xC0, 42]), "program_change not received");
+        assert!(
+            msgs.iter().any(|m| m == &[0x90, 60, 80]),
+            "note_on not received"
+        );
+        assert!(
+            msgs.iter().any(|m| m == &[0x80, 60, 0]),
+            "note_off not received"
+        );
+        assert!(
+            msgs.iter().any(|m| m == &[0xC0, 42]),
+            "program_change not received"
+        );
     }
 
-    // T-21: #[ignore] integration — open_virtual returns Ok and port is visible
     #[test]
     #[ignore]
     fn open_virtual_creates_port() {

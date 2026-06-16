@@ -24,37 +24,24 @@ given {
 -- Value Types
 ------------------------------------------------------------
 
-value TimeSignature {
-    numerator: Integer      -- ≥ 1
-    denominator: Integer    -- must be 2, 4, 8, or 16
-
-    bar_ticks: numerator * (config.ppqn * 4 / denominator)
-}
-
-value NoteSpec {
-    rest: Boolean
-    pitch: Integer          -- 0–127; meaningful only when rest = false
-    velocity: Integer       -- 0–127; meaningful only when rest = false
-    duration_ticks: Integer -- > 0, ≤ bar_ticks of the containing bar
-}
-
-value BarSpec {
-    notes: List<NoteSpec>
+value Note {
+    start_tick: Integer  -- 0 ≤ start_tick < loop_duration of containing project
+    duration: Integer    -- > 0; start_tick + duration ≤ 2 × loop_duration
+    pitch: Integer       -- 0–127
+    velocity: Integer    -- 0–127
 }
 
 value TrackSpec {
     name: String
     channel: Integer        -- 1–16 (MIDI channel)
     instrument: Integer     -- 0–127 (General MIDI program number)
-    bars: List<BarSpec>     -- must contain at least one bar
+    notes: List<Note>
 }
 
 value ProjectData {
     bpm: Integer            -- 20–300, whole number only
-    time_signature: TimeSignature
+    loop_duration: Integer  -- > 0; total loop length in ticks
     tracks: List<TrackSpec>
-
-    cycle_length: tracks.map(t => t.bars.count).max()
 }
 
 ------------------------------------------------------------
@@ -74,6 +61,7 @@ entity Engine {
     state: stopped | waiting | running | paused
     sync_clock_status: SyncClockStatus?  -- null when mode != sync
     last_pulse_at: Timestamp?            -- set on each 0xF8 pulse; null when not in sync mode
+    last_pulse_interval: Duration?       -- interval between the two most recent pulses; null until two pulses received
 
     transitions state {
         stopped  -> running
@@ -85,6 +73,9 @@ entity Engine {
         paused   -> running
         paused   -> stopped
     }
+
+    clock_loss_deadline: last_pulse_at + last_pulse_interval * config.clock_loss_multiplier
+    is_clock_active: clock_loss_deadline >= now
 }
 
 entity ProjectStore {
@@ -97,9 +88,10 @@ entity ProjectStore {
 ------------------------------------------------------------
 
 config {
-    ppqn: Integer = 480         -- ticks per quarter note; defines the note-authoring resolution
-    clock_ppq: Integer = 24     -- MIDI clock pulses per quarter note (MIDI 1.0 specification)
-    bpm_default: Integer = 120  -- BPM used for status responses when no project is loaded
+    ppqn: Integer = 480              -- ticks per quarter note; defines the note-authoring resolution
+    clock_ppq: Integer = 24          -- MIDI clock pulses per quarter note (MIDI 1.0 specification)
+    bpm_default: Integer = 120       -- BPM used for status responses when no project is loaded
+    clock_loss_multiplier: Integer = 4  -- clock declared lost after this many observed intervals (~3.5 in practice)
 }
 
 ------------------------------------------------------------
@@ -112,17 +104,17 @@ rule CreateProject {
     when: CreateProject(operator, data)
 
     requires: data.bpm >= 20 and data.bpm <= 300
-    requires: data.time_signature.numerator >= 1
-    requires: data.time_signature.denominator in {2, 4, 8, 16}
+    requires: data.loop_duration > 0
     requires: data.tracks.all(t =>
         t.channel >= 1
         and t.channel <= 16
         and t.instrument <= 127
-        and t.bars.count >= 1
-        and t.bars.all(b => b.notes.all(n =>
-            n.duration_ticks > 0
-            and n.duration_ticks <= data.time_signature.bar_ticks
-        ))
+        and t.notes.all(n =>
+            n.start_tick >= 0
+            and n.start_tick < data.loop_duration
+            and n.duration > 0
+            and n.start_tick + n.duration <= 2 * data.loop_duration
+        )
     )
 
     ensures: store.active = data
@@ -131,29 +123,29 @@ rule CreateProject {
         if engine.state = waiting:
             engine.state = running
     -- Immediately activates the project. If the engine was Waiting for a project,
-    -- playback starts at once from bar 0.
+    -- playback starts at once from loop start.
 }
 
 rule ModifyProject {
     when: ModifyProject(operator, data)
 
     requires: data.bpm >= 20 and data.bpm <= 300
-    requires: data.time_signature.numerator >= 1
-    requires: data.time_signature.denominator in {2, 4, 8, 16}
+    requires: data.loop_duration > 0
     requires: data.tracks.all(t =>
         t.channel >= 1
         and t.channel <= 16
         and t.instrument <= 127
-        and t.bars.count >= 1
-        and t.bars.all(b => b.notes.all(n =>
-            n.duration_ticks > 0
-            and n.duration_ticks <= data.time_signature.bar_ticks
-        ))
+        and t.notes.all(n =>
+            n.start_tick >= 0
+            and n.start_tick < data.loop_duration
+            and n.duration > 0
+            and n.start_tick + n.duration <= 2 * data.loop_duration
+        )
     )
 
     ensures: store.pending = data
     -- Always accepted regardless of engine state.
-    -- The pending project takes effect at the next bar boundary (see PendingAppliedAtBarBoundary).
+    -- The pending project takes effect at the next loop boundary (see PendingAppliedAtLoopBoundary).
     -- If the engine is stopped, pending is applied when playback next starts.
 }
 
@@ -167,7 +159,7 @@ rule SetBpm {
         if store.active != null:
             store.pending = store.active with bpm = bpm
     -- If a project is loaded, a new version with the updated BPM becomes pending
-    -- and takes effect at the next bar boundary.
+    -- and takes effect at the next loop boundary.
     -- If no project is loaded, the BPM is remembered in engine settings and applied
     -- when the next project is created.
 }
@@ -249,22 +241,23 @@ rule ExternalClockStart {
 
     ensures:
         if store.active != null:
-            engine.state = running    -- playback restarts from bar 0
+            engine.state = running    -- playback restarts from loop start
         else:
             engine.state = waiting
     ensures: engine.sync_clock_status = tracking
-    ensures: engine.last_pulse_at = null  -- pulse tracker resets on Start
+    ensures: engine.last_pulse_at = null          -- pulse tracker resets on Start
+    ensures: engine.last_pulse_interval = null    -- interval history cleared on Start
 }
 
 rule ExternalClockContinue {
     when: MidiClockContinue(clock)
 
     requires: engine.mode = sync
-    requires: engine.sync_clock_status = tracking  -- only acted on when clock is active
+    requires: engine.is_clock_active  -- only acted on when pulses are still being received
 
     ensures:
         if store.active != null:
-            engine.state = running    -- resumes from current bar position
+            engine.state = running    -- resumes from current loop position
         else:
             engine.state = waiting
 }
@@ -285,14 +278,16 @@ rule ExternalClockPulse {
     requires: engine.mode = sync
 
     ensures: engine.sync_clock_status = tracking
+    ensures: engine.last_pulse_interval = now - engine.last_pulse_at
     ensures: engine.last_pulse_at = now
-    -- BPM is derived from inter-pulse timing and applied at the next bar boundary.
+    -- BPM is derived from inter-pulse timing and applied at the next loop boundary.
+    -- last_pulse_interval is null on the first pulse because last_pulse_at was null (null arithmetic produces null).
 }
 
 rule ExternalClockLost {
     -- Fires when the expected inter-pulse interval has elapsed with no pulse received.
-    -- Timeout duration is proportional to the observed clock rate (approximately 3.5 × interval).
-    when: engine: Engine.last_pulse_at + clock_loss_timeout <= now
+    -- Timeout = config.clock_loss_multiplier × the most recently observed pulse interval.
+    when: engine: Engine.clock_loss_deadline <= now
 
     requires: engine.mode = sync
     requires: engine.sync_clock_status != lost
@@ -315,6 +310,7 @@ rule SetMode {
 
     ensures:
         if engine.mode = clock
+            and new_mode != clock
             and (engine.state = running or engine.state = paused):
             engine.state = stopped
             -- 0xFC is emitted and active notes receive NoteOff before the mode changes.
@@ -337,6 +333,25 @@ rule DaemonStop {
     -- All active notes receive NoteOff. IPC socket is removed after output is complete.
 }
 
+-- Status queries
+
+rule ReportStatus {
+    when: Status(operator)
+
+    ensures: StatusReported(
+        operator,
+        bpm: store.active?.bpm ?? config.bpm_default,
+        mode: engine.mode,
+        state: engine.state
+    )
+}
+
+rule ListPorts {
+    when: ListMidiPorts(operator)
+
+    ensures: MidiPortsListed(operator)
+}
+
 ------------------------------------------------------------
 -- Invariants
 ------------------------------------------------------------
@@ -354,10 +369,10 @@ invariant NotesSilenced {
 }
 
 invariant ProgramChangeBeforeFirstNoteOn {
-    -- At the start of each bar, a ProgramChange (instrument select) is emitted
-    -- for any track whose instrument changed since the previous bar.
-    -- On the very first bar, ProgramChange is sent for all tracks unconditionally.
-    -- ProgramChange always precedes any NoteOn within the same bar.
+    -- At the start of each loop, a ProgramChange (instrument select) is emitted
+    -- for any track whose instrument changed since the previous loop.
+    -- On the very first loop, ProgramChange is sent for all tracks unconditionally.
+    -- ProgramChange always precedes any NoteOn within the same loop.
 }
 
 invariant ClockBoundaryMessages {
@@ -378,16 +393,16 @@ invariant SyncModeRejectsDirectControl {
     -- Transport and tempo are controlled exclusively by the external MIDI clock device.
 }
 
-invariant PendingAppliedAtBarBoundary {
-    -- A pending project never interrupts a bar in progress.
-    -- It becomes the active project only at the completion of the current bar.
-    -- Exception: CreateProject immediately activates the project; no bar boundary wait.
+invariant PendingAppliedAtLoopBoundary {
+    -- A pending project never interrupts a loop in progress.
+    -- It becomes the active project only at the completion of the current loop.
+    -- Exception: CreateProject immediately activates the project; no loop boundary wait.
 }
 
-invariant SyncRestartResetsBarIndex {
-    -- ExternalClockStart (MIDI 0xFA) always restarts playback from bar 0,
-    -- discarding any mid-bar position and resetting the cycle counter.
-    -- ExternalClockContinue (MIDI 0xFB) resumes from the current bar index without resetting.
+invariant SyncRestartResetsLoopPosition {
+    -- ExternalClockStart (MIDI 0xFA) always restarts playback from loop start,
+    -- discarding any mid-loop position and resetting the cycle counter.
+    -- ExternalClockContinue (MIDI 0xFB) resumes from the current loop position without resetting.
 }
 
 invariant ClockLossStopsPlayback {
@@ -395,6 +410,13 @@ invariant ClockLossStopsPlayback {
     -- playback stops and all notes are silenced.
     -- The engine remains stopped until a new MIDI Start (0xFA) or Continue (0xFB) arrives
     -- from the external device.
+}
+
+invariant CrossLoopNoteCarryOver {
+    -- A note whose start_tick + duration > loop_duration extends beyond the current loop iteration.
+    -- The engine carries the sounding note into the next iteration and emits NoteOff
+    -- at the tick (start_tick + duration) - loop_duration within the next loop.
+    -- No note may span more than two loop iterations: duration ≤ 2 × loop_duration.
 }
 
 ------------------------------------------------------------
@@ -438,4 +460,3 @@ surface MidiClockInput {
         MidiClockContinue(clock)  -- 0xFB Continue
         MidiClockStop(clock)      -- 0xFC Stop
 }
-

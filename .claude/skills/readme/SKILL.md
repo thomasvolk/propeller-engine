@@ -119,6 +119,11 @@ Do not add a FAQ section. The Write the Docs guide warns that FAQs become outdat
 3. Rewrite the file with sections in the correct order. Preserve all existing content — move and reshape, do not delete.
 4. Report the before/after structure.
 
+## Project-specific rules
+
+- Do not reference the `specs/` directory in the README. It is a temporary working folder used during development and is not part of the public-facing project.
+- Do not reference the `.claude/` directory in the README. It is a temporary working folder used during development and is not part of the public-facing project.
+
 ## Quality checklist
 
 Before writing the final file, verify:
@@ -131,3 +136,4 @@ Before writing the final file, verify:
 - [ ] No HTML tags in the file.
 - [ ] No section describes features that do not yet exist.
 - [ ] No FAQ section.
+- [ ] No references to the `specs/` or `.claude/` directories.

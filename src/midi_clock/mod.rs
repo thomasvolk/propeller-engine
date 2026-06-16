@@ -35,30 +35,41 @@ impl MidiClockReceiver {
         use midir::MidiInput;
         let midi_in = MidiInput::new("propeller-sync").map_err(|e| e.to_string())?;
         let ports = midi_in.ports();
-        let port = ports.iter()
+        let port = ports
+            .iter()
             .find(|p| midi_in.port_name(p).as_deref() == Ok(port_name))
             .ok_or_else(|| format!("MIDI input port {:?} not found", port_name))?
             .clone();
         let (tx, rx) = mpsc::channel::<ClockMessage>();
-        let conn = midi_in.connect(&port, "propeller-sync-input", move |_stamp, msg, _| {
-            let m = match msg {
-                [0xF8] => Some(ClockMessage::Pulse),
-                [0xFA] => Some(ClockMessage::Start),
-                [0xFB] => Some(ClockMessage::Continue),
-                [0xFC] => Some(ClockMessage::Stop),
-                _ => None,
-            };
-            if let Some(m) = m {
-                let _ = tx.send(m);
-            }
-        }, ()).map_err(|e| e.to_string())?;
+        let conn = midi_in
+            .connect(
+                &port,
+                "propeller-sync-input",
+                move |_stamp, msg, _| {
+                    let m = match msg {
+                        [0xF8] => Some(ClockMessage::Pulse),
+                        [0xFA] => Some(ClockMessage::Start),
+                        [0xFB] => Some(ClockMessage::Continue),
+                        [0xFC] => Some(ClockMessage::Stop),
+                        _ => None,
+                    };
+                    if let Some(m) = m {
+                        let _ = tx.send(m);
+                    }
+                },
+                (),
+            )
+            .map_err(|e| e.to_string())?;
 
         let state = Arc::new(Mutex::new(SyncClockState::Waiting));
         let state_clone = Arc::clone(&state);
         std::thread::spawn(move || {
             run_receiver(rx, engine, state_clone);
         });
-        Ok(MidiClockReceiver { state, _midi_conn: Some(Box::new(conn)) })
+        Ok(MidiClockReceiver {
+            state,
+            _midi_conn: Some(Box::new(conn)),
+        })
     }
 
     /// Test constructor: caller provides the channel receiver directly.
@@ -69,7 +80,10 @@ impl MidiClockReceiver {
         std::thread::spawn(move || {
             run_receiver(rx, engine, state_clone);
         });
-        MidiClockReceiver { state, _midi_conn: None }
+        MidiClockReceiver {
+            state,
+            _midi_conn: None,
+        }
     }
 
     #[cfg(test)]
@@ -91,7 +105,8 @@ fn run_receiver(
     let mut last_bpm: Option<u32> = None;
 
     loop {
-        let timeout = pulse_tracker.timeout_duration()
+        let timeout = pulse_tracker
+            .timeout_duration()
             .unwrap_or_else(|| Duration::from_secs(1));
 
         match rx.recv_timeout(timeout) {
@@ -142,9 +157,9 @@ fn run_receiver(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{Bar, Header, Note, NoteEvent, Project, ProjectStore, TimeSignature, Track};
-    use crate::loop_engine::{EngineState, LoopEngine};
+    use crate::domain::{Header, Note, Project, ProjectStore, Track};
     use crate::loop_engine::midi::MockMidiOutput;
+    use crate::loop_engine::{EngineState, LoopEngine};
     use std::sync::{Arc, RwLock};
     use std::time::Duration;
 
@@ -154,17 +169,17 @@ mod tests {
             let project = Project {
                 header: Header {
                     bpm: 300,
-                    time_signature: TimeSignature { numerator: 1, denominator: 4 },
+                    loop_duration: 480,
                 },
                 tracks: vec![Track {
                     name: "t".to_string(),
                     channel: 1,
                     instrument: 0,
-                    bars: vec![Bar {
-                        notes: vec![Note {
-                            event: NoteEvent::Note { pitch: 60, velocity: 80 },
-                            duration_ticks: 480,
-                        }],
+                    notes: vec![Note {
+                        start_tick: 0,
+                        duration: 480,
+                        pitch: 60,
+                        velocity: 80,
                     }],
                 }],
             };
@@ -199,7 +214,6 @@ mod tests {
         }
     }
 
-    // T-25: feed 25 Pulse messages → state = Tracking (BPM derived, sync_bpm_update called)
     #[test]
     fn pulse_messages_transition_to_tracking() {
         let engine = make_engine_no_project();
@@ -218,7 +232,6 @@ mod tests {
         assert_eq!(receiver.sync_clock_state(), SyncClockState::Tracking);
     }
 
-    // T-27: receiver processes Start → engine.sync_start() called; state = Tracking
     #[test]
     fn start_message_calls_sync_start_and_sets_tracking() {
         let engine = make_engine_with_project();
@@ -236,7 +249,6 @@ mod tests {
         engine.sync_stop();
     }
 
-    // T-29: Continue when clock active → sync_continue() called; Continue when clock inactive → ignored
     #[test]
     fn continue_when_clock_active_calls_sync_continue() {
         let engine = make_engine_with_project();
@@ -275,7 +287,6 @@ mod tests {
         drop(receiver);
     }
 
-    // T-31: receiver processes Stop → sync_stop() called; state = Waiting
     #[test]
     fn stop_message_calls_sync_stop_and_sets_waiting() {
         let engine = make_engine_with_project();
@@ -295,7 +306,6 @@ mod tests {
         assert_eq!(receiver.sync_clock_state(), SyncClockState::Waiting);
     }
 
-    // T-33: timeout → sync_stop() called; state = Lost; subsequent Pulse → state = Tracking, no sync_start
     #[test]
     fn timeout_declares_clock_lost_and_pulse_resumes_tracking_without_start() {
         // Prime with very high-frequency pulses (≈30_000 BPM → 2 ms interval → 7 ms timeout)
@@ -331,10 +341,13 @@ mod tests {
         wait_for_sync_state(&receiver, SyncClockState::Tracking, 500);
         assert_eq!(receiver.sync_clock_state(), SyncClockState::Tracking);
         // Engine must NOT have restarted (no sync_start called)
-        assert_eq!(engine.state(), EngineState::Stopped, "engine must not restart after clock recovery without Start/Continue");
+        assert_eq!(
+            engine.state(),
+            EngineState::Stopped,
+            "engine must not restart after clock recovery without Start/Continue"
+        );
     }
 
-    // T-35: after clock loss + resume, engine restarts only on new Start or Continue (AC-11)
     #[test]
     fn clock_resume_then_start_restarts_engine() {
         let engine = make_engine_with_project();

@@ -5,16 +5,16 @@ mod client;
 mod daemon;
 mod domain;
 mod ipc;
-mod loop_engine;
 mod logger;
+mod loop_engine;
 mod midi_clock;
 mod midi_port;
 mod socket_path;
 mod startup_guard;
 
-use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use ipc::EngineMode;
+use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[derive(Parser)]
@@ -117,7 +117,10 @@ fn cmd_start(clock: bool, sync: bool) {
 
     match startup_guard::check(&sock_path) {
         startup_guard::StartupOutcome::AlreadyRunning => {
-            eprintln!("propeller: already running (socket {:?} is connectable)", sock_path);
+            eprintln!(
+                "propeller: already running (socket {:?} is connectable)",
+                sock_path
+            );
             std::process::exit(1);
         }
         startup_guard::StartupOutcome::StaleCleared => {
@@ -261,7 +264,12 @@ fn cmd_daemon_run(clock: bool, sync: bool) {
     };
 
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    rt.block_on(daemon::run(sock_path, midi_out, initial_mode, sync_port_name));
+    rt.block_on(daemon::run(
+        sock_path,
+        midi_out,
+        initial_mode,
+        sync_port_name,
+    ));
 }
 
 fn cmd_stop() {
@@ -338,16 +346,14 @@ fn cmd_project_modify(filename: Option<PathBuf>) {
 
 fn cmd_loop_start() {
     let sock_path = socket_path::resolve();
-    if let Err(e) = client::send_command(&sock_path, serde_json::json!({"command": "loop-start"}))
-    {
+    if let Err(e) = client::send_command(&sock_path, serde_json::json!({"command": "loop-start"})) {
         handle_client_error(e, &sock_path);
     }
 }
 
 fn cmd_loop_stop() {
     let sock_path = socket_path::resolve();
-    if let Err(e) = client::send_command(&sock_path, serde_json::json!({"command": "loop-stop"}))
-    {
+    if let Err(e) = client::send_command(&sock_path, serde_json::json!({"command": "loop-stop"})) {
         handle_client_error(e, &sock_path);
     }
 }
@@ -370,10 +376,18 @@ fn cmd_status() {
                 stream.read_to_string(&mut buf).await.unwrap();
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(buf.trim()) {
                     println!("propeller is running");
-                    if let Some(mode) = v.get("mode") { println!("  mode: {mode}"); }
-                    if let Some(bpm) = v.get("bpm") { println!("  bpm: {bpm}"); }
-                    if let Some(cs) = v.get("clock_state") { println!("  clock: {cs}"); }
-                    if let Some(pp) = v.get("project_present") { println!("  project: {pp}"); }
+                    if let Some(mode) = v.get("mode") {
+                        println!("  mode: {mode}");
+                    }
+                    if let Some(bpm) = v.get("bpm") {
+                        println!("  bpm: {bpm}");
+                    }
+                    if let Some(cs) = v.get("clock_state") {
+                        println!("  clock: {cs}");
+                    }
+                    if let Some(pp) = v.get("project_present") {
+                        println!("  project: {pp}");
+                    }
                 } else {
                     println!("propeller is running");
                 }

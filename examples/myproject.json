@@ -1,12 +1,12 @@
 {
-  "header": { "bpm": 120, "time_signature": { "numerator": 4, "denominator": 4 } },
+  "header": { "bpm": 120, "loop_duration": 1920 },
   "tracks": [
     {
       "name": "piano",
       "channel": 1,
       "instrument": 0,
-      "bars": [
-        { "notes": [{ "pitch": 60, "velocity": 80, "duration_ticks": 480 }] }
+      "notes": [
+        [0, 480, 60, 80]
       ]
     }
   ]
