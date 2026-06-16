@@ -120,7 +120,6 @@ async fn dispatch(
             }
             ok_response()
         }
-        // T-12 (EP-5): clock IPC commands
         Command::ClockStart => {
             if store.read().unwrap().active().is_none() {
                 return error_response("no_project", "clock-start requires an active project");
@@ -189,7 +188,6 @@ fn handle_set_bpm(
     store: &Arc<RwLock<ProjectStore>>,
     settings: &Arc<Mutex<EngineSettings>>,
 ) -> Value {
-    // T-24 (EP-6): reject set-bpm in sync mode
     if settings.lock().unwrap().mode == EngineMode::Sync {
         return error_response("sync_mode_active", "set-bpm is not allowed in sync mode; tempo is controlled by the external clock");
     }
@@ -241,7 +239,6 @@ fn handle_set_mode(
 ) -> Value {
     match EngineMode::from_str(mode_str) {
         Some(new_mode) => {
-            // T-42 (EP-6): reject set-mode sync when no MidiClockReceiver is running
             if new_mode == EngineMode::Sync {
                 let has_receiver = settings.lock().unwrap().sync_clock_state.is_some();
                 if !has_receiver {
@@ -299,7 +296,6 @@ fn handle_status(
         resp["loop_duration"] = json!(p.header.loop_duration);
     }
 
-    // T-38 (EP-6): append sync_clock_state when in sync mode
     if settings_guard.mode == EngineMode::Sync {
         if let Some(ref arc) = settings_guard.sync_clock_state {
             let sync_state = arc.lock().unwrap().clone();
@@ -408,7 +404,6 @@ mod tests {
         response
     }
 
-    // T-7: loop-start → {"status":"ok"}\n, stream closed after response
     #[tokio::test]
     async fn loop_start_returns_ok() {
         let response = send_command_get_response(r#"{"command":"loop-start"}"#).await;
@@ -417,7 +412,6 @@ mod tests {
         assert!(response.ends_with('\n'));
     }
 
-    // T-8: client writes nothing → no response
     #[tokio::test]
     async fn empty_stream_no_response() {
         let (store, engine, settings, shutdown_tx) = make_shared_state();
@@ -430,7 +424,6 @@ mod tests {
         drop(client); // close without sending anything — handler should return silently
     }
 
-    // T-9: malformed JSON → parse_error
     #[tokio::test]
     async fn malformed_json_returns_parse_error() {
         let response = send_command_get_response("not json at all").await;
@@ -439,7 +432,6 @@ mod tests {
         assert_eq!(v["code"], "parse_error");
     }
 
-    // T-10: valid JSON, no "command" field → missing_command
     #[tokio::test]
     async fn missing_command_field_returns_error() {
         let response = send_command_get_response(r#"{"bpm":120}"#).await;
@@ -448,7 +440,6 @@ mod tests {
         assert_eq!(v["code"], "missing_command");
     }
 
-    // T-13: valid create-project (new wire format) → ok, store.active() is Some
     #[tokio::test]
     async fn create_project_stores_project() {
         let (store, engine, settings, shutdown_tx) = make_shared_state();
@@ -470,7 +461,6 @@ mod tests {
         assert!(store.read().unwrap().active().is_some());
     }
 
-    // T-14: create-project with bpm 301 → validation_error
     #[tokio::test]
     async fn create_project_bpm_out_of_range() {
         let response = send_command_get_response(
@@ -483,7 +473,6 @@ mod tests {
         assert!(!v["message"].as_str().unwrap().is_empty());
     }
 
-    // T-17: modify-project (new wire format) → ok, store pending updated
     #[tokio::test]
     async fn modify_project_returns_ok() {
         let response = send_command_get_response(
@@ -494,7 +483,6 @@ mod tests {
         assert_eq!(v["status"], "ok");
     }
 
-    // T-19: set-bpm 150 → ok, settings.bpm = 150
     #[tokio::test]
     async fn set_bpm_valid() {
         let (store, engine, settings, shutdown_tx) = make_shared_state();
@@ -518,7 +506,6 @@ mod tests {
         assert_eq!(settings.lock().unwrap().bpm, 150);
     }
 
-    // T-20: set-bpm 19 → bpm_out_of_range; set-bpm 120.5 → bpm_non_integer
     #[tokio::test]
     async fn set_bpm_out_of_range() {
         let response = send_command_get_response(r#"{"command":"set-bpm","bpm":19}"#).await;
@@ -533,7 +520,6 @@ mod tests {
         assert_eq!(v["code"], "bpm_non_integer");
     }
 
-    // T-22: set-mode "clock" → ok, settings.mode = Clock
     #[tokio::test]
     async fn set_mode_clock() {
         let (store, engine, settings, shutdown_tx) = make_shared_state();
@@ -556,7 +542,6 @@ mod tests {
         assert_eq!(settings.lock().unwrap().mode, EngineMode::Clock);
     }
 
-    // T-23: set-mode with unrecognised string → invalid_mode
     #[tokio::test]
     async fn set_mode_invalid() {
         let response = send_command_get_response(r#"{"command":"set-mode","mode":"turbo"}"#).await;
@@ -564,7 +549,6 @@ mod tests {
         assert_eq!(v["code"], "invalid_mode");
     }
 
-    // T-25: loop-start → ok, engine state Running or Waiting
     #[tokio::test]
     async fn loop_start_changes_engine_state() {
         let (store, engine, settings, shutdown_tx) = make_shared_state();
@@ -590,7 +574,6 @@ mod tests {
         );
     }
 
-    // T-27: loop-stop → ok, engine state Stopped
     #[tokio::test]
     async fn loop_stop_changes_engine_state() {
         let (store, engine, settings, shutdown_tx) = make_shared_state();
@@ -615,7 +598,6 @@ mod tests {
         assert_eq!(engine.state(), EngineState::Stopped);
     }
 
-    // T-29: status with active project — loop_duration present, time_signature absent (AC-8, F-14)
     #[tokio::test]
     async fn status_with_project_stopped() {
         let (store, engine, settings, shutdown_tx) = make_shared_state();
@@ -661,7 +643,6 @@ mod tests {
         assert_eq!(v["project_present"], true);
     }
 
-    // T-30: status with loop running → clock_state "started"
     #[tokio::test]
     async fn status_loop_running_clock_state_started() {
         let (store, engine, settings, shutdown_tx) = make_shared_state();
@@ -688,7 +669,6 @@ mod tests {
         assert_eq!(v["clock_state"], "started");
     }
 
-    // T-31: status with no active project → project_present false, time_signature absent,
     //        loop_duration absent (AC-9, F-14)
     #[tokio::test]
     async fn status_no_project() {
@@ -718,7 +698,6 @@ mod tests {
         assert_eq!(v["bpm"], 99);
     }
 
-    // T-15: list-midi-ports over live socket → {"status":"ok","ports":[...]}
     #[tokio::test]
     async fn list_midi_ports_returns_ok_with_ports_array() {
         let response = send_command_get_response(r#"{"command":"list-midi-ports"}"#).await;
@@ -727,7 +706,6 @@ mod tests {
         assert!(v["ports"].is_array(), "ports should be a JSON array");
     }
 
-    // T-11 (EP-5): clock-start with no active project → error no_project; engine stays Stopped
     #[tokio::test]
     async fn clock_start_without_project_returns_no_project_error() {
         let response = send_command_get_response(r#"{"command":"clock-start"}"#).await;
@@ -736,7 +714,6 @@ mod tests {
         assert_eq!(v["code"], "no_project");
     }
 
-    // T-11 variant: clock-start with active project → ok
     #[tokio::test]
     async fn clock_start_with_project_returns_ok() {
         let (store, engine, settings, shutdown_tx) = make_shared_state();
@@ -770,7 +747,6 @@ mod tests {
         assert_eq!(v["status"], "ok");
     }
 
-    // T-35: stop command → ok response, shutdown_tx receives signal
     #[tokio::test]
     async fn stop_command_signals_shutdown() {
         let (store, engine, settings, _) = make_shared_state();
@@ -794,7 +770,6 @@ mod tests {
         assert!(shutdown_rx.try_recv().is_ok());
     }
 
-    // T-3 (EP-7): status response includes "mode" field (F-2, AC-2)
     #[tokio::test]
     async fn status_response_includes_mode_field() {
         let response = send_command_get_response(r#"{"command":"status"}"#).await;
@@ -804,7 +779,6 @@ mod tests {
         assert_eq!(v["mode"], "standalone");
     }
 
-    // T-9 (EP-7): set-mode clock while standalone with loop Running → engine stays Running
     #[tokio::test]
     async fn set_mode_clock_while_loop_running_does_not_stop_engine() {
         let (store, engine, settings, shutdown_tx) = make_shared_state();
@@ -839,7 +813,6 @@ mod tests {
         engine_clone.stop();
     }
 
-    // T-11 (EP-7): set-mode standalone from clock while Running → engine.clock_stop() called
     #[tokio::test]
     async fn set_mode_standalone_from_clock_while_running_calls_clock_stop() {
         let (store, engine, settings, shutdown_tx) = make_shared_state();
@@ -885,7 +858,6 @@ mod tests {
         assert_eq!(settings.lock().unwrap().mode, EngineMode::Standalone);
     }
 
-    // T-23 (EP-6): SetBpm in sync mode → sync_mode_active error
     #[tokio::test]
     async fn set_bpm_in_sync_mode_returns_error() {
         let (store, engine, settings, shutdown_tx) = make_shared_state();
@@ -907,7 +879,6 @@ mod tests {
         assert_eq!(v["code"], "sync_mode_active");
     }
 
-    // T-37 (EP-6): Status in sync mode → response contains sync_clock_state
     #[tokio::test]
     async fn status_in_sync_mode_includes_sync_clock_state_tracking() {
         let (store, engine, settings, shutdown_tx) = make_shared_state();
@@ -959,7 +930,6 @@ mod tests {
         assert_eq!(v["sync_clock_state"], "lost");
     }
 
-    // T-39 (EP-6): Status in standalone mode → no sync_clock_state field
     #[tokio::test]
     async fn status_in_standalone_mode_excludes_sync_clock_state() {
         let response = send_command_get_response(r#"{"command":"status"}"#).await;
@@ -969,7 +939,6 @@ mod tests {
         assert!(v.get("sync_clock_state").is_none(), "sync_clock_state must not appear in standalone mode");
     }
 
-    // T-43 (EP-6 fix): loop-start in sync mode → sync_mode_active error
     #[tokio::test]
     async fn loop_start_in_sync_mode_returns_error() {
         let (store, engine, settings, shutdown_tx) = make_shared_state();
@@ -991,7 +960,6 @@ mod tests {
         assert_eq!(v["code"], "sync_mode_active");
     }
 
-    // T-44 (EP-6 fix): loop-stop in sync mode → sync_mode_active error
     #[tokio::test]
     async fn loop_stop_in_sync_mode_returns_error() {
         let (store, engine, settings, shutdown_tx) = make_shared_state();
@@ -1013,7 +981,6 @@ mod tests {
         assert_eq!(v["code"], "sync_mode_active");
     }
 
-    // T-41 (EP-6): SetMode "sync" without a MidiClockReceiver → sync_requires_port error
     #[tokio::test]
     async fn set_mode_sync_without_receiver_returns_error() {
         let response = send_command_get_response(r#"{"command":"set-mode","mode":"sync"}"#).await;
@@ -1022,7 +989,6 @@ mod tests {
         assert_eq!(v["code"], "sync_requires_port");
     }
 
-    // T-5: validation_error_response with LoopDurationZero → non-empty message (AC-10)
     #[test]
     fn validation_error_response_loop_duration_zero() {
         let v = validation_error_response(ValidationError::LoopDurationZero);
@@ -1031,7 +997,6 @@ mod tests {
         assert!(!v["message"].as_str().unwrap().is_empty());
     }
 
-    // T-5: NoteStartTickOutOfRange → message includes start_tick and loop_duration (AC-11)
     #[test]
     fn validation_error_response_note_start_tick_out_of_range() {
         let v = validation_error_response(ValidationError::NoteStartTickOutOfRange {
@@ -1048,7 +1013,6 @@ mod tests {
         assert!(msg.contains("50"), "message should include loop_duration 50, got: {msg}");
     }
 
-    // T-5: NoteDurationExceedsLimit → message includes duration and limit (AC-12)
     #[test]
     fn validation_error_response_note_duration_exceeds_limit() {
         let v = validation_error_response(ValidationError::NoteDurationExceedsLimit {
@@ -1065,7 +1029,6 @@ mod tests {
         assert!(msg.contains("3840"), "message should include limit 3840, got: {msg}");
     }
 
-    // T-7: create-project with loop_duration 0 → validation_error (AC-1)
     #[tokio::test]
     async fn create_project_loop_duration_zero() {
         let response = send_command_get_response(
@@ -1078,7 +1041,6 @@ mod tests {
         assert!(!v["message"].as_str().unwrap().is_empty());
     }
 
-    // T-7: note with start_tick >= loop_duration → validation_error (AC-2)
     #[tokio::test]
     async fn create_project_note_start_tick_out_of_range() {
         let response = send_command_get_response(
@@ -1090,7 +1052,6 @@ mod tests {
         assert_eq!(v["code"], "validation_error");
     }
 
-    // T-7: note with duration 0 → validation_error (AC-3)
     #[tokio::test]
     async fn create_project_note_duration_zero() {
         let response = send_command_get_response(
@@ -1102,7 +1063,6 @@ mod tests {
         assert_eq!(v["code"], "validation_error");
     }
 
-    // T-7: start_tick + duration > 2 * loop_duration → validation_error (AC-4)
     #[tokio::test]
     async fn create_project_note_duration_exceeds_limit() {
         let response = send_command_get_response(
@@ -1114,7 +1074,6 @@ mod tests {
         assert_eq!(v["code"], "validation_error");
     }
 
-    // T-7: overlapping notes (same start_tick) → ok (AC-5)
     #[tokio::test]
     async fn create_project_overlapping_notes_ok() {
         let response = send_command_get_response(
@@ -1125,7 +1084,6 @@ mod tests {
         assert_eq!(v["status"], "ok");
     }
 
-    // T-7: boundary note start_tick + duration == 2 * loop_duration → ok (AC-6)
     #[tokio::test]
     async fn create_project_boundary_note_ok() {
         let response = send_command_get_response(
@@ -1136,7 +1094,6 @@ mod tests {
         assert_eq!(v["status"], "ok");
     }
 
-    // T-7: duration 0 AND start_tick >= loop_duration → NoteDurationZero wins (AC-14)
     #[tokio::test]
     async fn create_project_priority_duration_zero_wins() {
         let response = send_command_get_response(
@@ -1150,7 +1107,6 @@ mod tests {
         assert!(msg.contains("duration"), "message should mention duration, got: {msg}");
     }
 
-    // T-9: set-bpm while project active → reconstructed project retains loop_duration (AC-7)
     #[tokio::test]
     async fn set_bpm_retains_loop_duration() {
         let (store, engine, settings, shutdown_tx) = make_shared_state();
@@ -1188,7 +1144,6 @@ mod tests {
         assert_eq!(project.header.loop_duration, 1920);
     }
 
-    // T-11: status with active project → response includes loop_duration (AC-8)
     #[tokio::test]
     async fn status_with_project_includes_loop_duration() {
         let (store, engine, settings, shutdown_tx) = make_shared_state();
@@ -1224,7 +1179,6 @@ mod tests {
         assert!(v.get("time_signature").is_none());
     }
 
-    // T-11: status with no project → loop_duration key absent (AC-9)
     #[tokio::test]
     async fn status_no_project_excludes_loop_duration() {
         let response = send_command_get_response(r#"{"command":"status"}"#).await;

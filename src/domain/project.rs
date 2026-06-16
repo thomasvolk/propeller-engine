@@ -32,7 +32,6 @@ pub struct Note {
 mod tests {
     use super::*;
 
-    // T-1: construct Header with bpm and loop_duration; assert both fields readable
     #[test]
     fn test_header_fields() {
         let h = Header { bpm: 120, loop_duration: 1920 };
@@ -40,14 +39,12 @@ mod tests {
         assert_eq!(h.loop_duration, 1920);
     }
 
-    // T-2: construct Header with loop_duration 0; assert construction succeeds
     #[test]
     fn test_header_zero_loop_duration() {
         let h = Header { bpm: 120, loop_duration: 0 };
         assert_eq!(h.loop_duration, 0);
     }
 
-    // T-3: construct Note with all four fields; assert all readable
     #[test]
     fn test_note_fields() {
         let n = Note { start_tick: 0, duration: 480, pitch: 60, velocity: 80 };
@@ -57,7 +54,6 @@ mod tests {
         assert_eq!(n.velocity, 80);
     }
 
-    // T-4: construct Track with notes; assert track.notes matches
     #[test]
     fn test_track_with_notes() {
         let track = Track {
@@ -74,7 +70,6 @@ mod tests {
         assert_eq!(track.notes[1].pitch, 62);
     }
 
-    // T-5: construct Track with empty notes; assert construction succeeds without panic
     #[test]
     fn test_track_empty_notes() {
         let track = Track {
@@ -86,7 +81,6 @@ mod tests {
         assert_eq!(track.notes.len(), 0);
     }
 
-    // T-6: assert PPQN == 480 via crate::domain::PPQN
     #[test]
     fn test_ppqn_value() {
         assert_eq!(PPQN, 480u32);

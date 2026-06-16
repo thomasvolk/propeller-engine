@@ -191,7 +191,6 @@ mod tests {
         }
     }
 
-    // T-25: feed 25 Pulse messages → state = Tracking (BPM derived, sync_bpm_update called)
     #[test]
     fn pulse_messages_transition_to_tracking() {
         let engine = make_engine_no_project();
@@ -210,7 +209,6 @@ mod tests {
         assert_eq!(receiver.sync_clock_state(), SyncClockState::Tracking);
     }
 
-    // T-27: receiver processes Start → engine.sync_start() called; state = Tracking
     #[test]
     fn start_message_calls_sync_start_and_sets_tracking() {
         let engine = make_engine_with_project();
@@ -228,7 +226,6 @@ mod tests {
         engine.sync_stop();
     }
 
-    // T-29: Continue when clock active → sync_continue() called; Continue when clock inactive → ignored
     #[test]
     fn continue_when_clock_active_calls_sync_continue() {
         let engine = make_engine_with_project();
@@ -267,7 +264,6 @@ mod tests {
         drop(receiver);
     }
 
-    // T-31: receiver processes Stop → sync_stop() called; state = Waiting
     #[test]
     fn stop_message_calls_sync_stop_and_sets_waiting() {
         let engine = make_engine_with_project();
@@ -287,7 +283,6 @@ mod tests {
         assert_eq!(receiver.sync_clock_state(), SyncClockState::Waiting);
     }
 
-    // T-33: timeout → sync_stop() called; state = Lost; subsequent Pulse → state = Tracking, no sync_start
     #[test]
     fn timeout_declares_clock_lost_and_pulse_resumes_tracking_without_start() {
         // Prime with very high-frequency pulses (≈30_000 BPM → 2 ms interval → 7 ms timeout)
@@ -326,7 +321,6 @@ mod tests {
         assert_eq!(engine.state(), EngineState::Stopped, "engine must not restart after clock recovery without Start/Continue");
     }
 
-    // T-35: after clock loss + resume, engine restarts only on new Start or Continue (AC-11)
     #[test]
     fn clock_resume_then_start_restarts_engine() {
         let engine = make_engine_with_project();

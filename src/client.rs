@@ -83,7 +83,6 @@ mod tests {
         rx
     }
 
-    // T-1: send_command writes the correct JSON line and returns Ok(Value)
     #[test]
     fn send_command_ok_path() {
         let dir = TempDir::new().unwrap();
@@ -99,7 +98,6 @@ mod tests {
         assert_eq!(parsed["command"], "loop-start");
     }
 
-    // T-3: send_command returns ClientError::Connect when no socket exists
     #[test]
     fn send_command_connect_error() {
         let result = send_command(
@@ -109,7 +107,6 @@ mod tests {
         assert!(matches!(result, Err(ClientError::Connect(_))));
     }
 
-    // T-5: send_command returns ClientError::Daemon when server replies with error status
     #[test]
     fn send_command_daemon_error() {
         let dir = TempDir::new().unwrap();
@@ -128,7 +125,6 @@ mod tests {
         }
     }
 
-    // T-7: read_project_input(Some(path)) reads a temp file and returns the parsed Value
     #[test]
     fn read_project_input_from_file() {
         let dir = TempDir::new().unwrap();

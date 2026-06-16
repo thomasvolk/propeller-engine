@@ -258,7 +258,7 @@ impl PlayerLoop {
         }
     }
 
-    fn handle_command_in_bar(
+    fn handle_mid_loop_command(
         &mut self,
         cmd: LoopCommand,
         remaining: &[(u64, LoopEvent)],
@@ -348,7 +348,7 @@ impl PlayerLoop {
 
             match self.receiver.try_recv() {
                 Ok(cmd) => {
-                    if let Some(outcome) = self.handle_command_in_bar(cmd, &events[i + 1..]) {
+                    if let Some(outcome) = self.handle_mid_loop_command(cmd, &events[i + 1..]) {
                         return outcome;
                     }
                 }
@@ -388,7 +388,7 @@ impl PlayerLoop {
                     drop(store_r);
                     match self.receiver.try_recv() {
                         Ok(cmd) => {
-                            if let Some(outcome) = self.handle_command_in_bar(cmd, &[]) {
+                            if let Some(outcome) = self.handle_mid_loop_command(cmd, &[]) {
                                 if matches!(outcome, LoopOutcome::Disconnected) {
                                     return BuildResult::Disconnected;
                                 }
@@ -468,7 +468,7 @@ impl PlayerLoop {
                     drop(store_r);
                     match self.receiver.try_recv() {
                         Ok(cmd) => {
-                            self.handle_command_in_bar(cmd, &[]);
+                            self.handle_mid_loop_command(cmd, &[]);
                         }
                         Err(mpsc::TryRecvError::Disconnected) => return BuildResult::Disconnected,
                         Err(mpsc::TryRecvError::Empty) => {
@@ -720,7 +720,6 @@ mod tests {
         }
     }
 
-    // T-1: LoopEvent::NoteOff priority == 0, NoteOn == 1, ClockPulse == 2.
     #[test]
     fn test_loop_event_priority() {
         assert_eq!(LoopEvent::NoteOff { channel: 1, pitch: 60 }.priority(), 0);
@@ -731,7 +730,6 @@ mod tests {
         assert_eq!(LoopEvent::ClockPulse.priority(), 2);
     }
 
-    // T-3: PlayerLoop::new() initialises loop_duration, carry_over, and loop_elapsed_ticks.
     #[test]
     fn test_player_loop_fields() {
         let (player, _tx, _) = make_player(None);
@@ -740,7 +738,6 @@ mod tests {
         assert_eq!(player.loop_elapsed_ticks, 0);
     }
 
-    // T-5: build_loop_events() with one note emits NoteOn at start_tick and NoteOff at
     // start_tick + duration.
     #[test]
     fn test_build_loop_events_single_note() {
@@ -765,7 +762,6 @@ mod tests {
         assert_eq!(off_tick, Some(480), "NoteOff must be at tick 480");
     }
 
-    // T-6: two notes at the same start_tick produce independent NoteOn and NoteOff events.
     #[test]
     fn test_build_loop_events_two_notes_same_tick() {
         let p = Project {
@@ -798,7 +794,6 @@ mod tests {
         assert_eq!(note_offs.len(), 2, "expected two NoteOff events at tick 480");
     }
 
-    // T-8: a cross-loop note produces no NoteOff in the main event list; after advance_loop()
     // carry_over contains one entry at the correct tick offset.
     #[test]
     fn test_carry_over_collected() {
@@ -834,7 +829,6 @@ mod tests {
         );
     }
 
-    // T-9: pre-populated carry_over entries are prepended (sorted by offset) and the field is
     // cleared at the start of build_loop_events().
     #[test]
     fn test_carry_over_prepended() {
@@ -858,7 +852,6 @@ mod tests {
         assert!(has_carry, "carry_over NoteOff at tick 1 must appear in events");
     }
 
-    // T-11: advance_loop() resets loop_elapsed_ticks to 0.
     #[test]
     fn test_advance_loop_resets_elapsed_ticks() {
         let p = project_with_note(
@@ -871,7 +864,6 @@ mod tests {
         assert_eq!(player.loop_elapsed_ticks, 0);
     }
 
-    // T-12: advance_loop() calls commit_pending() so a pending project becomes active.
     #[test]
     fn test_advance_loop_commits_pending() {
         let initial = Project {
@@ -909,7 +901,6 @@ mod tests {
         assert_eq!(player.loop_elapsed_ticks, 0);
     }
 
-    // T-14: build_loop_events() uses the cached loop_duration when no project is active.
     #[test]
     fn test_loop_duration_cached_without_project() {
         let (mut player, _tx, _) = make_player(None);
@@ -927,7 +918,6 @@ mod tests {
         assert_eq!(last_tick, 1900);
     }
 
-    // T-16: clock mode with loop_duration=1920 produces exactly 96 ClockPulse events at ticks
     // 0, 20, 40, …, 1900.
     #[test]
     fn test_clock_pulses_span_loop_duration() {
@@ -955,7 +945,6 @@ mod tests {
         }
     }
 
-    // T-18: init_running_from_project() reads loop_duration from project.header.loop_duration.
     #[test]
     fn test_init_running_from_project_reads_loop_duration() {
         let p = Project {
@@ -979,7 +968,6 @@ mod tests {
         assert_eq!(player.scheduler.bpm(), 140);
     }
 
-    // T-20: do_sync_continue() retains only events with tick >= loop_elapsed_ticks.
     #[test]
     fn test_sync_continue_resumes_mid_loop() {
         let p = Project {
@@ -1009,7 +997,6 @@ mod tests {
         assert!(ticks.contains(&1440), "tick 1440 must be retained");
     }
 
-    // T-22: do_stop() clears carry_over.
     #[test]
     fn test_do_stop_clears_carry_over() {
         let (mut player, _tx, _) = make_player(None);
@@ -1020,7 +1007,6 @@ mod tests {
         assert!(player.carry_over.is_empty(), "carry_over must be empty after do_stop");
     }
 
-    // T-23: do_sync_stop() clears carry_over.
     #[test]
     fn test_do_sync_stop_clears_carry_over() {
         let (mut player, _tx, _) = make_player(None);
@@ -1031,7 +1017,6 @@ mod tests {
         assert!(player.carry_over.is_empty(), "carry_over must be empty after do_sync_stop");
     }
 
-    // T-24: do_sync_restart() clears carry_over, last_instruments, and resets anchor.
     #[test]
     fn test_do_sync_restart_clears_carry_over() {
         let (mut player, _tx, _) = make_player(None);
@@ -1047,7 +1032,6 @@ mod tests {
         );
     }
 
-    // T-26: do_pause() stores remaining events and loop_duration in PauseContext.
     #[test]
     fn test_pause_stores_context() {
         let remaining = vec![

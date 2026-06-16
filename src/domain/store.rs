@@ -57,14 +57,12 @@ mod tests {
         }
     }
 
-    // T-17: new ProjectStore has active = None
     #[test]
     fn test_new_store_has_no_active() {
         let store = ProjectStore::new();
         assert!(store.active().is_none());
     }
 
-    // T-19: set_pending with valid project returns Ok; active still None
     #[test]
     fn test_set_pending_valid() {
         let mut store = ProjectStore::new();
@@ -72,7 +70,6 @@ mod tests {
         assert!(store.active().is_none());
     }
 
-    // T-20: set_pending with invalid project returns Err; active unchanged
     #[test]
     fn test_set_pending_invalid() {
         let mut store = ProjectStore::new();
@@ -84,7 +81,6 @@ mod tests {
         assert!(store.active().is_none());
     }
 
-    // T-22: commit_pending moves pending to active, clears pending, returns true
     #[test]
     fn test_commit_pending_swap() {
         let mut store = ProjectStore::new();
@@ -93,7 +89,6 @@ mod tests {
         assert!(store.active().is_some());
     }
 
-    // T-23: commit_pending with no pending is no-op, returns false
     #[test]
     fn test_commit_pending_no_pending() {
         let mut store = ProjectStore::new();
@@ -101,7 +96,6 @@ mod tests {
         assert!(store.active().is_none());
     }
 
-    // T-25: set_pending twice retains only the second (most recent) project
     #[test]
     fn test_set_pending_twice_retains_last() {
         let mut store = ProjectStore::new();

@@ -204,14 +204,12 @@ mod tests {
         }
     }
 
-    // T-11: LoopEngine::new() → state is Stopped
     #[test]
     fn new_engine_state_is_stopped() {
         let (engine, _) = make_engine_no_project();
         assert_eq!(engine.state(), EngineState::Stopped);
     }
 
-    // T-13: start() with no project → state is Waiting, no MIDI events
     #[test]
     fn start_with_no_project_is_waiting() {
         let (engine, captured) = make_engine_no_project();
@@ -221,7 +219,6 @@ mod tests {
         assert!(captured.lock().unwrap().is_empty());
     }
 
-    // T-14: start() with active project → state transitions to Running
     #[test]
     fn start_with_project_transitions_to_running() {
         let (engine, _) = make_engine_with_project();
@@ -231,7 +228,6 @@ mod tests {
         engine.stop();
     }
 
-    // T-16: stop() while Running → state is Stopped
     #[test]
     fn stop_while_running_transitions_to_stopped() {
         let (engine, _) = make_engine_with_project();
@@ -242,12 +238,11 @@ mod tests {
         assert_eq!(engine.state(), EngineState::Stopped);
     }
 
-    // T-18: running engine with a single non-rest note → NoteOn then NoteOff
     #[test]
-    fn single_note_bar_emits_note_on_then_note_off() {
+    fn single_note_loop_emits_note_on_then_note_off() {
         let (engine, captured) = make_engine_with_project();
         engine.start();
-        // BPM 300, 1/4 bar = 480 ticks, micros_per_tick = 416μs; bar = ~200ms
+        // BPM 300, loop_duration = 480 ticks, micros_per_tick = 416μs; loop = ~200ms
         std::thread::sleep(Duration::from_millis(400));
         engine.stop();
         wait_for_state(&engine, EngineState::Stopped, 200);
@@ -264,9 +259,8 @@ mod tests {
         assert!(first_on.unwrap() < first_off.unwrap(), "NoteOn should precede NoteOff");
     }
 
-    // T-19: track with no notes → no MIDI note events (equivalent to old rest bar)
     #[test]
-    fn rest_note_bar_emits_no_events() {
+    fn empty_loop_emits_no_events() {
         let store = Arc::new(RwLock::new(ProjectStore::new()));
         let project = Project {
             header: Header { bpm: 300, loop_duration: 480 },
@@ -290,10 +284,9 @@ mod tests {
 
         let events = captured.lock().unwrap().clone();
         let note_events: Vec<_> = events.iter().filter(|e| !matches!(e, midi::MidiEvent::ProgramChange { .. })).collect();
-        assert!(note_events.is_empty(), "rest bar should emit no note events, got {:?}", note_events);
+        assert!(note_events.is_empty(), "empty loop should emit no note events, got {:?}", note_events);
     }
 
-    // T-21: two tracks → NoteOn events for both tracks
     #[test]
     fn two_tracks_both_emit_note_on() {
         let store = Arc::new(RwLock::new(ProjectStore::new()));
@@ -328,7 +321,6 @@ mod tests {
         assert!(has_ch2, "expected NoteOn on channel 2");
     }
 
-    // T-23: ProgramChange sent for each track before any NoteOn at loop start
     #[test]
     fn program_change_sent_before_first_note_on() {
         let (engine, captured) = make_engine_with_project();
@@ -345,12 +337,11 @@ mod tests {
         assert!(first_pc.unwrap() < first_on.unwrap(), "ProgramChange must precede first NoteOn");
     }
 
-    // T-25: after final bar the engine wraps to bar 0 and continues (seamless loop)
     #[test]
-    fn engine_loops_seamlessly_after_last_bar() {
+    fn engine_loops_seamlessly() {
         let (engine, captured) = make_engine_with_project();
         engine.start();
-        // Wait 3 bar durations (3 * ~200ms = 600ms) to ensure multiple loops
+        // Wait 3 loop durations (3 * ~200ms = 600ms) to ensure multiple loops
         std::thread::sleep(Duration::from_millis(700));
         engine.stop();
         wait_for_state(&engine, EngineState::Stopped, 200);
@@ -360,16 +351,15 @@ mod tests {
         assert!(note_on_count >= 2, "expected at least 2 NoteOn events across multiple loops, got {}", note_on_count);
     }
 
-    // T-27: pending project takes effect after current bar completes
     #[test]
-    fn pending_project_takes_effect_after_bar_boundary() {
-        let store = make_test_store_with_project(); // BPM 300, 1/4 bar
+    fn pending_project_takes_effect_after_loop_boundary() {
+        let store = make_test_store_with_project(); // BPM 300, loop_duration = 480
 
         let captured = Arc::new(Mutex::new(Vec::new()));
         let output = CapturingOutput { captured: Arc::clone(&captured) };
         let engine = LoopEngine::new(Arc::clone(&store), Box::new(output));
         engine.start();
-        // Wait for at least one bar to play
+        // Wait for at least one loop to play
         std::thread::sleep(Duration::from_millis(150));
 
         // Submit a new project with pitch 62
@@ -384,7 +374,7 @@ mod tests {
         };
         store.write().unwrap().set_pending(new_project).unwrap();
 
-        // Wait for the next bar boundary to pick it up
+        // Wait for the next loop boundary to pick it up
         std::thread::sleep(Duration::from_millis(300));
         engine.stop();
         wait_for_state(&engine, EngineState::Stopped, 200);
@@ -394,7 +384,6 @@ mod tests {
         assert!(has_pitch_62, "expected NoteOn with pitch 62 from updated project");
     }
 
-    // T-29: updated project with changed BPM — no stop occurs
     #[test]
     fn bpm_change_does_not_stop_engine() {
         let store = make_test_store_with_project();
@@ -419,7 +408,6 @@ mod tests {
         engine.stop();
     }
 
-    // T-31: instrument change → ProgramChange re-sent at bar boundary
     #[test]
     fn instrument_change_triggers_program_change() {
         let store = make_test_store_with_project();
@@ -452,7 +440,6 @@ mod tests {
         assert!(has_pc_42, "expected ProgramChange for instrument 42");
     }
 
-    // T-33: Waiting state → project loaded → transitions to Running
     #[test]
     fn waiting_state_transitions_to_running_on_project_load() {
         let store = make_empty_store();
@@ -479,10 +466,9 @@ mod tests {
         engine.stop();
     }
 
-    // T-35: stop while note is sounding → NoteOff emitted before halt
     #[test]
     fn stop_while_note_sounding_emits_note_off() {
-        // Use a very long note (longer than the bar) to ensure it's sounding when we stop
+        // Use a very long note (longer than the loop) to ensure it's sounding when we stop
         let store = Arc::new(RwLock::new(ProjectStore::new()));
         let project = Project {
             header: Header { bpm: 60, loop_duration: 1920 },
@@ -511,7 +497,6 @@ mod tests {
         assert!(has_note_off, "expected NoteOff on stop to prevent stuck note");
     }
 
-    // T-37: NoteOff and NoteOn at same tick → NoteOff emitted before NoteOn
     #[test]
     fn note_off_before_note_on_at_same_tick() {
         // Two notes at adjacent start_ticks:
@@ -552,7 +537,6 @@ mod tests {
         );
     }
 
-    // T-40: start() while Running → no state change, no restart
     #[test]
     fn start_while_running_is_noop() {
         let (engine, _) = make_engine_with_project();
@@ -564,7 +548,6 @@ mod tests {
         engine.stop();
     }
 
-    // T-42: dropping LoopEngine causes loop thread to exit
     #[test]
     fn dropping_loop_engine_exits_thread() {
         let store = make_empty_store();
@@ -584,7 +567,6 @@ mod tests {
         assert!(result.is_ok(), "player thread should exit cleanly after sender is dropped");
     }
 
-    // T-39: timing jitter test — events within ±5ms of scheduled deadline
     #[test]
     #[ignore] // slow test; run with --include-ignored
     fn timing_jitter_within_5ms() {
@@ -643,25 +625,23 @@ mod tests {
         let output = TimestampedOutput { timestamps: Arc::clone(&timestamps) };
         let engine = LoopEngine::new(Arc::clone(&store), Box::new(output));
         engine.start();
-        // Run for 4 bars
+        // Run for 4 loops
         std::thread::sleep(Duration::from_millis(2000));
         engine.stop();
 
         // We can't easily check exact timing here without the anchor,
-        // but we verify the engine produced output and ran for 4 bars.
+        // but we verify the engine produced output and ran for 4 loops.
         let ts = timestamps.lock().unwrap();
         let note_on_count = ts.iter().filter(|(_, e)| matches!(e, midi::MidiEvent::NoteOn { .. })).count();
-        assert!(note_on_count >= 16, "expected at least 16 NoteOn events over 4 bars * 4 repetitions, got {}", note_on_count);
+        assert!(note_on_count >= 16, "expected at least 16 NoteOn events over 4 loops * 4 repetitions, got {}", note_on_count);
     }
 
-    // T-3 (EP-5): EngineState::Paused exists and can be stored in Arc<Mutex<EngineState>>
     #[test]
     fn engine_state_paused_exists() {
         let state: Arc<Mutex<EngineState>> = Arc::new(Mutex::new(EngineState::Paused));
         assert_eq!(*state.lock().unwrap(), EngineState::Paused);
     }
 
-    // T-5 (EP-5): clock_start() with project → Running; clock_stop() → Stopped
     #[test]
     fn clock_start_with_project_transitions_to_running_and_stop_to_stopped() {
         let (engine, _) = make_engine_with_project();
@@ -673,7 +653,6 @@ mod tests {
         assert_eq!(engine.state(), EngineState::Stopped);
     }
 
-    // T-7 (EP-5): clock_start() emits ClockStart (0xFA) before first ClockTick (0xF8)
     #[test]
     fn clock_start_emits_clock_start_before_first_clock_tick() {
         let (engine, captured) = make_engine_with_project();
@@ -693,22 +672,20 @@ mod tests {
         );
     }
 
-    // T-9 (EP-5): clock mode with 1/4-bar at BPM 300 produces ≥24 ClockTick events per bar
     #[test]
     fn clock_mode_emits_clock_ticks() {
-        let (engine, captured) = make_engine_with_project(); // BPM 300, 1/4 bar
+        let (engine, captured) = make_engine_with_project(); // BPM 300, loop_duration = 480
         engine.clock_start();
-        // Bar duration ≈ 200ms; wait 250ms to ensure at least one full bar
+        // Loop duration ≈ 200ms; wait 250ms to ensure at least one full loop
         std::thread::sleep(Duration::from_millis(250));
         engine.clock_stop();
         wait_for_state(&engine, EngineState::Stopped, 500);
 
         let events = captured.lock().unwrap().clone();
         let tick_count = events.iter().filter(|e| matches!(e, midi::MidiEvent::ClockTick)).count();
-        assert!(tick_count >= 24, "expected ≥24 ClockTick events for one bar at BPM 300, got {}", tick_count);
+        assert!(tick_count >= 24, "expected ≥24 ClockTick events for one loop at BPM 300, got {}", tick_count);
     }
 
-    // T-13 (EP-5): clock_start() → both NoteOn events and ClockTick events emitted
     #[test]
     fn clock_start_plays_notes_and_clock_ticks() {
         let (engine, captured) = make_engine_with_project();
@@ -724,7 +701,6 @@ mod tests {
         assert!(has_clock_tick, "expected ClockTick events in clock mode");
     }
 
-    // T-15 (EP-5): clock_pause() while running → Paused; NoteOff flushed; no ClockStop
     #[test]
     fn clock_pause_transitions_to_paused_and_flushes_notes() {
         let store = Arc::new(RwLock::new(ProjectStore::new()));
@@ -757,7 +733,6 @@ mod tests {
         engine.clock_stop();
     }
 
-    // T-17 (EP-5): clock_resume() → ClockContinue (0xFB) before first resumed ClockTick; Running
     #[test]
     fn clock_resume_sends_continue_before_first_tick() {
         let (engine, captured) = make_engine_with_project();
@@ -786,7 +761,6 @@ mod tests {
         );
     }
 
-    // T-19 (EP-5): after clock_resume(), ClockTick events continue (loop did not restart)
     #[test]
     fn clock_resume_continues_clock_ticks_after_pause() {
         let (engine, captured) = make_engine_with_project();
@@ -808,7 +782,6 @@ mod tests {
         assert!(has_tick_after_continue, "expected ClockTick events after ClockContinue");
     }
 
-    // T-21 (EP-5): clock_stop() while running → ClockStop emitted; state Stopped
     #[test]
     fn clock_stop_while_running_emits_clock_stop() {
         let store = Arc::new(RwLock::new(ProjectStore::new()));
@@ -837,7 +810,6 @@ mod tests {
         assert!(has_clock_stop, "expected ClockStop event from clock_stop()");
     }
 
-    // T-23 (EP-5): clock_stop() while paused → ClockStop emitted; state Stopped
     #[test]
     fn clock_stop_while_paused_emits_clock_stop() {
         let (engine, captured) = make_engine_with_project();
@@ -855,7 +827,6 @@ mod tests {
         assert!(has_clock_stop, "expected ClockStop after clock_stop() while paused");
     }
 
-    // T-25 (EP-5): BPM change while clock running → clock continues without stopping
     #[test]
     fn bpm_change_does_not_stop_clock_mode() {
         let store = make_test_store_with_project();
@@ -881,7 +852,6 @@ mod tests {
         engine.clock_stop();
     }
 
-    // T-27 (EP-5): project removed → clock continues (ClockTick), no NoteOn, no ClockStop from removal
     #[test]
     fn project_removed_clock_continues_without_notes() {
         let store = make_test_store_with_project();
@@ -901,7 +871,7 @@ mod tests {
             ev.iter().filter(|e| matches!(e, midi::MidiEvent::ClockTick)).count()
         };
 
-        // Wait for more bars to play (with no project, should be clock-only)
+        // Wait for more loops to play (with no project, should be clock-only)
         std::thread::sleep(Duration::from_millis(300));
         engine.clock_stop();
         wait_for_state(&engine, EngineState::Stopped, 500);
@@ -914,13 +884,12 @@ mod tests {
             "clock should continue ticking after project removal"
         );
 
-        // No NoteOn events after project removal (check events after the first bar boundary)
+        // No NoteOn events after project removal (check events after the first loop boundary)
         // The clock_stop at the very end sends ClockStop — that's the only one
         let clock_stop_count = events.iter().filter(|e| matches!(e, midi::MidiEvent::ClockStop)).count();
         assert_eq!(clock_stop_count, 1, "only one ClockStop expected (from explicit clock_stop())");
     }
 
-    // T-29 (EP-5): clock_stop_on_shutdown() while Running → ClockStop sent, state Stopped
     #[test]
     fn clock_stop_on_shutdown_sends_clock_stop_when_running() {
         let (engine, captured) = make_engine_with_project();
@@ -935,7 +904,6 @@ mod tests {
         assert!(has_clock_stop, "expected ClockStop on shutdown");
     }
 
-    // T-25 (EP-1): clock_stop_on_shutdown() blocks until Stopped — state is Stopped immediately on return
     #[test]
     fn clock_stop_on_shutdown_blocks_until_stopped() {
         let (engine, captured) = make_engine_with_project();
@@ -955,9 +923,8 @@ mod tests {
         assert!(has_clock_stop, "ClockStop must be emitted before clock_stop_on_shutdown returns");
     }
 
-    // T-12 (EP-6): SyncStart with active project → state = Running; bar_index resets to 0
     #[test]
-    fn sync_start_with_project_transitions_to_running_at_bar_0() {
+    fn sync_start_with_project_transitions_to_running_at_loop_start() {
         let (engine, _) = make_engine_with_project();
         engine.sync_start();
         wait_for_state(&engine, EngineState::Running, 500);
@@ -966,7 +933,6 @@ mod tests {
         wait_for_state(&engine, EngineState::Stopped, 500);
     }
 
-    // T-14 (EP-6): SyncStart while already Running → bar restarts (still Running)
     #[test]
     fn sync_start_while_running_resets_and_stays_running() {
         let (engine, captured) = make_engine_with_project();
@@ -986,7 +952,6 @@ mod tests {
         wait_for_state(&engine, EngineState::Stopped, 500);
     }
 
-    // T-16 (EP-6): SyncContinue with active project → state = Running; bar_index unchanged
     #[test]
     fn sync_continue_with_project_transitions_to_running() {
         let (engine, _) = make_engine_with_project();
@@ -997,7 +962,6 @@ mod tests {
         wait_for_state(&engine, EngineState::Stopped, 500);
     }
 
-    // T-18 (EP-6): SyncStop → state = Stopped; active notes flushed
     #[test]
     fn sync_stop_transitions_to_stopped_and_flushes_notes() {
         let store = Arc::new(RwLock::new(ProjectStore::new()));
@@ -1027,7 +991,6 @@ mod tests {
         assert!(!has_clock_stop, "sync_stop must not emit ClockStop (0xFC)");
     }
 
-    // T-20 (EP-6): SyncBpmUpdate while Running → applied at bar boundary; engine stays Running
     #[test]
     fn sync_bpm_update_does_not_stop_engine() {
         let (engine, _) = make_engine_with_project(); // BPM 300
@@ -1043,7 +1006,6 @@ mod tests {
         wait_for_state(&engine, EngineState::Stopped, 500);
     }
 
-    // T-12 variant: SyncStart with no project → state = Waiting
     #[test]
     fn sync_start_with_no_project_enters_waiting() {
         let (engine, _) = make_engine_no_project();
@@ -1054,7 +1016,6 @@ mod tests {
         wait_for_state(&engine, EngineState::Stopped, 200);
     }
 
-    // T-29 variant: clock_stop_on_shutdown() while Stopped → no ClockStop
     #[test]
     fn clock_stop_on_shutdown_noop_when_stopped() {
         let (engine, captured) = make_engine_with_project();

@@ -67,7 +67,7 @@ pub async fn run(
         }
     }
 
-    // T-30 (EP-5): send MIDI Stop before removing socket so connected devices don't hang
+    // Send MIDI Stop before removing socket so connected devices don't hang.
     engine_for_shutdown.clock_stop_on_shutdown();
     let _ = std::fs::remove_file(&sock_path);
     info!("daemon stopped");

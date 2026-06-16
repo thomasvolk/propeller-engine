@@ -138,7 +138,6 @@ pub fn open_virtual() -> Result<MidiPortOutput, MidiPortError> {
 mod tests {
     use super::*;
 
-    // T-2: find_port_by_name exact match, order matters
     #[test]
     fn find_port_exact_match_first() {
         let names: Vec<String> = vec!["Surge XT".into(), "Surge".into()];
@@ -151,20 +150,17 @@ mod tests {
         assert_eq!(find_port_by_name(&names, "Surge XT"), Some(1));
     }
 
-    // T-3: prefix alone does not match
     #[test]
     fn find_port_prefix_not_matched() {
         let names: Vec<String> = vec!["Surge XT".into()];
         assert_eq!(find_port_by_name(&names, "Surge"), None);
     }
 
-    // T-4: empty slice → None
     #[test]
     fn find_port_empty_slice() {
         assert_eq!(find_port_by_name(&[], "anything"), None);
     }
 
-    // T-6: note_on_bytes
     #[test]
     fn note_on_bytes_ch1() {
         assert_eq!(note_on_bytes(1, 60, 80), [0x90, 60, 80]);
@@ -175,7 +171,6 @@ mod tests {
         assert_eq!(note_on_bytes(16, 60, 80), [0x9F, 60, 80]);
     }
 
-    // T-7: note_off_bytes
     #[test]
     fn note_off_bytes_ch1() {
         assert_eq!(note_off_bytes(1, 60), [0x80, 60, 0]);
@@ -186,7 +181,6 @@ mod tests {
         assert_eq!(note_off_bytes(16, 60), [0x8F, 60, 0]);
     }
 
-    // T-8: program_change_bytes
     #[test]
     fn program_change_bytes_ch1() {
         assert_eq!(program_change_bytes(1, 42), [0xC0, 42]);
@@ -197,7 +191,6 @@ mod tests {
         assert_eq!(program_change_bytes(2, 0), [0xC1, 0]);
     }
 
-    // T-31 (EP-5): clock byte helpers return correct single-byte MIDI status values
     #[test]
     fn clock_tick_byte() {
         assert_eq!(clock_tick_bytes(), [0xF8]);
@@ -218,7 +211,6 @@ mod tests {
         assert_eq!(clock_stop_bytes(), [0xFC]);
     }
 
-    // T-10: MidiPortInfo serialises to {"index":0,"name":"Surge XT"}
     #[test]
     fn midi_port_info_serialises() {
         let info = MidiPortInfo { index: 0, name: "Surge XT".into() };
@@ -228,7 +220,6 @@ mod tests {
         assert_eq!(v["name"], "Surge XT");
     }
 
-    // T-19: open_port with non-existent name → NotFound error
     #[test]
     fn open_port_not_found() {
         let result = open_port("__propeller_nonexistent__");
@@ -243,7 +234,6 @@ mod tests {
         }
     }
 
-    // T-17: #[ignore] integration — MidiPortOutput loopback via virtual port
     #[test]
     #[ignore]
     fn midi_port_output_loopback() {
@@ -292,7 +282,6 @@ mod tests {
         assert!(msgs.iter().any(|m| m == &[0xC0, 42]), "program_change not received");
     }
 
-    // T-21: #[ignore] integration — open_virtual returns Ok and port is visible
     #[test]
     #[ignore]
     fn open_virtual_creates_port() {

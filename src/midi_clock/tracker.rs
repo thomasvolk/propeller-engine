@@ -66,7 +66,6 @@ impl PulseTracker {
 mod tests {
     use super::*;
 
-    // T-1: bpm() returns None with fewer than 2 pulses; returns ~120 after 25 evenly-spaced pulses
     #[test]
     fn bpm_none_with_no_pulses() {
         let tracker = PulseTracker::new();
@@ -93,7 +92,6 @@ mod tests {
         assert!((bpm as i32 - 120).abs() <= 1, "expected ~120 BPM, got {bpm}");
     }
 
-    // T-3: timeout_duration() returns None before 2 pulses; ~72.9 ms at 120 BPM
     #[test]
     fn timeout_duration_none_with_no_pulses() {
         assert_eq!(PulseTracker::new().timeout_duration(), None);
@@ -120,7 +118,6 @@ mod tests {
         assert!(diff < Duration::from_millis(2), "expected ~72.9 ms, got {timeout:?}");
     }
 
-    // T-5: is_clock_active() true just after a pulse; false after 4 intervals of silence
     #[test]
     fn is_clock_active_true_immediately_after_pulse() {
         let mut tracker = PulseTracker::new();
@@ -146,7 +143,6 @@ mod tests {
         assert!(!tracker.is_clock_active(after_silence));
     }
 
-    // T-7: reset() clears all state — bpm(), timeout_duration(), is_clock_active() all reset
     #[test]
     fn reset_clears_all_state() {
         let mut tracker = PulseTracker::new();

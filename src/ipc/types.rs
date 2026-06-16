@@ -91,7 +91,6 @@ pub fn error_response(code: &str, message: &str) -> Value {
 mod tests {
     use super::*;
 
-    // T-1: deserialize loop-start and set-bpm commands
     #[test]
     fn deserialize_loop_start() {
         let cmd: Command = serde_json::from_str(r#"{"command":"loop-start"}"#).unwrap();
@@ -107,28 +106,24 @@ mod tests {
         }
     }
 
-    // T-3: missing "command" field → serde error
     #[test]
     fn deserialize_missing_command_field_fails() {
         let result: Result<Command, _> = serde_json::from_str(r#"{"bpm":120}"#);
         assert!(result.is_err());
     }
 
-    // T-4: unknown command → serde error
     #[test]
     fn deserialize_unknown_command_fails() {
         let result: Result<Command, _> = serde_json::from_str(r#"{"command":"unknownxyz"}"#);
         assert!(result.is_err());
     }
 
-    // T-12: list-midi-ports deserialises to Command::ListMidiPorts
     #[test]
     fn deserialize_list_midi_ports() {
         let cmd: Command = serde_json::from_str(r#"{"command":"list-midi-ports"}"#).unwrap();
         assert!(matches!(cmd, Command::ListMidiPorts));
     }
 
-    // T-11 (EP-5): clock command variants deserialise correctly
     #[test]
     fn deserialize_clock_start() {
         let cmd: Command = serde_json::from_str(r#"{"command":"clock-start"}"#).unwrap();
@@ -153,14 +148,12 @@ mod tests {
         assert!(matches!(cmd, Command::ClockStop));
     }
 
-    // T-1 (EP-7): EngineSettings::new() defaults to Standalone mode (F-1, F-10, AC-1)
     #[test]
     fn engine_settings_new_default_mode_is_standalone() {
         let settings = EngineSettings::new();
         assert_eq!(settings.mode, EngineMode::Standalone);
     }
 
-    // T-5: response helpers serialise correctly
     #[test]
     fn ok_response_shape() {
         let v = ok_response();
@@ -175,7 +168,6 @@ mod tests {
         assert_eq!(v["message"], "bad json");
     }
 
-    // EP-6: EngineMode::Sync serialises to "sync"
     #[test]
     fn engine_mode_sync_as_str() {
         assert_eq!(EngineMode::Sync.as_str(), "sync");

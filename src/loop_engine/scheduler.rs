@@ -49,7 +49,6 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    // T-1: micros_per_tick returns correct values
     #[test]
     fn micros_per_tick_bpm_125() {
         let s = Scheduler::new(125);
@@ -62,7 +61,6 @@ mod tests {
         assert_eq!(s.micros_per_tick(), 1041);
     }
 
-    // T-3: deadline_for_tick returns correct Instants
     #[test]
     fn deadline_for_tick_zero() {
         let s = Scheduler::new(125);
@@ -78,7 +76,6 @@ mod tests {
         assert_eq!(s.deadline_for_tick(start, 480), expected);
     }
 
-    // T-5: update_bpm changes micros_per_tick and deadline_for_tick uses new rate
     #[test]
     fn update_bpm_changes_rate() {
         let mut s = Scheduler::new(125);
@@ -90,7 +87,6 @@ mod tests {
         assert_eq!(s.deadline_for_tick(start, 480), expected);
     }
 
-    // T-7: sleep_until wakes no more than 5 ms after the deadline
     #[test]
     fn sleep_until_within_5ms() {
         let s = Scheduler::new(120);

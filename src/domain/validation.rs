@@ -78,13 +78,11 @@ mod tests {
         }
     }
 
-    // T-9 (rewrite): validate returns Ok for a well-formed project with BPM 120
     #[test]
     fn test_validate_ok() {
         assert_eq!(validate(&make_valid_project()), Ok(()));
     }
 
-    // T-9 (rewrite): validate returns BpmOutOfRange for BPM 19 and 301
     #[test]
     fn test_validate_bpm_out_of_range() {
         let mut p = make_valid_project();
@@ -94,7 +92,6 @@ mod tests {
         assert!(matches!(validate(&p), Err(ValidationError::BpmOutOfRange { actual: 301 })));
     }
 
-    // T-9 (rewrite): validate returns InvalidMidiChannel for channel 0 and 17
     #[test]
     fn test_validate_invalid_channel() {
         let mut p = make_valid_project();
@@ -104,7 +101,6 @@ mod tests {
         assert!(matches!(validate(&p), Err(ValidationError::InvalidMidiChannel { actual: 17, .. })));
     }
 
-    // T-9 (rewrite): validate returns InvalidMidiInstrument for instrument 128
     #[test]
     fn test_validate_invalid_instrument() {
         let mut p = make_valid_project();
@@ -115,7 +111,6 @@ mod tests {
         ));
     }
 
-    // T-9 (rewrite): validate returns NoteDurationZero for note.duration == 0
     #[test]
     fn test_validate_note_duration_zero() {
         let mut p = make_valid_project();
@@ -126,7 +121,6 @@ mod tests {
         ));
     }
 
-    // T-9 (rewrite): validate returns Ok for zero-track project
     #[test]
     fn test_validate_zero_tracks() {
         let p = Project {
@@ -136,7 +130,6 @@ mod tests {
         assert_eq!(validate(&p), Ok(()));
     }
 
-    // T-1: LoopDurationZero returned when loop_duration == 0 (F-3, AC-1)
     #[test]
     fn test_validate_loop_duration_zero() {
         let p = Project {
@@ -146,7 +139,6 @@ mod tests {
         assert_eq!(validate(&p), Err(ValidationError::LoopDurationZero));
     }
 
-    // T-1: LoopDurationZero is checked before track iteration (F-6)
     #[test]
     fn test_validate_loop_duration_zero_before_channel() {
         let p = Project {
@@ -161,7 +153,6 @@ mod tests {
         assert_eq!(validate(&p), Err(ValidationError::LoopDurationZero));
     }
 
-    // T-3: NoteStartTickOutOfRange when start_tick == loop_duration (AC-2)
     #[test]
     fn test_validate_note_start_tick_at_boundary() {
         let mut p = make_valid_project();
@@ -177,7 +168,6 @@ mod tests {
         );
     }
 
-    // T-3: NoteStartTickOutOfRange when start_tick > loop_duration (AC-2)
     #[test]
     fn test_validate_note_start_tick_exceeds() {
         let mut p = make_valid_project();
@@ -193,7 +183,6 @@ mod tests {
         );
     }
 
-    // T-3: NoteDurationExceedsLimit when start_tick + duration > 2 * loop_duration (AC-4)
     #[test]
     fn test_validate_note_duration_exceeds_limit() {
         let mut p = make_valid_project();
@@ -210,7 +199,6 @@ mod tests {
         );
     }
 
-    // T-3: boundary note start_tick + duration == 2 * loop_duration → Ok (AC-6)
     #[test]
     fn test_validate_note_boundary_ok() {
         let mut p = make_valid_project();
@@ -219,7 +207,6 @@ mod tests {
         assert_eq!(validate(&p), Ok(()));
     }
 
-    // T-3: overlapping notes (same start_tick) are valid (AC-5)
     #[test]
     fn test_validate_overlapping_notes_ok() {
         let p = Project {
@@ -237,7 +224,6 @@ mod tests {
         assert_eq!(validate(&p), Ok(()));
     }
 
-    // T-3: empty notes list on a track is valid (F-8)
     #[test]
     fn test_validate_empty_notes_ok() {
         let p = Project {
@@ -252,7 +238,6 @@ mod tests {
         assert_eq!(validate(&p), Ok(()));
     }
 
-    // T-3: duration == 0 AND start_tick >= loop_duration → NoteDurationZero, not NoteStartTickOutOfRange (AC-14, F-7)
     #[test]
     fn test_validate_priority_duration_zero_wins() {
         let p = Project {
@@ -270,7 +255,6 @@ mod tests {
         );
     }
 
-    // T-3: NoteStartTickOutOfRange fields are correct (AC-11 partial)
     #[test]
     fn test_validate_note_start_tick_out_of_range_fields() {
         let p = Project {

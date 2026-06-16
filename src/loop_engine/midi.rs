@@ -147,7 +147,6 @@ impl MidiOutput for CapturingMidiOutput {
 mod tests {
     use super::*;
 
-    // T-9 (EP-3): MockMidiOutput records NoteOn, NoteOff, ProgramChange in insertion order
     #[test]
     fn mock_records_events_in_order() {
         let mut m = MockMidiOutput::new();
@@ -161,7 +160,6 @@ mod tests {
         ]);
     }
 
-    // T-1 (EP-5): MockMidiOutput records ClockTick, ClockStart, ClockContinue, ClockStop in order
     #[test]
     fn mock_records_clock_events_in_order() {
         let mut m = MockMidiOutput::new();
