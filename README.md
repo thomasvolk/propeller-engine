@@ -182,20 +182,16 @@ Creates and immediately activates a project. A project must be loaded before the
   "command": "create-project",
   "header": {
     "bpm": 120,
-    "time_signature": { "numerator": 4, "denominator": 4 }
+    "loop_duration": 1920
   },
   "tracks": [
     {
       "name": "piano",
       "channel": 1,
       "instrument": 0,
-      "bars": [
-        {
-          "notes": [
-            { "pitch": 60, "velocity": 80, "duration_ticks": 480 },
-            { "rest": true, "duration_ticks": 480 }
-          ]
-        }
+      "notes": [
+        [0, 480, 60, 80],
+        [480, 480, 62, 80]
       ]
     }
   ]
@@ -205,11 +201,14 @@ Creates and immediately activates a project. A project must be loaded before the
 Field notes:
 
 - `bpm` — whole number, 20–300.
-- `time_signature.denominator` — must be 2, 4, 8, or 16.
+- `loop_duration` — total loop length in ticks; 480 ticks equals one quarter note.
 - `channel` — MIDI channel, 1–16.
 - `instrument` — MIDI program number, 0–127.
-- `duration_ticks` — 480 ticks equals one quarter note. Must be greater than 0 and cannot exceed a full bar.
-- Set `"rest": true` on a note to occupy duration without producing sound.
+- Each note is a four-element array `[start_tick, duration, pitch, velocity]`.
+  - `start_tick` — tick offset from loop start; must be less than `loop_duration`.
+  - `duration` — note length in ticks; must be greater than 0.
+  - `pitch` — MIDI note number, 0–127 (middle C = 60).
+  - `velocity` — note-on velocity, 0–127.
 
 #### modify-project
 
@@ -280,13 +279,13 @@ Example response (standalone or clock mode):
   "status": "ok",
   "mode": "standalone",
   "bpm": 120,
-  "time_signature": { "numerator": 4, "denominator": 4 },
+  "loop_duration": 1920,
   "clock_state": "stopped",
   "project_present": true
 }
 ```
 
-`clock_state` is `"started"` while the loop is playing, `"stopped"` otherwise. `time_signature` is `null` when no project is loaded.
+`clock_state` is `"started"` while the loop is playing, `"stopped"` otherwise. `loop_duration` is absent when no project is loaded.
 
 In sync mode the response includes an additional field:
 
@@ -335,11 +334,6 @@ On error:
 - **Operating modes** — `standalone`, `clock`, and `sync` modes are supported. `standalone` and `clock` are switchable at runtime via `set-mode`; `sync` requires `--sync` at daemon startup.
 
 ## Contributing
-
-Specifications live in the `spec/` directory. Read `spec/briefing.md` for the project
-vision and `spec/roadmap.md` for the planned epic sequence before starting work.
-Architecture and coding conventions are in `.claude/architecture-guidelines.md` and
-`.claude/coding-guidelines.md`.
 
 Open issues and submit pull requests at <https://github.com/thomasvolk/propeller-engine>.
 
