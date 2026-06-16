@@ -2,7 +2,7 @@
 // Copyright 2026 Thomas Volk
 
 use super::project::Project;
-use super::validation::{validate, ValidationError};
+use super::validation::{ValidationError, validate};
 
 pub struct ProjectStore {
     active: Option<Project>,
@@ -11,7 +11,10 @@ pub struct ProjectStore {
 
 impl ProjectStore {
     pub fn new() -> Self {
-        ProjectStore { active: None, pending: None }
+        ProjectStore {
+            active: None,
+            pending: None,
+        }
     }
 
     pub fn active(&self) -> Option<&Project> {
@@ -42,17 +45,25 @@ impl ProjectStore {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::project::*;
+    use super::*;
 
     fn make_valid_project() -> Project {
         Project {
-            header: Header { bpm: 120, loop_duration: 1920 },
+            header: Header {
+                bpm: 120,
+                loop_duration: 1920,
+            },
             tracks: vec![Track {
                 name: "piano".to_string(),
                 channel: 1,
                 instrument: 0,
-                notes: vec![Note { start_tick: 0, duration: 480, pitch: 60, velocity: 80 }],
+                notes: vec![Note {
+                    start_tick: 0,
+                    duration: 480,
+                    pitch: 60,
+                    velocity: 80,
+                }],
             }],
         }
     }
@@ -74,7 +85,10 @@ mod tests {
     fn test_set_pending_invalid() {
         let mut store = ProjectStore::new();
         let invalid = Project {
-            header: Header { bpm: 0, loop_duration: 1920 },
+            header: Header {
+                bpm: 0,
+                loop_duration: 1920,
+            },
             tracks: vec![],
         };
         assert!(store.set_pending(invalid).is_err());

@@ -24,7 +24,6 @@ Run these in parallel:
 
 - `cat Cargo.toml` — to read the current version
 - `git log main..HEAD --oneline` — to list commits on this branch
-- `git diff main..HEAD --stat` — to summarise files changed
 - Check whether `docs/CHANGELOG.md` exists and, if so, read it
 
 ### 3. Update Cargo.toml
@@ -48,10 +47,6 @@ The file uses this structure (newest release at the top):
 
 <bullet list of commit subjects from step 2, one per line, prefixed with `- `>
 
-### Files changed
-
-<bullet list from `git diff main..HEAD --stat`, trimmed to file paths only>
-
 ---
 
 <existing content below this line>
@@ -66,8 +61,6 @@ Rules:
   `YYYY-MM-DD` format.
 - Keep commit subjects exactly as written in the git log — do not paraphrase or summarise.
 - Omit merge commits (lines starting with "Merge").
-- The `### Files changed` section lists only the file paths (left column of `--stat`), one per
-  line, prefixed with `- `.
 - Separate the new block from any previous block with a `---` horizontal rule.
 
 ### 5. Run cargo fmt

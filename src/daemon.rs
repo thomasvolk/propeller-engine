@@ -9,7 +9,7 @@ use tokio::sync::oneshot;
 use tracing::info;
 
 use crate::domain::ProjectStore;
-use crate::ipc::{run_ipc_server, EngineMode, EngineSettings};
+use crate::ipc::{EngineMode, EngineSettings, run_ipc_server};
 use crate::loop_engine::{LoopEngine, midi::MidiOutput};
 use crate::midi_clock::MidiClockReceiver;
 

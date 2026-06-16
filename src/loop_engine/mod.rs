@@ -116,12 +116,20 @@ fn make_test_store_with_project() -> Arc<RwLock<ProjectStore>> {
     use crate::domain::*;
     let store = Arc::new(RwLock::new(ProjectStore::new()));
     let project = Project {
-        header: Header { bpm: 300, loop_duration: 480 },
+        header: Header {
+            bpm: 300,
+            loop_duration: 480,
+        },
         tracks: vec![Track {
             name: "t".to_string(),
             channel: 1,
             instrument: 0,
-            notes: vec![Note { start_tick: 0, duration: 480, pitch: 60, velocity: 80 }],
+            notes: vec![Note {
+                start_tick: 0,
+                duration: 480,
+                pitch: 60,
+                velocity: 80,
+            }],
         }],
     };
     store.write().unwrap().set_pending(project).unwrap();
@@ -157,7 +165,9 @@ mod tests {
         let store = make_test_store_with_project();
         let captured = Arc::new(Mutex::new(Vec::new()));
         let captured_clone = Arc::clone(&captured);
-        let output = CapturingOutput { captured: captured_clone };
+        let output = CapturingOutput {
+            captured: captured_clone,
+        };
         (LoopEngine::new(store, Box::new(output)), captured)
     }
 
@@ -165,7 +175,9 @@ mod tests {
         let store = make_empty_store();
         let captured = Arc::new(Mutex::new(Vec::new()));
         let captured_clone = Arc::clone(&captured);
-        let output = CapturingOutput { captured: captured_clone };
+        let output = CapturingOutput {
+            captured: captured_clone,
+        };
         (LoopEngine::new(store, Box::new(output)), captured)
     }
 
@@ -175,31 +187,53 @@ mod tests {
 
     impl MidiOutput for CapturingOutput {
         fn note_on(&mut self, channel: u8, pitch: u8, velocity: u8) -> Result<(), MidiSendError> {
-            self.captured.lock().unwrap().push(midi::MidiEvent::NoteOn { channel, pitch, velocity });
+            self.captured.lock().unwrap().push(midi::MidiEvent::NoteOn {
+                channel,
+                pitch,
+                velocity,
+            });
             Ok(())
         }
         fn note_off(&mut self, channel: u8, pitch: u8) -> Result<(), MidiSendError> {
-            self.captured.lock().unwrap().push(midi::MidiEvent::NoteOff { channel, pitch });
+            self.captured
+                .lock()
+                .unwrap()
+                .push(midi::MidiEvent::NoteOff { channel, pitch });
             Ok(())
         }
         fn program_change(&mut self, channel: u8, program: u8) -> Result<(), MidiSendError> {
-            self.captured.lock().unwrap().push(midi::MidiEvent::ProgramChange { channel, program });
+            self.captured
+                .lock()
+                .unwrap()
+                .push(midi::MidiEvent::ProgramChange { channel, program });
             Ok(())
         }
         fn clock_tick(&mut self) -> Result<(), MidiSendError> {
-            self.captured.lock().unwrap().push(midi::MidiEvent::ClockTick);
+            self.captured
+                .lock()
+                .unwrap()
+                .push(midi::MidiEvent::ClockTick);
             Ok(())
         }
         fn clock_start(&mut self) -> Result<(), MidiSendError> {
-            self.captured.lock().unwrap().push(midi::MidiEvent::ClockStart);
+            self.captured
+                .lock()
+                .unwrap()
+                .push(midi::MidiEvent::ClockStart);
             Ok(())
         }
         fn clock_continue(&mut self) -> Result<(), MidiSendError> {
-            self.captured.lock().unwrap().push(midi::MidiEvent::ClockContinue);
+            self.captured
+                .lock()
+                .unwrap()
+                .push(midi::MidiEvent::ClockContinue);
             Ok(())
         }
         fn clock_stop(&mut self) -> Result<(), MidiSendError> {
-            self.captured.lock().unwrap().push(midi::MidiEvent::ClockStop);
+            self.captured
+                .lock()
+                .unwrap()
+                .push(midi::MidiEvent::ClockStop);
             Ok(())
         }
     }
@@ -249,21 +283,34 @@ mod tests {
 
         let events = captured.lock().unwrap().clone();
         // Filter out program changes
-        let note_events: Vec<_> = events.iter().filter(|e| !matches!(e, midi::MidiEvent::ProgramChange { .. })).collect();
+        let note_events: Vec<_> = events
+            .iter()
+            .filter(|e| !matches!(e, midi::MidiEvent::ProgramChange { .. }))
+            .collect();
         assert!(!note_events.is_empty(), "expected at least one NoteOn");
         // Check pattern: NoteOn followed by NoteOff
-        let first_on = note_events.iter().position(|e| matches!(e, midi::MidiEvent::NoteOn { .. }));
-        let first_off = note_events.iter().position(|e| matches!(e, midi::MidiEvent::NoteOff { .. }));
+        let first_on = note_events
+            .iter()
+            .position(|e| matches!(e, midi::MidiEvent::NoteOn { .. }));
+        let first_off = note_events
+            .iter()
+            .position(|e| matches!(e, midi::MidiEvent::NoteOff { .. }));
         assert!(first_on.is_some(), "expected NoteOn");
         assert!(first_off.is_some(), "expected NoteOff");
-        assert!(first_on.unwrap() < first_off.unwrap(), "NoteOn should precede NoteOff");
+        assert!(
+            first_on.unwrap() < first_off.unwrap(),
+            "NoteOn should precede NoteOff"
+        );
     }
 
     #[test]
     fn empty_loop_emits_no_events() {
         let store = Arc::new(RwLock::new(ProjectStore::new()));
         let project = Project {
-            header: Header { bpm: 300, loop_duration: 480 },
+            header: Header {
+                bpm: 300,
+                loop_duration: 480,
+            },
             tracks: vec![Track {
                 name: "t".to_string(),
                 channel: 1,
@@ -275,7 +322,9 @@ mod tests {
         store.write().unwrap().commit_pending();
 
         let captured = Arc::new(Mutex::new(Vec::new()));
-        let output = CapturingOutput { captured: Arc::clone(&captured) };
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
         let engine = LoopEngine::new(store, Box::new(output));
         engine.start();
         std::thread::sleep(Duration::from_millis(300));
@@ -283,23 +332,47 @@ mod tests {
         wait_for_state(&engine, EngineState::Stopped, 200);
 
         let events = captured.lock().unwrap().clone();
-        let note_events: Vec<_> = events.iter().filter(|e| !matches!(e, midi::MidiEvent::ProgramChange { .. })).collect();
-        assert!(note_events.is_empty(), "empty loop should emit no note events, got {:?}", note_events);
+        let note_events: Vec<_> = events
+            .iter()
+            .filter(|e| !matches!(e, midi::MidiEvent::ProgramChange { .. }))
+            .collect();
+        assert!(
+            note_events.is_empty(),
+            "empty loop should emit no note events, got {:?}",
+            note_events
+        );
     }
 
     #[test]
     fn two_tracks_both_emit_note_on() {
         let store = Arc::new(RwLock::new(ProjectStore::new()));
         let project = Project {
-            header: Header { bpm: 300, loop_duration: 480 },
+            header: Header {
+                bpm: 300,
+                loop_duration: 480,
+            },
             tracks: vec![
                 Track {
-                    name: "t1".to_string(), channel: 1, instrument: 0,
-                    notes: vec![Note { start_tick: 0, duration: 480, pitch: 60, velocity: 80 }],
+                    name: "t1".to_string(),
+                    channel: 1,
+                    instrument: 0,
+                    notes: vec![Note {
+                        start_tick: 0,
+                        duration: 480,
+                        pitch: 60,
+                        velocity: 80,
+                    }],
                 },
                 Track {
-                    name: "t2".to_string(), channel: 2, instrument: 1,
-                    notes: vec![Note { start_tick: 0, duration: 480, pitch: 64, velocity: 80 }],
+                    name: "t2".to_string(),
+                    channel: 2,
+                    instrument: 1,
+                    notes: vec![Note {
+                        start_tick: 0,
+                        duration: 480,
+                        pitch: 64,
+                        velocity: 80,
+                    }],
                 },
             ],
         };
@@ -307,7 +380,9 @@ mod tests {
         store.write().unwrap().commit_pending();
 
         let captured = Arc::new(Mutex::new(Vec::new()));
-        let output = CapturingOutput { captured: Arc::clone(&captured) };
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
         let engine = LoopEngine::new(store, Box::new(output));
         engine.start();
         std::thread::sleep(Duration::from_millis(300));
@@ -315,8 +390,12 @@ mod tests {
         wait_for_state(&engine, EngineState::Stopped, 200);
 
         let events = captured.lock().unwrap().clone();
-        let has_ch1 = events.iter().any(|e| matches!(e, midi::MidiEvent::NoteOn { channel: 1, .. }));
-        let has_ch2 = events.iter().any(|e| matches!(e, midi::MidiEvent::NoteOn { channel: 2, .. }));
+        let has_ch1 = events
+            .iter()
+            .any(|e| matches!(e, midi::MidiEvent::NoteOn { channel: 1, .. }));
+        let has_ch2 = events
+            .iter()
+            .any(|e| matches!(e, midi::MidiEvent::NoteOn { channel: 2, .. }));
         assert!(has_ch1, "expected NoteOn on channel 1");
         assert!(has_ch2, "expected NoteOn on channel 2");
     }
@@ -330,11 +409,18 @@ mod tests {
         wait_for_state(&engine, EngineState::Stopped, 200);
 
         let events = captured.lock().unwrap().clone();
-        let first_pc = events.iter().position(|e| matches!(e, midi::MidiEvent::ProgramChange { .. }));
-        let first_on = events.iter().position(|e| matches!(e, midi::MidiEvent::NoteOn { .. }));
+        let first_pc = events
+            .iter()
+            .position(|e| matches!(e, midi::MidiEvent::ProgramChange { .. }));
+        let first_on = events
+            .iter()
+            .position(|e| matches!(e, midi::MidiEvent::NoteOn { .. }));
         assert!(first_pc.is_some(), "expected at least one ProgramChange");
         assert!(first_on.is_some(), "expected at least one NoteOn");
-        assert!(first_pc.unwrap() < first_on.unwrap(), "ProgramChange must precede first NoteOn");
+        assert!(
+            first_pc.unwrap() < first_on.unwrap(),
+            "ProgramChange must precede first NoteOn"
+        );
     }
 
     #[test]
@@ -347,8 +433,15 @@ mod tests {
         wait_for_state(&engine, EngineState::Stopped, 200);
 
         let events = captured.lock().unwrap().clone();
-        let note_on_count = events.iter().filter(|e| matches!(e, midi::MidiEvent::NoteOn { .. })).count();
-        assert!(note_on_count >= 2, "expected at least 2 NoteOn events across multiple loops, got {}", note_on_count);
+        let note_on_count = events
+            .iter()
+            .filter(|e| matches!(e, midi::MidiEvent::NoteOn { .. }))
+            .count();
+        assert!(
+            note_on_count >= 2,
+            "expected at least 2 NoteOn events across multiple loops, got {}",
+            note_on_count
+        );
     }
 
     #[test]
@@ -356,7 +449,9 @@ mod tests {
         let store = make_test_store_with_project(); // BPM 300, loop_duration = 480
 
         let captured = Arc::new(Mutex::new(Vec::new()));
-        let output = CapturingOutput { captured: Arc::clone(&captured) };
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
         let engine = LoopEngine::new(Arc::clone(&store), Box::new(output));
         engine.start();
         // Wait for at least one loop to play
@@ -364,12 +459,20 @@ mod tests {
 
         // Submit a new project with pitch 62
         let new_project = Project {
-            header: Header { bpm: 300, loop_duration: 480 },
+            header: Header {
+                bpm: 300,
+                loop_duration: 480,
+            },
             tracks: vec![Track {
                 name: "t".to_string(),
                 channel: 1,
                 instrument: 0,
-                notes: vec![Note { start_tick: 0, duration: 480, pitch: 62, velocity: 80 }],
+                notes: vec![Note {
+                    start_tick: 0,
+                    duration: 480,
+                    pitch: 62,
+                    velocity: 80,
+                }],
             }],
         };
         store.write().unwrap().set_pending(new_project).unwrap();
@@ -380,24 +483,41 @@ mod tests {
         wait_for_state(&engine, EngineState::Stopped, 200);
 
         let events = captured.lock().unwrap().clone();
-        let has_pitch_62 = events.iter().any(|e| matches!(e, midi::MidiEvent::NoteOn { pitch: 62, .. }));
-        assert!(has_pitch_62, "expected NoteOn with pitch 62 from updated project");
+        let has_pitch_62 = events
+            .iter()
+            .any(|e| matches!(e, midi::MidiEvent::NoteOn { pitch: 62, .. }));
+        assert!(
+            has_pitch_62,
+            "expected NoteOn with pitch 62 from updated project"
+        );
     }
 
     #[test]
     fn bpm_change_does_not_stop_engine() {
         let store = make_test_store_with_project();
         let captured = Arc::new(Mutex::new(Vec::new()));
-        let output = CapturingOutput { captured: Arc::clone(&captured) };
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
         let engine = LoopEngine::new(Arc::clone(&store), Box::new(output));
         engine.start();
         std::thread::sleep(Duration::from_millis(200));
 
         let new_project = Project {
-            header: Header { bpm: 200, loop_duration: 480 },
+            header: Header {
+                bpm: 200,
+                loop_duration: 480,
+            },
             tracks: vec![Track {
-                name: "t".to_string(), channel: 1, instrument: 0,
-                notes: vec![Note { start_tick: 0, duration: 480, pitch: 60, velocity: 80 }],
+                name: "t".to_string(),
+                channel: 1,
+                instrument: 0,
+                notes: vec![Note {
+                    start_tick: 0,
+                    duration: 480,
+                    pitch: 60,
+                    velocity: 80,
+                }],
             }],
         };
         store.write().unwrap().set_pending(new_project).unwrap();
@@ -412,20 +532,36 @@ mod tests {
     fn instrument_change_triggers_program_change() {
         let store = make_test_store_with_project();
         let captured = Arc::new(Mutex::new(Vec::new()));
-        let output = CapturingOutput { captured: Arc::clone(&captured) };
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
         let engine = LoopEngine::new(Arc::clone(&store), Box::new(output));
         engine.start();
         std::thread::sleep(Duration::from_millis(200));
 
         // Initial PC count
-        let pc_before = captured.lock().unwrap().iter()
-            .filter(|e| matches!(e, midi::MidiEvent::ProgramChange { .. })).count();
+        let pc_before = captured
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| matches!(e, midi::MidiEvent::ProgramChange { .. }))
+            .count();
 
         let new_project = Project {
-            header: Header { bpm: 300, loop_duration: 480 },
+            header: Header {
+                bpm: 300,
+                loop_duration: 480,
+            },
             tracks: vec![Track {
-                name: "t".to_string(), channel: 1, instrument: 42, // changed instrument
-                notes: vec![Note { start_tick: 0, duration: 480, pitch: 60, velocity: 80 }],
+                name: "t".to_string(),
+                channel: 1,
+                instrument: 42, // changed instrument
+                notes: vec![Note {
+                    start_tick: 0,
+                    duration: 480,
+                    pitch: 60,
+                    velocity: 80,
+                }],
             }],
         };
         store.write().unwrap().set_pending(new_project).unwrap();
@@ -434,9 +570,17 @@ mod tests {
         wait_for_state(&engine, EngineState::Stopped, 200);
 
         let events = captured.lock().unwrap().clone();
-        let pc_after = events.iter().filter(|e| matches!(e, midi::MidiEvent::ProgramChange { .. })).count();
-        assert!(pc_after > pc_before, "expected new ProgramChange after instrument change");
-        let has_pc_42 = events.iter().any(|e| matches!(e, midi::MidiEvent::ProgramChange { program: 42, .. }));
+        let pc_after = events
+            .iter()
+            .filter(|e| matches!(e, midi::MidiEvent::ProgramChange { .. }))
+            .count();
+        assert!(
+            pc_after > pc_before,
+            "expected new ProgramChange after instrument change"
+        );
+        let has_pc_42 = events
+            .iter()
+            .any(|e| matches!(e, midi::MidiEvent::ProgramChange { program: 42, .. }));
         assert!(has_pc_42, "expected ProgramChange for instrument 42");
     }
 
@@ -444,7 +588,9 @@ mod tests {
     fn waiting_state_transitions_to_running_on_project_load() {
         let store = make_empty_store();
         let captured = Arc::new(Mutex::new(Vec::new()));
-        let output = CapturingOutput { captured: Arc::clone(&captured) };
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
         let engine = LoopEngine::new(Arc::clone(&store), Box::new(output));
         engine.start();
         wait_for_state(&engine, EngineState::Waiting, 200);
@@ -452,10 +598,20 @@ mod tests {
 
         // Load a project
         let project = Project {
-            header: Header { bpm: 300, loop_duration: 480 },
+            header: Header {
+                bpm: 300,
+                loop_duration: 480,
+            },
             tracks: vec![Track {
-                name: "t".to_string(), channel: 1, instrument: 0,
-                notes: vec![Note { start_tick: 0, duration: 480, pitch: 60, velocity: 80 }],
+                name: "t".to_string(),
+                channel: 1,
+                instrument: 0,
+                notes: vec![Note {
+                    start_tick: 0,
+                    duration: 480,
+                    pitch: 60,
+                    velocity: 80,
+                }],
             }],
         };
         store.write().unwrap().set_pending(project).unwrap();
@@ -471,17 +627,29 @@ mod tests {
         // Use a very long note (longer than the loop) to ensure it's sounding when we stop
         let store = Arc::new(RwLock::new(ProjectStore::new()));
         let project = Project {
-            header: Header { bpm: 60, loop_duration: 1920 },
+            header: Header {
+                bpm: 60,
+                loop_duration: 1920,
+            },
             tracks: vec![Track {
-                name: "t".to_string(), channel: 1, instrument: 0,
-                notes: vec![Note { start_tick: 0, duration: 1920, pitch: 60, velocity: 80 }],
+                name: "t".to_string(),
+                channel: 1,
+                instrument: 0,
+                notes: vec![Note {
+                    start_tick: 0,
+                    duration: 1920,
+                    pitch: 60,
+                    velocity: 80,
+                }],
             }],
         };
         store.write().unwrap().set_pending(project).unwrap();
         store.write().unwrap().commit_pending();
 
         let captured = Arc::new(Mutex::new(Vec::new()));
-        let output = CapturingOutput { captured: Arc::clone(&captured) };
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
         let engine = LoopEngine::new(store, Box::new(output));
         engine.start();
         // Wait for NoteOn to be emitted (note starts at tick 0, so almost immediately)
@@ -491,10 +659,17 @@ mod tests {
         wait_for_state(&engine, EngineState::Stopped, 500);
 
         let events = captured.lock().unwrap().clone();
-        let has_note_on = events.iter().any(|e| matches!(e, midi::MidiEvent::NoteOn { .. }));
-        let has_note_off = events.iter().any(|e| matches!(e, midi::MidiEvent::NoteOff { .. }));
+        let has_note_on = events
+            .iter()
+            .any(|e| matches!(e, midi::MidiEvent::NoteOn { .. }));
+        let has_note_off = events
+            .iter()
+            .any(|e| matches!(e, midi::MidiEvent::NoteOff { .. }));
         assert!(has_note_on, "expected NoteOn to have been emitted");
-        assert!(has_note_off, "expected NoteOff on stop to prevent stuck note");
+        assert!(
+            has_note_off,
+            "expected NoteOff on stop to prevent stuck note"
+        );
     }
 
     #[test]
@@ -504,12 +679,27 @@ mod tests {
         // note2: pitch 62, start_tick 480, duration 480 (NoteOn at tick 480)
         let store = Arc::new(RwLock::new(ProjectStore::new()));
         let project = Project {
-            header: Header { bpm: 300, loop_duration: 960 },
+            header: Header {
+                bpm: 300,
+                loop_duration: 960,
+            },
             tracks: vec![Track {
-                name: "t".to_string(), channel: 1, instrument: 0,
+                name: "t".to_string(),
+                channel: 1,
+                instrument: 0,
                 notes: vec![
-                    Note { start_tick: 0, duration: 480, pitch: 60, velocity: 80 },
-                    Note { start_tick: 480, duration: 480, pitch: 62, velocity: 80 },
+                    Note {
+                        start_tick: 0,
+                        duration: 480,
+                        pitch: 60,
+                        velocity: 80,
+                    },
+                    Note {
+                        start_tick: 480,
+                        duration: 480,
+                        pitch: 62,
+                        velocity: 80,
+                    },
                 ],
             }],
         };
@@ -517,7 +707,9 @@ mod tests {
         store.write().unwrap().commit_pending();
 
         let captured = Arc::new(Mutex::new(Vec::new()));
-        let output = CapturingOutput { captured: Arc::clone(&captured) };
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
         let engine = LoopEngine::new(store, Box::new(output));
         engine.start();
         std::thread::sleep(Duration::from_millis(400));
@@ -525,10 +717,17 @@ mod tests {
         wait_for_state(&engine, EngineState::Stopped, 200);
 
         let events = captured.lock().unwrap().clone();
-        let note_events: Vec<_> = events.iter().filter(|e| !matches!(e, midi::MidiEvent::ProgramChange { .. })).collect();
+        let note_events: Vec<_> = events
+            .iter()
+            .filter(|e| !matches!(e, midi::MidiEvent::ProgramChange { .. }))
+            .collect();
         // Find the boundary tick: NoteOff(60) and NoteOn(62) should appear in that order
-        let off_60_pos = note_events.iter().position(|e| matches!(e, midi::MidiEvent::NoteOff { pitch: 60, .. }));
-        let on_62_pos = note_events.iter().position(|e| matches!(e, midi::MidiEvent::NoteOn { pitch: 62, .. }));
+        let off_60_pos = note_events
+            .iter()
+            .position(|e| matches!(e, midi::MidiEvent::NoteOff { pitch: 60, .. }));
+        let on_62_pos = note_events
+            .iter()
+            .position(|e| matches!(e, midi::MidiEvent::NoteOn { pitch: 62, .. }));
         assert!(off_60_pos.is_some(), "expected NoteOff for pitch 60");
         assert!(on_62_pos.is_some(), "expected NoteOn for pitch 62");
         assert!(
@@ -564,7 +763,10 @@ mod tests {
         drop(sender);
 
         let result = handle.join();
-        assert!(result.is_ok(), "player thread should exit cleanly after sender is dropped");
+        assert!(
+            result.is_ok(),
+            "player thread should exit cleanly after sender is dropped"
+        );
     }
 
     #[test]
@@ -577,18 +779,27 @@ mod tests {
         }
 
         impl MidiOutput for TimestampedOutput {
-            fn note_on(&mut self, channel: u8, pitch: u8, velocity: u8) -> Result<(), MidiSendError> {
+            fn note_on(
+                &mut self,
+                channel: u8,
+                pitch: u8,
+                velocity: u8,
+            ) -> Result<(), MidiSendError> {
                 self.timestamps.lock().unwrap().push((
                     Instant::now(),
-                    midi::MidiEvent::NoteOn { channel, pitch, velocity },
+                    midi::MidiEvent::NoteOn {
+                        channel,
+                        pitch,
+                        velocity,
+                    },
                 ));
                 Ok(())
             }
             fn note_off(&mut self, channel: u8, pitch: u8) -> Result<(), MidiSendError> {
-                self.timestamps.lock().unwrap().push((
-                    Instant::now(),
-                    midi::MidiEvent::NoteOff { channel, pitch },
-                ));
+                self.timestamps
+                    .lock()
+                    .unwrap()
+                    .push((Instant::now(), midi::MidiEvent::NoteOff { channel, pitch }));
                 Ok(())
             }
             fn program_change(&mut self, channel: u8, program: u8) -> Result<(), MidiSendError> {
@@ -598,23 +809,56 @@ mod tests {
                 ));
                 Ok(())
             }
-            fn clock_tick(&mut self) -> Result<(), MidiSendError> { Ok(()) }
-            fn clock_start(&mut self) -> Result<(), MidiSendError> { Ok(()) }
-            fn clock_continue(&mut self) -> Result<(), MidiSendError> { Ok(()) }
-            fn clock_stop(&mut self) -> Result<(), MidiSendError> { Ok(()) }
+            fn clock_tick(&mut self) -> Result<(), MidiSendError> {
+                Ok(())
+            }
+            fn clock_start(&mut self) -> Result<(), MidiSendError> {
+                Ok(())
+            }
+            fn clock_continue(&mut self) -> Result<(), MidiSendError> {
+                Ok(())
+            }
+            fn clock_stop(&mut self) -> Result<(), MidiSendError> {
+                Ok(())
+            }
         }
 
         // BPM 480 → micros_per_tick = 60_000_000/(480*480) = 260μs; loop_duration=1920 ≈ 500ms
         let store = Arc::new(RwLock::new(ProjectStore::new()));
         let project = Project {
-            header: Header { bpm: 480, loop_duration: 1920 },
+            header: Header {
+                bpm: 480,
+                loop_duration: 1920,
+            },
             tracks: vec![Track {
-                name: "t".to_string(), channel: 1, instrument: 0,
+                name: "t".to_string(),
+                channel: 1,
+                instrument: 0,
                 notes: vec![
-                    Note { start_tick: 0, duration: 480, pitch: 60, velocity: 80 },
-                    Note { start_tick: 480, duration: 480, pitch: 62, velocity: 80 },
-                    Note { start_tick: 960, duration: 480, pitch: 64, velocity: 80 },
-                    Note { start_tick: 1440, duration: 480, pitch: 65, velocity: 80 },
+                    Note {
+                        start_tick: 0,
+                        duration: 480,
+                        pitch: 60,
+                        velocity: 80,
+                    },
+                    Note {
+                        start_tick: 480,
+                        duration: 480,
+                        pitch: 62,
+                        velocity: 80,
+                    },
+                    Note {
+                        start_tick: 960,
+                        duration: 480,
+                        pitch: 64,
+                        velocity: 80,
+                    },
+                    Note {
+                        start_tick: 1440,
+                        duration: 480,
+                        pitch: 65,
+                        velocity: 80,
+                    },
                 ],
             }],
         };
@@ -622,7 +866,9 @@ mod tests {
         store.write().unwrap().commit_pending();
 
         let timestamps = Arc::new(Mutex::new(Vec::new()));
-        let output = TimestampedOutput { timestamps: Arc::clone(&timestamps) };
+        let output = TimestampedOutput {
+            timestamps: Arc::clone(&timestamps),
+        };
         let engine = LoopEngine::new(Arc::clone(&store), Box::new(output));
         engine.start();
         // Run for 4 loops
@@ -632,8 +878,15 @@ mod tests {
         // We can't easily check exact timing here without the anchor,
         // but we verify the engine produced output and ran for 4 loops.
         let ts = timestamps.lock().unwrap();
-        let note_on_count = ts.iter().filter(|(_, e)| matches!(e, midi::MidiEvent::NoteOn { .. })).count();
-        assert!(note_on_count >= 16, "expected at least 16 NoteOn events over 4 loops * 4 repetitions, got {}", note_on_count);
+        let note_on_count = ts
+            .iter()
+            .filter(|(_, e)| matches!(e, midi::MidiEvent::NoteOn { .. }))
+            .count();
+        assert!(
+            note_on_count >= 16,
+            "expected at least 16 NoteOn events over 4 loops * 4 repetitions, got {}",
+            note_on_count
+        );
     }
 
     #[test]
@@ -662,8 +915,12 @@ mod tests {
         wait_for_state(&engine, EngineState::Stopped, 500);
 
         let events = captured.lock().unwrap().clone();
-        let start_pos = events.iter().position(|e| matches!(e, midi::MidiEvent::ClockStart));
-        let tick_pos = events.iter().position(|e| matches!(e, midi::MidiEvent::ClockTick));
+        let start_pos = events
+            .iter()
+            .position(|e| matches!(e, midi::MidiEvent::ClockStart));
+        let tick_pos = events
+            .iter()
+            .position(|e| matches!(e, midi::MidiEvent::ClockTick));
         assert!(start_pos.is_some(), "expected ClockStart event");
         assert!(tick_pos.is_some(), "expected at least one ClockTick");
         assert!(
@@ -682,8 +939,15 @@ mod tests {
         wait_for_state(&engine, EngineState::Stopped, 500);
 
         let events = captured.lock().unwrap().clone();
-        let tick_count = events.iter().filter(|e| matches!(e, midi::MidiEvent::ClockTick)).count();
-        assert!(tick_count >= 24, "expected ≥24 ClockTick events for one loop at BPM 300, got {}", tick_count);
+        let tick_count = events
+            .iter()
+            .filter(|e| matches!(e, midi::MidiEvent::ClockTick))
+            .count();
+        assert!(
+            tick_count >= 24,
+            "expected ≥24 ClockTick events for one loop at BPM 300, got {}",
+            tick_count
+        );
     }
 
     #[test]
@@ -695,8 +959,12 @@ mod tests {
         wait_for_state(&engine, EngineState::Stopped, 500);
 
         let events = captured.lock().unwrap().clone();
-        let has_note_on = events.iter().any(|e| matches!(e, midi::MidiEvent::NoteOn { .. }));
-        let has_clock_tick = events.iter().any(|e| matches!(e, midi::MidiEvent::ClockTick));
+        let has_note_on = events
+            .iter()
+            .any(|e| matches!(e, midi::MidiEvent::NoteOn { .. }));
+        let has_clock_tick = events
+            .iter()
+            .any(|e| matches!(e, midi::MidiEvent::ClockTick));
         assert!(has_note_on, "expected NoteOn events in clock mode");
         assert!(has_clock_tick, "expected ClockTick events in clock mode");
     }
@@ -705,17 +973,29 @@ mod tests {
     fn clock_pause_transitions_to_paused_and_flushes_notes() {
         let store = Arc::new(RwLock::new(ProjectStore::new()));
         let project = Project {
-            header: Header { bpm: 60, loop_duration: 1920 },
+            header: Header {
+                bpm: 60,
+                loop_duration: 1920,
+            },
             tracks: vec![Track {
-                name: "t".to_string(), channel: 1, instrument: 0,
-                notes: vec![Note { start_tick: 0, duration: 1920, pitch: 60, velocity: 80 }],
+                name: "t".to_string(),
+                channel: 1,
+                instrument: 0,
+                notes: vec![Note {
+                    start_tick: 0,
+                    duration: 1920,
+                    pitch: 60,
+                    velocity: 80,
+                }],
             }],
         };
         store.write().unwrap().set_pending(project).unwrap();
         store.write().unwrap().commit_pending();
 
         let captured = Arc::new(Mutex::new(Vec::new()));
-        let output = CapturingOutput { captured: Arc::clone(&captured) };
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
         let engine = LoopEngine::new(store, Box::new(output));
 
         engine.clock_start();
@@ -725,9 +1005,16 @@ mod tests {
 
         let events = captured.lock().unwrap().clone();
         assert_eq!(engine.state(), EngineState::Paused);
-        let has_note_off = events.iter().any(|e| matches!(e, midi::MidiEvent::NoteOff { .. }));
-        let has_clock_stop = events.iter().any(|e| matches!(e, midi::MidiEvent::ClockStop));
-        assert!(has_note_off, "expected NoteOff on pause to prevent stuck notes");
+        let has_note_off = events
+            .iter()
+            .any(|e| matches!(e, midi::MidiEvent::NoteOff { .. }));
+        let has_clock_stop = events
+            .iter()
+            .any(|e| matches!(e, midi::MidiEvent::ClockStop));
+        assert!(
+            has_note_off,
+            "expected NoteOff on pause to prevent stuck notes"
+        );
         assert!(!has_clock_stop, "clock_pause must not emit ClockStop");
 
         engine.clock_stop();
@@ -751,9 +1038,16 @@ mod tests {
 
         let events = captured.lock().unwrap().clone();
         let post_resume = &events[pre_resume_count..];
-        let continue_pos = post_resume.iter().position(|e| matches!(e, midi::MidiEvent::ClockContinue));
-        let tick_pos = post_resume.iter().position(|e| matches!(e, midi::MidiEvent::ClockTick));
-        assert!(continue_pos.is_some(), "expected ClockContinue after resume");
+        let continue_pos = post_resume
+            .iter()
+            .position(|e| matches!(e, midi::MidiEvent::ClockContinue));
+        let tick_pos = post_resume
+            .iter()
+            .position(|e| matches!(e, midi::MidiEvent::ClockTick));
+        assert!(
+            continue_pos.is_some(),
+            "expected ClockContinue after resume"
+        );
         assert!(tick_pos.is_some(), "expected ClockTick after resume");
         assert!(
             continue_pos.unwrap() < tick_pos.unwrap(),
@@ -776,27 +1070,43 @@ mod tests {
         wait_for_state(&engine, EngineState::Stopped, 500);
 
         let events = captured.lock().unwrap().clone();
-        let has_tick_after_continue = events.iter()
+        let has_tick_after_continue = events
+            .iter()
             .skip_while(|e| !matches!(e, midi::MidiEvent::ClockContinue))
             .any(|e| matches!(e, midi::MidiEvent::ClockTick));
-        assert!(has_tick_after_continue, "expected ClockTick events after ClockContinue");
+        assert!(
+            has_tick_after_continue,
+            "expected ClockTick events after ClockContinue"
+        );
     }
 
     #[test]
     fn clock_stop_while_running_emits_clock_stop() {
         let store = Arc::new(RwLock::new(ProjectStore::new()));
         let project = Project {
-            header: Header { bpm: 60, loop_duration: 1920 },
+            header: Header {
+                bpm: 60,
+                loop_duration: 1920,
+            },
             tracks: vec![Track {
-                name: "t".to_string(), channel: 1, instrument: 0,
-                notes: vec![Note { start_tick: 0, duration: 1920, pitch: 60, velocity: 80 }],
+                name: "t".to_string(),
+                channel: 1,
+                instrument: 0,
+                notes: vec![Note {
+                    start_tick: 0,
+                    duration: 1920,
+                    pitch: 60,
+                    velocity: 80,
+                }],
             }],
         };
         store.write().unwrap().set_pending(project).unwrap();
         store.write().unwrap().commit_pending();
 
         let captured = Arc::new(Mutex::new(Vec::new()));
-        let output = CapturingOutput { captured: Arc::clone(&captured) };
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
         let engine = LoopEngine::new(store, Box::new(output));
 
         engine.clock_start();
@@ -806,7 +1116,9 @@ mod tests {
 
         let events = captured.lock().unwrap().clone();
         assert_eq!(engine.state(), EngineState::Stopped);
-        let has_clock_stop = events.iter().any(|e| matches!(e, midi::MidiEvent::ClockStop));
+        let has_clock_stop = events
+            .iter()
+            .any(|e| matches!(e, midi::MidiEvent::ClockStop));
         assert!(has_clock_stop, "expected ClockStop event from clock_stop()");
     }
 
@@ -823,15 +1135,22 @@ mod tests {
 
         let events = captured.lock().unwrap().clone();
         assert_eq!(engine.state(), EngineState::Stopped);
-        let has_clock_stop = events.iter().any(|e| matches!(e, midi::MidiEvent::ClockStop));
-        assert!(has_clock_stop, "expected ClockStop after clock_stop() while paused");
+        let has_clock_stop = events
+            .iter()
+            .any(|e| matches!(e, midi::MidiEvent::ClockStop));
+        assert!(
+            has_clock_stop,
+            "expected ClockStop after clock_stop() while paused"
+        );
     }
 
     #[test]
     fn bpm_change_does_not_stop_clock_mode() {
         let store = make_test_store_with_project();
         let captured = Arc::new(Mutex::new(Vec::new()));
-        let output = CapturingOutput { captured: Arc::clone(&captured) };
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
         let engine = LoopEngine::new(Arc::clone(&store), Box::new(output));
 
         engine.clock_start();
@@ -839,16 +1158,30 @@ mod tests {
         std::thread::sleep(Duration::from_millis(200));
 
         let new_project = Project {
-            header: Header { bpm: 200, loop_duration: 480 },
+            header: Header {
+                bpm: 200,
+                loop_duration: 480,
+            },
             tracks: vec![Track {
-                name: "t".to_string(), channel: 1, instrument: 0,
-                notes: vec![Note { start_tick: 0, duration: 480, pitch: 60, velocity: 80 }],
+                name: "t".to_string(),
+                channel: 1,
+                instrument: 0,
+                notes: vec![Note {
+                    start_tick: 0,
+                    duration: 480,
+                    pitch: 60,
+                    velocity: 80,
+                }],
             }],
         };
         store.write().unwrap().set_pending(new_project).unwrap();
 
         std::thread::sleep(Duration::from_millis(300));
-        assert_eq!(engine.state(), EngineState::Running, "engine should still be Running after BPM change");
+        assert_eq!(
+            engine.state(),
+            EngineState::Running,
+            "engine should still be Running after BPM change"
+        );
         engine.clock_stop();
     }
 
@@ -856,7 +1189,9 @@ mod tests {
     fn project_removed_clock_continues_without_notes() {
         let store = make_test_store_with_project();
         let captured = Arc::new(Mutex::new(Vec::new()));
-        let output = CapturingOutput { captured: Arc::clone(&captured) };
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
         let engine = LoopEngine::new(Arc::clone(&store), Box::new(output));
 
         engine.clock_start();
@@ -868,7 +1203,9 @@ mod tests {
 
         let tick_count_mid = {
             let ev = captured.lock().unwrap();
-            ev.iter().filter(|e| matches!(e, midi::MidiEvent::ClockTick)).count()
+            ev.iter()
+                .filter(|e| matches!(e, midi::MidiEvent::ClockTick))
+                .count()
         };
 
         // Wait for more loops to play (with no project, should be clock-only)
@@ -877,7 +1214,10 @@ mod tests {
         wait_for_state(&engine, EngineState::Stopped, 500);
 
         let events = captured.lock().unwrap().clone();
-        let tick_count_final = events.iter().filter(|e| matches!(e, midi::MidiEvent::ClockTick)).count();
+        let tick_count_final = events
+            .iter()
+            .filter(|e| matches!(e, midi::MidiEvent::ClockTick))
+            .count();
 
         assert!(
             tick_count_final > tick_count_mid,
@@ -886,8 +1226,14 @@ mod tests {
 
         // No NoteOn events after project removal (check events after the first loop boundary)
         // The clock_stop at the very end sends ClockStop — that's the only one
-        let clock_stop_count = events.iter().filter(|e| matches!(e, midi::MidiEvent::ClockStop)).count();
-        assert_eq!(clock_stop_count, 1, "only one ClockStop expected (from explicit clock_stop())");
+        let clock_stop_count = events
+            .iter()
+            .filter(|e| matches!(e, midi::MidiEvent::ClockStop))
+            .count();
+        assert_eq!(
+            clock_stop_count, 1,
+            "only one ClockStop expected (from explicit clock_stop())"
+        );
     }
 
     #[test]
@@ -900,7 +1246,9 @@ mod tests {
         wait_for_state(&engine, EngineState::Stopped, 500);
 
         let events = captured.lock().unwrap().clone();
-        let has_clock_stop = events.iter().any(|e| matches!(e, midi::MidiEvent::ClockStop));
+        let has_clock_stop = events
+            .iter()
+            .any(|e| matches!(e, midi::MidiEvent::ClockStop));
         assert!(has_clock_stop, "expected ClockStop on shutdown");
     }
 
@@ -919,8 +1267,13 @@ mod tests {
             "clock_stop_on_shutdown must block until Stopped before returning"
         );
         let events = captured.lock().unwrap().clone();
-        let has_clock_stop = events.iter().any(|e| matches!(e, midi::MidiEvent::ClockStop));
-        assert!(has_clock_stop, "ClockStop must be emitted before clock_stop_on_shutdown returns");
+        let has_clock_stop = events
+            .iter()
+            .any(|e| matches!(e, midi::MidiEvent::ClockStop));
+        assert!(
+            has_clock_stop,
+            "ClockStop must be emitted before clock_stop_on_shutdown returns"
+        );
     }
 
     #[test]
@@ -947,7 +1300,10 @@ mod tests {
         assert_eq!(engine.state(), EngineState::Running);
         // More events should have been emitted
         let events_after = captured.lock().unwrap().len();
-        assert!(events_after > events_before, "expected more events after SyncStart restart");
+        assert!(
+            events_after > events_before,
+            "expected more events after SyncStart restart"
+        );
         engine.sync_stop();
         wait_for_state(&engine, EngineState::Stopped, 500);
     }
@@ -966,16 +1322,28 @@ mod tests {
     fn sync_stop_transitions_to_stopped_and_flushes_notes() {
         let store = Arc::new(RwLock::new(ProjectStore::new()));
         let project = Project {
-            header: Header { bpm: 60, loop_duration: 1920 },
+            header: Header {
+                bpm: 60,
+                loop_duration: 1920,
+            },
             tracks: vec![Track {
-                name: "t".to_string(), channel: 1, instrument: 0,
-                notes: vec![Note { start_tick: 0, duration: 1920, pitch: 60, velocity: 80 }],
+                name: "t".to_string(),
+                channel: 1,
+                instrument: 0,
+                notes: vec![Note {
+                    start_tick: 0,
+                    duration: 1920,
+                    pitch: 60,
+                    velocity: 80,
+                }],
             }],
         };
         store.write().unwrap().set_pending(project).unwrap();
         store.write().unwrap().commit_pending();
         let captured = Arc::new(Mutex::new(Vec::new()));
-        let output = CapturingOutput { captured: Arc::clone(&captured) };
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
         let engine = LoopEngine::new(store, Box::new(output));
 
         engine.sync_start();
@@ -985,9 +1353,13 @@ mod tests {
 
         let events = captured.lock().unwrap().clone();
         assert_eq!(engine.state(), EngineState::Stopped);
-        let has_note_off = events.iter().any(|e| matches!(e, midi::MidiEvent::NoteOff { .. }));
+        let has_note_off = events
+            .iter()
+            .any(|e| matches!(e, midi::MidiEvent::NoteOff { .. }));
         assert!(has_note_off, "expected NoteOff on sync_stop");
-        let has_clock_stop = events.iter().any(|e| matches!(e, midi::MidiEvent::ClockStop));
+        let has_clock_stop = events
+            .iter()
+            .any(|e| matches!(e, midi::MidiEvent::ClockStop));
         assert!(!has_clock_stop, "sync_stop must not emit ClockStop (0xFC)");
     }
 
@@ -1001,7 +1373,11 @@ mod tests {
         engine.sync_bpm_update(150);
 
         std::thread::sleep(Duration::from_millis(200));
-        assert_eq!(engine.state(), EngineState::Running, "engine should remain Running after SyncBpmUpdate");
+        assert_eq!(
+            engine.state(),
+            EngineState::Running,
+            "engine should remain Running after SyncBpmUpdate"
+        );
         engine.sync_stop();
         wait_for_state(&engine, EngineState::Stopped, 500);
     }
@@ -1023,8 +1399,12 @@ mod tests {
         std::thread::sleep(Duration::from_millis(20));
 
         let events = captured.lock().unwrap().clone();
-        let has_clock_stop = events.iter().any(|e| matches!(e, midi::MidiEvent::ClockStop));
-        assert!(!has_clock_stop, "clock_stop_on_shutdown should not emit ClockStop when already Stopped");
+        let has_clock_stop = events
+            .iter()
+            .any(|e| matches!(e, midi::MidiEvent::ClockStop));
+        assert!(
+            !has_clock_stop,
+            "clock_stop_on_shutdown should not emit ClockStop when already Stopped"
+        );
     }
-
 }

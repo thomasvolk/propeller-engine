@@ -24,8 +24,15 @@ struct PauseContext {
 
 #[derive(Clone)]
 enum LoopEvent {
-    NoteOn { channel: u8, pitch: u8, velocity: u8 },
-    NoteOff { channel: u8, pitch: u8 },
+    NoteOn {
+        channel: u8,
+        pitch: u8,
+        velocity: u8,
+    },
+    NoteOff {
+        channel: u8,
+        pitch: u8,
+    },
     ClockPulse,
 }
 
@@ -310,17 +317,25 @@ impl PlayerLoop {
                     eprintln!("MIDI clock_tick failed: {e}");
                 }
             }
-            LoopEvent::NoteOn { channel, pitch, velocity } => {
+            LoopEvent::NoteOn {
+                channel,
+                pitch,
+                velocity,
+            } => {
                 if let Err(e) = self.output.note_on(*channel, *pitch, *velocity) {
                     eprintln!("MIDI note_on failed: {e}");
                 }
-                self.active_notes.push(ActiveNote { channel: *channel, pitch: *pitch });
+                self.active_notes.push(ActiveNote {
+                    channel: *channel,
+                    pitch: *pitch,
+                });
             }
             LoopEvent::NoteOff { channel, pitch } => {
                 if let Err(e) = self.output.note_off(*channel, *pitch) {
                     eprintln!("MIDI note_off failed: {e}");
                 }
-                self.active_notes.retain(|n| !(n.channel == *channel && n.pitch == *pitch));
+                self.active_notes
+                    .retain(|n| !(n.channel == *channel && n.pitch == *pitch));
             }
         }
     }
@@ -374,7 +389,8 @@ impl PlayerLoop {
                         {
                             eprintln!("MIDI program_change failed: {e}");
                         }
-                        self.last_instruments.insert(track.channel, track.instrument);
+                        self.last_instruments
+                            .insert(track.channel, track.instrument);
                     }
                 }
             }
@@ -482,7 +498,9 @@ impl PlayerLoop {
     }
 
     fn advance_loop(&mut self) {
-        self.anchor = self.scheduler.deadline_for_tick(self.anchor, self.loop_duration);
+        self.anchor = self
+            .scheduler
+            .deadline_for_tick(self.anchor, self.loop_duration);
 
         self.store.write().unwrap().commit_pending();
 
@@ -564,11 +582,13 @@ impl PlayerLoop {
             Ok(LoopCommand::SyncBpmUpdate(bpm)) => {
                 self.pending_sync_bpm = Some(bpm);
             }
-            Ok(LoopCommand::Stop
-            | LoopCommand::ClockStop
-            | LoopCommand::SyncStop
-            | LoopCommand::ClockPause
-            | LoopCommand::ClockResume) => {}
+            Ok(
+                LoopCommand::Stop
+                | LoopCommand::ClockStop
+                | LoopCommand::SyncStop
+                | LoopCommand::ClockPause
+                | LoopCommand::ClockResume,
+            ) => {}
             Err(_) => return false,
         }
         true
@@ -679,8 +699,8 @@ pub fn run_player_loop(
 mod tests {
     use super::*;
     use crate::domain::{Header, Note, Project, ProjectStore, Track};
-    use crate::loop_engine::midi::{CapturingMidiOutput, MidiEvent};
     use crate::loop_engine::LoopEngine;
+    use crate::loop_engine::midi::{CapturingMidiOutput, MidiEvent};
     use std::sync::{Arc, Mutex, RwLock};
 
     fn make_store(project: Option<Project>) -> Arc<RwLock<ProjectStore>> {
@@ -694,7 +714,11 @@ mod tests {
 
     fn make_player(
         project: Option<Project>,
-    ) -> (PlayerLoop, mpsc::Sender<LoopCommand>, Arc<Mutex<Vec<MidiEvent>>>) {
+    ) -> (
+        PlayerLoop,
+        mpsc::Sender<LoopCommand>,
+        Arc<Mutex<Vec<MidiEvent>>>,
+    ) {
         let (tx, rx) = mpsc::channel();
         let store = make_store(project);
         let recorded: Arc<Mutex<Vec<MidiEvent>>> = Arc::new(Mutex::new(Vec::new()));
@@ -710,7 +734,10 @@ mod tests {
 
     fn project_with_note(loop_duration: u32, note: Note) -> Project {
         Project {
-            header: Header { bpm: 120, loop_duration },
+            header: Header {
+                bpm: 120,
+                loop_duration,
+            },
             tracks: vec![Track {
                 name: "t".to_string(),
                 channel: 1,
@@ -722,9 +749,21 @@ mod tests {
 
     #[test]
     fn test_loop_event_priority() {
-        assert_eq!(LoopEvent::NoteOff { channel: 1, pitch: 60 }.priority(), 0);
         assert_eq!(
-            LoopEvent::NoteOn { channel: 1, pitch: 60, velocity: 80 }.priority(),
+            LoopEvent::NoteOff {
+                channel: 1,
+                pitch: 60
+            }
+            .priority(),
+            0
+        );
+        assert_eq!(
+            LoopEvent::NoteOn {
+                channel: 1,
+                pitch: 60,
+                velocity: 80
+            }
+            .priority(),
             1
         );
         assert_eq!(LoopEvent::ClockPulse.priority(), 2);
@@ -743,11 +782,18 @@ mod tests {
     fn test_build_loop_events_single_note() {
         let p = project_with_note(
             1920,
-            Note { start_tick: 0, duration: 480, pitch: 60, velocity: 80 },
+            Note {
+                start_tick: 0,
+                duration: 480,
+                pitch: 60,
+                velocity: 80,
+            },
         );
         let (mut player, _tx, _) = make_player(Some(p));
         let result = player.build_loop_events();
-        let BuildResult::Events(events) = result else { panic!("expected Events") };
+        let BuildResult::Events(events) = result else {
+            panic!("expected Events")
+        };
 
         let on_tick = events
             .iter()
@@ -765,14 +811,27 @@ mod tests {
     #[test]
     fn test_build_loop_events_two_notes_same_tick() {
         let p = Project {
-            header: Header { bpm: 120, loop_duration: 1920 },
+            header: Header {
+                bpm: 120,
+                loop_duration: 1920,
+            },
             tracks: vec![Track {
                 name: "t".to_string(),
                 channel: 1,
                 instrument: 0,
                 notes: vec![
-                    Note { start_tick: 0, duration: 480, pitch: 60, velocity: 80 },
-                    Note { start_tick: 0, duration: 480, pitch: 64, velocity: 80 },
+                    Note {
+                        start_tick: 0,
+                        duration: 480,
+                        pitch: 60,
+                        velocity: 80,
+                    },
+                    Note {
+                        start_tick: 0,
+                        duration: 480,
+                        pitch: 64,
+                        velocity: 80,
+                    },
                 ],
             }],
         };
@@ -791,7 +850,11 @@ mod tests {
             .collect();
 
         assert_eq!(note_ons.len(), 2, "expected two NoteOn events at tick 0");
-        assert_eq!(note_offs.len(), 2, "expected two NoteOff events at tick 480");
+        assert_eq!(
+            note_offs.len(),
+            2,
+            "expected two NoteOff events at tick 480"
+        );
     }
 
     // carry_over contains one entry at the correct tick offset.
@@ -799,7 +862,12 @@ mod tests {
     fn test_carry_over_collected() {
         let p = project_with_note(
             1920,
-            Note { start_tick: 0, duration: 1921, pitch: 60, velocity: 80 },
+            Note {
+                start_tick: 0,
+                duration: 1921,
+                pitch: 60,
+                velocity: 80,
+            },
         );
         let (mut player, _tx, _) = make_player(Some(p));
 
@@ -807,20 +875,28 @@ mod tests {
             panic!("expected Events")
         };
 
-        let has_note_off =
-            events.iter().any(|(_, e)| matches!(e, LoopEvent::NoteOff { pitch: 60, .. }));
-        assert!(!has_note_off, "cross-loop NoteOff must not appear in main event list");
+        let has_note_off = events
+            .iter()
+            .any(|(_, e)| matches!(e, LoopEvent::NoteOff { pitch: 60, .. }));
+        assert!(
+            !has_note_off,
+            "cross-loop NoteOff must not appear in main event list"
+        );
 
-        let has_note_on =
-            events.iter().any(|(_, e)| matches!(e, LoopEvent::NoteOn { pitch: 60, .. }));
+        let has_note_on = events
+            .iter()
+            .any(|(_, e)| matches!(e, LoopEvent::NoteOn { pitch: 60, .. }));
         assert!(has_note_on, "NoteOn must still appear in main event list");
 
         player.advance_loop();
 
-        assert_eq!(player.carry_over.len(), 1, "carry_over must have one entry after advance_loop");
         assert_eq!(
-            player.carry_over[0].0,
+            player.carry_over.len(),
             1,
+            "carry_over must have one entry after advance_loop"
+        );
+        assert_eq!(
+            player.carry_over[0].0, 1,
             "carry_over offset must be 1921 - 1920 = 1"
         );
         assert!(
@@ -834,29 +910,50 @@ mod tests {
     fn test_carry_over_prepended() {
         let p = project_with_note(
             1920,
-            Note { start_tick: 480, duration: 480, pitch: 62, velocity: 80 },
+            Note {
+                start_tick: 480,
+                duration: 480,
+                pitch: 62,
+                velocity: 80,
+            },
         );
         let (mut player, _tx, _) = make_player(Some(p));
-        player.carry_over =
-            vec![(1, LoopEvent::NoteOff { channel: 1, pitch: 60 })];
+        player.carry_over = vec![(
+            1,
+            LoopEvent::NoteOff {
+                channel: 1,
+                pitch: 60,
+            },
+        )];
 
         let BuildResult::Events(events) = player.build_loop_events() else {
             panic!("expected Events")
         };
 
-        assert!(player.carry_over.is_empty(), "carry_over must be cleared after build");
+        assert!(
+            player.carry_over.is_empty(),
+            "carry_over must be cleared after build"
+        );
 
         let has_carry = events
             .iter()
             .any(|(t, e)| *t == 1 && matches!(e, LoopEvent::NoteOff { pitch: 60, .. }));
-        assert!(has_carry, "carry_over NoteOff at tick 1 must appear in events");
+        assert!(
+            has_carry,
+            "carry_over NoteOff at tick 1 must appear in events"
+        );
     }
 
     #[test]
     fn test_advance_loop_resets_elapsed_ticks() {
         let p = project_with_note(
             1920,
-            Note { start_tick: 0, duration: 480, pitch: 60, velocity: 80 },
+            Note {
+                start_tick: 0,
+                duration: 480,
+                pitch: 60,
+                velocity: 80,
+            },
         );
         let (mut player, _tx, _) = make_player(Some(p));
         player.loop_elapsed_ticks = 480;
@@ -867,13 +964,19 @@ mod tests {
     #[test]
     fn test_advance_loop_commits_pending() {
         let initial = Project {
-            header: Header { bpm: 120, loop_duration: 960 },
+            header: Header {
+                bpm: 120,
+                loop_duration: 960,
+            },
             tracks: vec![],
         };
         let store = make_store_with_project(initial);
 
         let pending = Project {
-            header: Header { bpm: 140, loop_duration: 960 },
+            header: Header {
+                bpm: 140,
+                loop_duration: 960,
+            },
             tracks: vec![],
         };
         store.write().unwrap().set_pending(pending).unwrap();
@@ -911,10 +1014,20 @@ mod tests {
             panic!("expected Events")
         };
 
-        let pulse_count = events.iter().filter(|(_, e)| matches!(e, LoopEvent::ClockPulse)).count();
-        assert_eq!(pulse_count, 96, "expected 96 clock pulses for cached loop_duration 1920");
-        let last_tick =
-            events.iter().filter(|(_, e)| matches!(e, LoopEvent::ClockPulse)).last().unwrap().0;
+        let pulse_count = events
+            .iter()
+            .filter(|(_, e)| matches!(e, LoopEvent::ClockPulse))
+            .count();
+        assert_eq!(
+            pulse_count, 96,
+            "expected 96 clock pulses for cached loop_duration 1920"
+        );
+        let last_tick = events
+            .iter()
+            .filter(|(_, e)| matches!(e, LoopEvent::ClockPulse))
+            .last()
+            .unwrap()
+            .0;
         assert_eq!(last_tick, 1900);
     }
 
@@ -922,7 +1035,10 @@ mod tests {
     #[test]
     fn test_clock_pulses_span_loop_duration() {
         let p = Project {
-            header: Header { bpm: 120, loop_duration: 1920 },
+            header: Header {
+                bpm: 120,
+                loop_duration: 1920,
+            },
             tracks: vec![],
         };
         let (mut player, _tx, _) = make_player(Some(p));
@@ -948,7 +1064,10 @@ mod tests {
     #[test]
     fn test_init_running_from_project_reads_loop_duration() {
         let p = Project {
-            header: Header { bpm: 140, loop_duration: 3840 },
+            header: Header {
+                bpm: 140,
+                loop_duration: 3840,
+            },
             tracks: vec![],
         };
         let store = make_store_with_project(p);
@@ -971,16 +1090,39 @@ mod tests {
     #[test]
     fn test_sync_continue_resumes_mid_loop() {
         let p = Project {
-            header: Header { bpm: 120, loop_duration: 1920 },
+            header: Header {
+                bpm: 120,
+                loop_duration: 1920,
+            },
             tracks: vec![Track {
                 name: "t".to_string(),
                 channel: 1,
                 instrument: 0,
                 notes: vec![
-                    Note { start_tick: 0, duration: 480, pitch: 60, velocity: 80 },
-                    Note { start_tick: 480, duration: 480, pitch: 62, velocity: 80 },
-                    Note { start_tick: 960, duration: 480, pitch: 64, velocity: 80 },
-                    Note { start_tick: 1440, duration: 480, pitch: 65, velocity: 80 },
+                    Note {
+                        start_tick: 0,
+                        duration: 480,
+                        pitch: 60,
+                        velocity: 80,
+                    },
+                    Note {
+                        start_tick: 480,
+                        duration: 480,
+                        pitch: 62,
+                        velocity: 80,
+                    },
+                    Note {
+                        start_tick: 960,
+                        duration: 480,
+                        pitch: 64,
+                        velocity: 80,
+                    },
+                    Note {
+                        start_tick: 1440,
+                        duration: 480,
+                        pitch: 65,
+                        velocity: 80,
+                    },
                 ],
             }],
         };
@@ -989,7 +1131,10 @@ mod tests {
 
         player.do_sync_continue();
 
-        let ctx = player.pause_context.as_ref().expect("pause_context must be set by do_sync_continue");
+        let ctx = player
+            .pause_context
+            .as_ref()
+            .expect("pause_context must be set by do_sync_continue");
         let ticks: Vec<u64> = ctx.remaining_events.iter().map(|(t, _)| *t).collect();
         assert!(!ticks.contains(&0), "tick 0 must be filtered out");
         assert!(ticks.contains(&480), "tick 480 must be retained");
@@ -1000,32 +1145,59 @@ mod tests {
     #[test]
     fn test_do_stop_clears_carry_over() {
         let (mut player, _tx, _) = make_player(None);
-        player.carry_over = vec![(1, LoopEvent::NoteOff { channel: 1, pitch: 60 })];
+        player.carry_over = vec![(
+            1,
+            LoopEvent::NoteOff {
+                channel: 1,
+                pitch: 60,
+            },
+        )];
 
         player.do_stop();
 
-        assert!(player.carry_over.is_empty(), "carry_over must be empty after do_stop");
+        assert!(
+            player.carry_over.is_empty(),
+            "carry_over must be empty after do_stop"
+        );
     }
 
     #[test]
     fn test_do_sync_stop_clears_carry_over() {
         let (mut player, _tx, _) = make_player(None);
-        player.carry_over = vec![(1, LoopEvent::NoteOff { channel: 1, pitch: 60 })];
+        player.carry_over = vec![(
+            1,
+            LoopEvent::NoteOff {
+                channel: 1,
+                pitch: 60,
+            },
+        )];
 
         player.do_sync_stop();
 
-        assert!(player.carry_over.is_empty(), "carry_over must be empty after do_sync_stop");
+        assert!(
+            player.carry_over.is_empty(),
+            "carry_over must be empty after do_sync_stop"
+        );
     }
 
     #[test]
     fn test_do_sync_restart_clears_carry_over() {
         let (mut player, _tx, _) = make_player(None);
-        player.carry_over = vec![(1, LoopEvent::NoteOff { channel: 1, pitch: 60 })];
+        player.carry_over = vec![(
+            1,
+            LoopEvent::NoteOff {
+                channel: 1,
+                pitch: 60,
+            },
+        )];
         player.last_instruments.insert(1, 42);
 
         player.do_sync_restart();
 
-        assert!(player.carry_over.is_empty(), "carry_over must be empty after do_sync_restart");
+        assert!(
+            player.carry_over.is_empty(),
+            "carry_over must be empty after do_sync_restart"
+        );
         assert!(
             player.last_instruments.is_empty(),
             "last_instruments must be cleared by do_sync_restart"
@@ -1035,15 +1207,31 @@ mod tests {
     #[test]
     fn test_pause_stores_context() {
         let remaining = vec![
-            (480, LoopEvent::NoteOff { channel: 1, pitch: 60 }),
-            (960, LoopEvent::NoteOn { channel: 1, pitch: 64, velocity: 80 }),
+            (
+                480,
+                LoopEvent::NoteOff {
+                    channel: 1,
+                    pitch: 60,
+                },
+            ),
+            (
+                960,
+                LoopEvent::NoteOn {
+                    channel: 1,
+                    pitch: 64,
+                    velocity: 80,
+                },
+            ),
         ];
         let (mut player, _tx, _) = make_player(None);
         player.loop_duration = 1920;
 
         player.do_pause(remaining.clone());
 
-        let ctx = player.pause_context.as_ref().expect("pause_context must be set");
+        let ctx = player
+            .pause_context
+            .as_ref()
+            .expect("pause_context must be set");
         assert_eq!(ctx.loop_duration, 1920);
         assert_eq!(ctx.remaining_events.len(), 2);
         assert_eq!(ctx.remaining_events[0].0, 480);
@@ -1054,12 +1242,20 @@ mod tests {
     #[test]
     fn player_emits_note_on_off_from_start_tick_and_duration() {
         let project = Project {
-            header: Header { bpm: 300, loop_duration: 960 },
+            header: Header {
+                bpm: 300,
+                loop_duration: 960,
+            },
             tracks: vec![Track {
                 name: "t".to_string(),
                 channel: 1,
                 instrument: 0,
-                notes: vec![Note { start_tick: 0, duration: 480, pitch: 60, velocity: 80 }],
+                notes: vec![Note {
+                    start_tick: 0,
+                    duration: 480,
+                    pitch: 60,
+                    velocity: 80,
+                }],
             }],
         };
         let store = make_store_with_project(project);
@@ -1078,16 +1274,25 @@ mod tests {
 
         let events = recorded.lock().unwrap().clone();
         assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, MidiEvent::NoteOn { channel: 1, pitch: 60, velocity: 80 })),
+            events.iter().any(|e| matches!(
+                e,
+                MidiEvent::NoteOn {
+                    channel: 1,
+                    pitch: 60,
+                    velocity: 80
+                }
+            )),
             "expected NoteOn(ch=1, pitch=60, vel=80) in {:?}",
             events
         );
         assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, MidiEvent::NoteOff { channel: 1, pitch: 60 })),
+            events.iter().any(|e| matches!(
+                e,
+                MidiEvent::NoteOff {
+                    channel: 1,
+                    pitch: 60
+                }
+            )),
             "expected NoteOff(ch=1, pitch=60) in {:?}",
             events
         );

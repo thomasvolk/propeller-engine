@@ -11,7 +11,10 @@ pub struct Scheduler {
 impl Scheduler {
     pub fn new(bpm: u32) -> Scheduler {
         let micros_per_tick = 60_000_000u64 / (bpm as u64 * 480);
-        Scheduler { bpm, micros_per_tick }
+        Scheduler {
+            bpm,
+            micros_per_tick,
+        }
     }
 
     pub fn micros_per_tick(&self) -> u64 {

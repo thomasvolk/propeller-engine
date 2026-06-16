@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Thomas Volk
 
+use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use serde_json::Value;
 
 pub(crate) enum ClientError {
     Connect(std::io::Error),

@@ -11,10 +11,20 @@ use crate::midi_clock::SyncClockState;
 #[derive(Debug, Deserialize)]
 #[serde(tag = "command", rename_all = "kebab-case")]
 pub enum Command {
-    CreateProject { header: WireHeader, tracks: Vec<WireTrack> },
-    ModifyProject { header: WireHeader, tracks: Vec<WireTrack> },
-    SetBpm { bpm: f64 },
-    SetMode { mode: String },
+    CreateProject {
+        header: WireHeader,
+        tracks: Vec<WireTrack>,
+    },
+    ModifyProject {
+        header: WireHeader,
+        tracks: Vec<WireTrack>,
+    },
+    SetBpm {
+        bpm: f64,
+    },
+    SetMode {
+        mode: String,
+    },
     LoopStart,
     LoopStop,
     ClockStart,
@@ -75,7 +85,11 @@ pub struct EngineSettings {
 
 impl EngineSettings {
     pub fn new() -> Self {
-        EngineSettings { mode: EngineMode::Standalone, bpm: 120, sync_clock_state: None }
+        EngineSettings {
+            mode: EngineMode::Standalone,
+            bpm: 120,
+            sync_clock_state: None,
+        }
     }
 }
 
@@ -181,8 +195,7 @@ mod tests {
     // EP-NP-2: WireHeader deserialises with bpm and loop_duration
     #[test]
     fn wire_header_deserialises() {
-        let h: WireHeader =
-            serde_json::from_str(r#"{"bpm":120,"loop_duration":1920}"#).unwrap();
+        let h: WireHeader = serde_json::from_str(r#"{"bpm":120,"loop_duration":1920}"#).unwrap();
         assert_eq!(h.bpm, 120);
         assert_eq!(h.loop_duration, 1920);
     }

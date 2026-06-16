@@ -34,9 +34,19 @@ pub trait MidiOutput: Send + 'static {
 #[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum MidiEvent {
-    NoteOn { channel: u8, pitch: u8, velocity: u8 },
-    NoteOff { channel: u8, pitch: u8 },
-    ProgramChange { channel: u8, program: u8 },
+    NoteOn {
+        channel: u8,
+        pitch: u8,
+        velocity: u8,
+    },
+    NoteOff {
+        channel: u8,
+        pitch: u8,
+    },
+    ProgramChange {
+        channel: u8,
+        program: u8,
+    },
     ClockTick,
     ClockStart,
     ClockContinue,
@@ -58,7 +68,11 @@ impl MockMidiOutput {
 #[cfg(test)]
 impl MidiOutput for MockMidiOutput {
     fn note_on(&mut self, channel: u8, pitch: u8, velocity: u8) -> Result<(), MidiSendError> {
-        self.events.push(MidiEvent::NoteOn { channel, pitch, velocity });
+        self.events.push(MidiEvent::NoteOn {
+            channel,
+            pitch,
+            velocity,
+        });
         Ok(())
     }
 
@@ -68,7 +82,8 @@ impl MidiOutput for MockMidiOutput {
     }
 
     fn program_change(&mut self, channel: u8, program: u8) -> Result<(), MidiSendError> {
-        self.events.push(MidiEvent::ProgramChange { channel, program });
+        self.events
+            .push(MidiEvent::ProgramChange { channel, program });
         Ok(())
     }
 
@@ -108,17 +123,27 @@ impl CapturingMidiOutput {
 #[cfg(test)]
 impl MidiOutput for CapturingMidiOutput {
     fn note_on(&mut self, channel: u8, pitch: u8, velocity: u8) -> Result<(), MidiSendError> {
-        self.events.lock().unwrap().push(MidiEvent::NoteOn { channel, pitch, velocity });
+        self.events.lock().unwrap().push(MidiEvent::NoteOn {
+            channel,
+            pitch,
+            velocity,
+        });
         Ok(())
     }
 
     fn note_off(&mut self, channel: u8, pitch: u8) -> Result<(), MidiSendError> {
-        self.events.lock().unwrap().push(MidiEvent::NoteOff { channel, pitch });
+        self.events
+            .lock()
+            .unwrap()
+            .push(MidiEvent::NoteOff { channel, pitch });
         Ok(())
     }
 
     fn program_change(&mut self, channel: u8, program: u8) -> Result<(), MidiSendError> {
-        self.events.lock().unwrap().push(MidiEvent::ProgramChange { channel, program });
+        self.events
+            .lock()
+            .unwrap()
+            .push(MidiEvent::ProgramChange { channel, program });
         Ok(())
     }
 
@@ -153,11 +178,24 @@ mod tests {
         m.note_on(1, 60, 80).unwrap();
         m.note_off(1, 60).unwrap();
         m.program_change(1, 42).unwrap();
-        assert_eq!(m.events, vec![
-            MidiEvent::NoteOn { channel: 1, pitch: 60, velocity: 80 },
-            MidiEvent::NoteOff { channel: 1, pitch: 60 },
-            MidiEvent::ProgramChange { channel: 1, program: 42 },
-        ]);
+        assert_eq!(
+            m.events,
+            vec![
+                MidiEvent::NoteOn {
+                    channel: 1,
+                    pitch: 60,
+                    velocity: 80
+                },
+                MidiEvent::NoteOff {
+                    channel: 1,
+                    pitch: 60
+                },
+                MidiEvent::ProgramChange {
+                    channel: 1,
+                    program: 42
+                },
+            ]
+        );
     }
 
     #[test]
@@ -169,13 +207,23 @@ mod tests {
         m.clock_continue().unwrap();
         m.clock_stop().unwrap();
         m.note_off(1, 60).unwrap();
-        assert_eq!(m.events, vec![
-            MidiEvent::NoteOn { channel: 1, pitch: 60, velocity: 80 },
-            MidiEvent::ClockStart,
-            MidiEvent::ClockTick,
-            MidiEvent::ClockContinue,
-            MidiEvent::ClockStop,
-            MidiEvent::NoteOff { channel: 1, pitch: 60 },
-        ]);
+        assert_eq!(
+            m.events,
+            vec![
+                MidiEvent::NoteOn {
+                    channel: 1,
+                    pitch: 60,
+                    velocity: 80
+                },
+                MidiEvent::ClockStart,
+                MidiEvent::ClockTick,
+                MidiEvent::ClockContinue,
+                MidiEvent::ClockStop,
+                MidiEvent::NoteOff {
+                    channel: 1,
+                    pitch: 60
+                },
+            ]
+        );
     }
 }

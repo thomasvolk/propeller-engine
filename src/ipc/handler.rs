@@ -13,8 +13,7 @@ use crate::loop_engine::{EngineState, LoopEngine};
 use crate::midi_clock::SyncClockState;
 
 use super::types::{
-    Command, EngineMode, EngineSettings, WireTrack, WireHeader,
-    error_response, ok_response,
+    Command, EngineMode, EngineSettings, WireHeader, WireTrack, error_response, ok_response,
 };
 
 pub async fn connection_handler(
@@ -52,9 +51,13 @@ pub async fn connection_handler(
 }
 
 fn parse_command_tag(line: &str) -> Option<Command> {
-    serde_json::from_str::<Value>(line)
-        .ok()
-        .and_then(|v| if v.get("command").and_then(|c| c.as_str()) == Some("stop") { Some(Command::Stop) } else { None })
+    serde_json::from_str::<Value>(line).ok().and_then(|v| {
+        if v.get("command").and_then(|c| c.as_str()) == Some("stop") {
+            Some(Command::Stop)
+        } else {
+            None
+        }
+    })
 }
 
 async fn dispatch(
@@ -71,7 +74,10 @@ async fn dispatch(
     };
 
     if raw.get("command").is_none() {
-        return error_response("missing_command", "request must include a \"command\" field");
+        return error_response(
+            "missing_command",
+            "request must include a \"command\" field",
+        );
     }
 
     let cmd: Result<Command, _> = serde_json::from_str(line);
@@ -90,7 +96,10 @@ async fn dispatch(
             match mode {
                 EngineMode::Clock => {
                     if store.read().unwrap().active().is_none() {
-                        return error_response("no_project", "clock-start requires an active project");
+                        return error_response(
+                            "no_project",
+                            "clock-start requires an active project",
+                        );
                     }
                     engine.clock_start();
                 }
@@ -150,7 +159,10 @@ async fn dispatch(
 
 fn build_domain_project(header: WireHeader, tracks: Vec<WireTrack>) -> Project {
     Project {
-        header: Header { bpm: header.bpm, loop_duration: header.loop_duration },
+        header: Header {
+            bpm: header.bpm,
+            loop_duration: header.loop_duration,
+        },
         tracks: tracks.into_iter().map(wire_track_to_domain).collect(),
     }
 }
@@ -189,7 +201,10 @@ fn handle_set_bpm(
     settings: &Arc<Mutex<EngineSettings>>,
 ) -> Value {
     if settings.lock().unwrap().mode == EngineMode::Sync {
-        return error_response("sync_mode_active", "set-bpm is not allowed in sync mode; tempo is controlled by the external clock");
+        return error_response(
+            "sync_mode_active",
+            "set-bpm is not allowed in sync mode; tempo is controlled by the external clock",
+        );
     }
 
     if bpm.fract() != 0.0 {
@@ -207,23 +222,34 @@ fn handle_set_bpm(
     let rebuild = {
         let guard = store.read().unwrap();
         guard.active().map(|p| {
-            let tracks = p.tracks.iter().map(|t| Track {
-                name: t.name.clone(),
-                channel: t.channel,
-                instrument: t.instrument,
-                notes: t.notes.iter().map(|n| Note {
-                    start_tick: n.start_tick,
-                    duration: n.duration,
-                    pitch: n.pitch,
-                    velocity: n.velocity,
-                }).collect(),
-            }).collect::<Vec<_>>();
+            let tracks = p
+                .tracks
+                .iter()
+                .map(|t| Track {
+                    name: t.name.clone(),
+                    channel: t.channel,
+                    instrument: t.instrument,
+                    notes: t
+                        .notes
+                        .iter()
+                        .map(|n| Note {
+                            start_tick: n.start_tick,
+                            duration: n.duration,
+                            pitch: n.pitch,
+                            velocity: n.velocity,
+                        })
+                        .collect(),
+                })
+                .collect::<Vec<_>>();
             (p.header.loop_duration, tracks)
         })
     };
     if let Some((loop_duration, tracks)) = rebuild {
         let new_project = Project {
-            header: Header { bpm: bpm_u32, loop_duration },
+            header: Header {
+                bpm: bpm_u32,
+                loop_duration,
+            },
             tracks,
         };
         let _ = store.write().unwrap().set_pending(new_project);
@@ -261,7 +287,10 @@ fn handle_set_mode(
             settings.lock().unwrap().mode = new_mode;
             ok_response()
         }
-        None => error_response("invalid_mode", "unrecognised mode; use standalone, clock, or sync"),
+        None => error_response(
+            "invalid_mode",
+            "unrecognised mode; use standalone, clock, or sync",
+        ),
     }
 }
 
@@ -279,9 +308,7 @@ fn handle_status(
         EngineState::Stopped => "stopped",
     };
 
-    let bpm = active
-        .map(|p| p.header.bpm)
-        .unwrap_or(settings_guard.bpm);
+    let bpm = active.map(|p| p.header.bpm).unwrap_or(settings_guard.bpm);
 
     let mut resp = json!({
         "status": "ok",
@@ -316,7 +343,8 @@ fn wire_track_to_domain(t: WireTrack) -> Track {
         name: t.name,
         channel: t.channel,
         instrument: t.instrument,
-        notes: t.notes
+        notes: t
+            .notes
             .into_iter()
             .map(|[start_tick, duration, pitch, velocity]| Note {
                 start_tick,
@@ -343,13 +371,23 @@ fn validation_error_response(e: ValidationError) -> Value {
         ValidationError::NoteDurationZero { track, note } => {
             format!("track {track} note {note}: duration must be > 0")
         }
-        ValidationError::NoteStartTickOutOfRange { track, note, start_tick, loop_duration } => {
+        ValidationError::NoteStartTickOutOfRange {
+            track,
+            note,
+            start_tick,
+            loop_duration,
+        } => {
             format!(
                 "track {track} note {note}: start_tick {start_tick} is out of range \
                  (must be < loop_duration {loop_duration})"
             )
         }
-        ValidationError::NoteDurationExceedsLimit { track, note, duration, limit } => {
+        ValidationError::NoteDurationExceedsLimit {
+            track,
+            note,
+            duration,
+            limit,
+        } => {
             format!(
                 "track {track} note {note}: duration {duration} exceeds limit {limit} \
                  (2 * loop_duration)"
@@ -377,7 +415,10 @@ mod tests {
     ) {
         let (tx, _rx) = oneshot::channel();
         let store = Arc::new(RwLock::new(ProjectStore::new()));
-        let engine = Arc::new(LoopEngine::new(Arc::clone(&store), Box::new(MockMidiOutput::new())));
+        let engine = Arc::new(LoopEngine::new(
+            Arc::clone(&store),
+            Box::new(MockMidiOutput::new()),
+        ));
         (
             store,
             engine,
@@ -570,7 +611,8 @@ mod tests {
         let state = engine.state();
         assert!(
             state == EngineState::Running || state == EngineState::Waiting,
-            "expected Running or Waiting, got {:?}", state
+            "expected Running or Waiting, got {:?}",
+            state
         );
     }
 
@@ -605,12 +647,20 @@ mod tests {
         {
             use crate::domain::*;
             let project = Project {
-                header: Header { bpm: 120, loop_duration: 1920 },
+                header: Header {
+                    bpm: 120,
+                    loop_duration: 1920,
+                },
                 tracks: vec![Track {
                     name: "t".to_string(),
                     channel: 1,
                     instrument: 0,
-                    notes: vec![Note { start_tick: 0, duration: 480, pitch: 60, velocity: 80 }],
+                    notes: vec![Note {
+                        start_tick: 0,
+                        duration: 480,
+                        pitch: 60,
+                        velocity: 80,
+                    }],
                 }],
             };
             store.write().unwrap().set_pending(project).unwrap();
@@ -623,7 +673,14 @@ mod tests {
         let settings_clone = Arc::clone(&settings);
 
         tokio::spawn(async move {
-            connection_handler(server, store_clone, engine_clone, settings_clone, shutdown_tx).await;
+            connection_handler(
+                server,
+                store_clone,
+                engine_clone,
+                settings_clone,
+                shutdown_tx,
+            )
+            .await;
         });
 
         let cmd = r#"{"command":"status"}"#.to_string() + "\n";
@@ -655,7 +712,14 @@ mod tests {
         let settings_clone = Arc::clone(&settings);
 
         tokio::spawn(async move {
-            connection_handler(server, store_clone, engine_clone, settings_clone, shutdown_tx).await;
+            connection_handler(
+                server,
+                store_clone,
+                engine_clone,
+                settings_clone,
+                shutdown_tx,
+            )
+            .await;
         });
 
         let cmd = r#"{"command":"status"}"#.to_string() + "\n";
@@ -681,7 +745,14 @@ mod tests {
         let settings_clone = Arc::clone(&settings);
 
         tokio::spawn(async move {
-            connection_handler(server, store_clone, engine_clone, settings_clone, shutdown_tx).await;
+            connection_handler(
+                server,
+                store_clone,
+                engine_clone,
+                settings_clone,
+                shutdown_tx,
+            )
+            .await;
         });
 
         let cmd = r#"{"command":"status"}"#.to_string() + "\n";
@@ -694,7 +765,10 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
         assert_eq!(v["project_present"], false);
         assert!(v.get("time_signature").is_none());
-        assert!(v.get("loop_duration").is_none(), "loop_duration must be absent when no project");
+        assert!(
+            v.get("loop_duration").is_none(),
+            "loop_duration must be absent when no project"
+        );
         assert_eq!(v["bpm"], 99);
     }
 
@@ -720,12 +794,20 @@ mod tests {
         {
             use crate::domain::*;
             let project = Project {
-                header: Header { bpm: 120, loop_duration: 1920 },
+                header: Header {
+                    bpm: 120,
+                    loop_duration: 1920,
+                },
                 tracks: vec![Track {
                     name: "t".to_string(),
                     channel: 1,
                     instrument: 0,
-                    notes: vec![Note { start_tick: 0, duration: 480, pitch: 60, velocity: 80 }],
+                    notes: vec![Note {
+                        start_tick: 0,
+                        duration: 480,
+                        pitch: 60,
+                        velocity: 80,
+                    }],
                 }],
             };
             store.write().unwrap().set_pending(project).unwrap();
@@ -775,7 +857,10 @@ mod tests {
         let response = send_command_get_response(r#"{"command":"status"}"#).await;
         let v: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
         assert_eq!(v["status"], "ok");
-        assert!(v.get("mode").is_some(), "status response must include mode field");
+        assert!(
+            v.get("mode").is_some(),
+            "status response must include mode field"
+        );
         assert_eq!(v["mode"], "standalone");
     }
 
@@ -808,7 +893,8 @@ mod tests {
         let state = engine_clone.state();
         assert!(
             state == EngineState::Running || state == EngineState::Waiting,
-            "loop must remain running after standalone→clock switch, got {:?}", state
+            "loop must remain running after standalone→clock switch, got {:?}",
+            state
         );
         engine_clone.stop();
     }
@@ -819,12 +905,20 @@ mod tests {
         {
             use crate::domain::*;
             let project = Project {
-                header: Header { bpm: 300, loop_duration: 480 },
+                header: Header {
+                    bpm: 300,
+                    loop_duration: 480,
+                },
                 tracks: vec![Track {
                     name: "t".to_string(),
                     channel: 1,
                     instrument: 0,
-                    notes: vec![Note { start_tick: 0, duration: 480, pitch: 60, velocity: 80 }],
+                    notes: vec![Note {
+                        start_tick: 0,
+                        duration: 480,
+                        pitch: 60,
+                        velocity: 80,
+                    }],
                 }],
             };
             store.write().unwrap().set_pending(project).unwrap();
@@ -854,7 +948,11 @@ mod tests {
         assert_eq!(v["status"], "ok");
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        assert_eq!(engine.state(), EngineState::Stopped, "clock_stop must be called on clock→standalone transition");
+        assert_eq!(
+            engine.state(),
+            EngineState::Stopped,
+            "clock_stop must be called on clock→standalone transition"
+        );
         assert_eq!(settings.lock().unwrap().mode, EngineMode::Standalone);
     }
 
@@ -936,7 +1034,10 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
         assert_eq!(v["status"], "ok");
         assert_eq!(v["mode"], "standalone");
-        assert!(v.get("sync_clock_state").is_none(), "sync_clock_state must not appear in standalone mode");
+        assert!(
+            v.get("sync_clock_state").is_none(),
+            "sync_clock_state must not appear in standalone mode"
+        );
     }
 
     #[tokio::test]
@@ -1009,8 +1110,14 @@ mod tests {
         assert_eq!(v["code"], "validation_error");
         let msg = v["message"].as_str().unwrap();
         assert!(!msg.is_empty());
-        assert!(msg.contains("100"), "message should include start_tick 100, got: {msg}");
-        assert!(msg.contains("50"), "message should include loop_duration 50, got: {msg}");
+        assert!(
+            msg.contains("100"),
+            "message should include start_tick 100, got: {msg}"
+        );
+        assert!(
+            msg.contains("50"),
+            "message should include loop_duration 50, got: {msg}"
+        );
     }
 
     #[test]
@@ -1025,8 +1132,14 @@ mod tests {
         assert_eq!(v["code"], "validation_error");
         let msg = v["message"].as_str().unwrap();
         assert!(!msg.is_empty());
-        assert!(msg.contains("5000"), "message should include duration 5000, got: {msg}");
-        assert!(msg.contains("3840"), "message should include limit 3840, got: {msg}");
+        assert!(
+            msg.contains("5000"),
+            "message should include duration 5000, got: {msg}"
+        );
+        assert!(
+            msg.contains("3840"),
+            "message should include limit 3840, got: {msg}"
+        );
     }
 
     #[tokio::test]
@@ -1104,7 +1217,10 @@ mod tests {
         assert_eq!(v["status"], "error");
         assert_eq!(v["code"], "validation_error");
         let msg = v["message"].as_str().unwrap();
-        assert!(msg.contains("duration"), "message should mention duration, got: {msg}");
+        assert!(
+            msg.contains("duration"),
+            "message should mention duration, got: {msg}"
+        );
     }
 
     #[tokio::test]
@@ -1113,7 +1229,10 @@ mod tests {
         {
             use crate::domain::*;
             let project = Project {
-                header: Header { bpm: 120, loop_duration: 1920 },
+                header: Header {
+                    bpm: 120,
+                    loop_duration: 1920,
+                },
                 tracks: vec![],
             };
             store.write().unwrap().set_pending(project).unwrap();
@@ -1139,7 +1258,9 @@ mod tests {
         // Commit the pending project (created by set-bpm) and verify it retains loop_duration.
         store.write().unwrap().commit_pending();
         let store_r = store.read().unwrap();
-        let project = store_r.active().expect("project should be active after commit");
+        let project = store_r
+            .active()
+            .expect("project should be active after commit");
         assert_eq!(project.header.bpm, 140);
         assert_eq!(project.header.loop_duration, 1920);
     }
@@ -1150,7 +1271,10 @@ mod tests {
         {
             use crate::domain::*;
             let project = Project {
-                header: Header { bpm: 120, loop_duration: 1920 },
+                header: Header {
+                    bpm: 120,
+                    loop_duration: 1920,
+                },
                 tracks: vec![],
             };
             store.write().unwrap().set_pending(project).unwrap();
@@ -1163,7 +1287,14 @@ mod tests {
         let settings_clone = Arc::clone(&settings);
 
         tokio::spawn(async move {
-            connection_handler(server, store_clone, engine_clone, settings_clone, shutdown_tx).await;
+            connection_handler(
+                server,
+                store_clone,
+                engine_clone,
+                settings_clone,
+                shutdown_tx,
+            )
+            .await;
         });
 
         let cmd = r#"{"command":"status"}"#.to_string() + "\n";
@@ -1184,7 +1315,10 @@ mod tests {
         let response = send_command_get_response(r#"{"command":"status"}"#).await;
         let v: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
         assert_eq!(v["status"], "ok");
-        assert!(v.get("loop_duration").is_none(), "loop_duration must be absent when no project");
+        assert!(
+            v.get("loop_duration").is_none(),
+            "loop_duration must be absent when no project"
+        );
         assert!(v.get("time_signature").is_none());
     }
 }

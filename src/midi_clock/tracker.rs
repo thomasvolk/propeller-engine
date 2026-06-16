@@ -10,7 +10,9 @@ pub struct PulseTracker {
 
 impl PulseTracker {
     pub fn new() -> PulseTracker {
-        PulseTracker { history: VecDeque::new() }
+        PulseTracker {
+            history: VecDeque::new(),
+        }
     }
 
     pub fn update(&mut self, now: Instant) {
@@ -25,7 +27,9 @@ impl PulseTracker {
             return None;
         }
         let n = self.history.len();
-        let total_micros: u128 = self.history.iter()
+        let total_micros: u128 = self
+            .history
+            .iter()
             .zip(self.history.iter().skip(1))
             .map(|(a, b)| b.duration_since(*a).as_micros())
             .sum();
@@ -89,7 +93,10 @@ mod tests {
             tracker.update(base + interval * i);
         }
         let bpm = tracker.bpm().expect("should have BPM after 25 pulses");
-        assert!((bpm as i32 - 120).abs() <= 1, "expected ~120 BPM, got {bpm}");
+        assert!(
+            (bpm as i32 - 120).abs() <= 1,
+            "expected ~120 BPM, got {bpm}"
+        );
     }
 
     #[test]
@@ -111,11 +118,20 @@ mod tests {
         let interval = Duration::from_micros(20_833);
         tracker.update(base);
         tracker.update(base + interval);
-        let timeout = tracker.timeout_duration().expect("should have timeout after 2 pulses");
+        let timeout = tracker
+            .timeout_duration()
+            .expect("should have timeout after 2 pulses");
         // 3.5 × 20_833 μs = 72_916 μs ≈ 72.9 ms
         let expected = Duration::from_micros(72_916);
-        let diff = if timeout > expected { timeout - expected } else { expected - timeout };
-        assert!(diff < Duration::from_millis(2), "expected ~72.9 ms, got {timeout:?}");
+        let diff = if timeout > expected {
+            timeout - expected
+        } else {
+            expected - timeout
+        };
+        assert!(
+            diff < Duration::from_millis(2),
+            "expected ~72.9 ms, got {timeout:?}"
+        );
     }
 
     #[test]
