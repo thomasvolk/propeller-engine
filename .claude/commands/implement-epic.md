@@ -16,7 +16,7 @@ Read the following files:
 - `specs/$ARGUMENTS.md` — the PRD for this epic (must exist)
 - `specs/$ARGUMENTS-spec.md` — the technical specification (must exist)
 
-If `spec/$ARGUMENTS.md` does not exist, stop and output:
+If `specs/$ARGUMENTS.md` does not exist, stop and output:
 
 > No PRD found for $ARGUMENTS. Run `/refine-epic $ARGUMENTS` first.
 
