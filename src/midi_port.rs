@@ -63,6 +63,12 @@ impl MidiOutput for MidiPortOutput {
             .map_err(MidiSendError::new)
     }
 
+    fn pitch_bend(&mut self, channel: u8, value: u16) -> Result<(), MidiSendError> {
+        self.0
+            .send(&pitch_bend_bytes(channel, value))
+            .map_err(MidiSendError::new)
+    }
+
     fn clock_tick(&mut self) -> Result<(), MidiSendError> {
         self.0.send(&clock_tick_bytes()).map_err(MidiSendError::new)
     }
@@ -98,6 +104,14 @@ fn note_off_bytes(channel: u8, pitch: u8) -> [u8; 3] {
 
 fn program_change_bytes(channel: u8, program: u8) -> [u8; 2] {
     [0xC0 | (channel - 1), program]
+}
+
+fn pitch_bend_bytes(channel: u8, value: u16) -> [u8; 3] {
+    [
+        0xE0 | (channel - 1),
+        (value & 0x7F) as u8,
+        ((value >> 7) & 0x7F) as u8,
+    ]
 }
 
 fn clock_tick_bytes() -> [u8; 1] {
@@ -216,6 +230,29 @@ mod tests {
     #[test]
     fn program_change_bytes_ch2() {
         assert_eq!(program_change_bytes(2, 0), [0xC1, 0]);
+    }
+
+    // T-3: pitch_bend_bytes encodes values 0, 8192, 16383 on channels 1 and 16 (F-1, AC-1).
+    #[test]
+    fn pitch_bend_bytes_ch1_value_0() {
+        assert_eq!(pitch_bend_bytes(1, 0), [0xE0, 0, 0]);
+    }
+
+    #[test]
+    fn pitch_bend_bytes_ch1_value_8192() {
+        // 8192 = 0b10_0000_0000_0000 -> LSB 0x00, MSB 0x40.
+        assert_eq!(pitch_bend_bytes(1, 8192), [0xE0, 0x00, 0x40]);
+    }
+
+    #[test]
+    fn pitch_bend_bytes_ch1_value_16383() {
+        // 16383 = 0b11_1111_1111_1111 -> LSB 0x7F, MSB 0x7F.
+        assert_eq!(pitch_bend_bytes(1, 16383), [0xE0, 0x7F, 0x7F]);
+    }
+
+    #[test]
+    fn pitch_bend_bytes_ch16_value_8192() {
+        assert_eq!(pitch_bend_bytes(16, 8192), [0xEF, 0x00, 0x40]);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Thomas Volk
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, mpsc};
 use std::time::{Duration, Instant};
@@ -23,7 +23,7 @@ struct PauseContext {
     loop_duration: u64,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum LoopEvent {
     NoteOn {
         channel: u8,
@@ -34,6 +34,10 @@ enum LoopEvent {
         channel: u8,
         pitch: u8,
     },
+    PitchBend {
+        channel: u8,
+        value: u16,
+    },
     ClockPulse,
 }
 
@@ -41,8 +45,9 @@ impl LoopEvent {
     fn priority(&self) -> u8 {
         match self {
             LoopEvent::NoteOff { .. } => 0,
-            LoopEvent::NoteOn { .. } => 1,
-            LoopEvent::ClockPulse => 2,
+            LoopEvent::PitchBend { .. } => 1,
+            LoopEvent::NoteOn { .. } => 2,
+            LoopEvent::ClockPulse => 3,
         }
     }
 }
@@ -118,6 +123,7 @@ struct PlayerLoop {
     state: EngineState,
     active_notes: Vec<ActiveNote>,
     last_instruments: HashMap<u8, u8>,
+    pitch_bend_channels: HashSet<u8>,
     scheduler: Scheduler,
     anchor: Instant,
     is_clock_mode: bool,
@@ -148,6 +154,7 @@ impl PlayerLoop {
             state: EngineState::Stopped,
             active_notes: Vec::new(),
             last_instruments: HashMap::new(),
+            pitch_bend_channels: HashSet::new(),
             scheduler: Scheduler::new(120),
             anchor: Instant::now(),
             is_clock_mode: false,
@@ -175,9 +182,19 @@ impl PlayerLoop {
         }
     }
 
+    // Resets every channel with pitch-bend events to center (8192), per F-6/F-7.
+    fn reset_pitch_bend_channels(&mut self) {
+        for channel in self.pitch_bend_channels.iter().copied().collect::<Vec<_>>() {
+            if let Err(e) = self.output.pitch_bend(channel, 8192) {
+                eprintln!("MIDI pitch_bend reset failed: {e}");
+            }
+        }
+    }
+
     fn do_stop(&mut self) {
         self.current_tick.store(0, Ordering::Relaxed);
         self.flush_notes();
+        self.reset_pitch_bend_channels();
         self.carry_over.clear();
         self.next_carry_over.clear();
         if self.is_clock_mode {
@@ -192,6 +209,7 @@ impl PlayerLoop {
     fn do_clock_stop(&mut self) {
         self.current_tick.store(0, Ordering::Relaxed);
         self.flush_notes();
+        self.reset_pitch_bend_channels();
         self.carry_over.clear();
         self.next_carry_over.clear();
         if let Err(e) = self.output.clock_stop() {
@@ -204,6 +222,7 @@ impl PlayerLoop {
     fn do_sync_stop(&mut self) {
         self.current_tick.store(0, Ordering::Relaxed);
         self.flush_notes();
+        self.reset_pitch_bend_channels();
         self.carry_over.clear();
         self.next_carry_over.clear();
         self.set_state(EngineState::Stopped);
@@ -220,6 +239,7 @@ impl PlayerLoop {
 
     fn do_pause(&mut self, remaining: Vec<(u64, LoopEvent)>) {
         self.flush_notes();
+        self.reset_pitch_bend_channels();
         self.pause_context = Some(PauseContext {
             remaining_events: remaining,
             loop_duration: self.loop_duration,
@@ -350,6 +370,11 @@ impl PlayerLoop {
                 self.active_notes
                     .retain(|n| !(n.channel == *channel && n.pitch == *pitch));
             }
+            LoopEvent::PitchBend { channel, value } => {
+                if let Err(e) = self.output.pitch_bend(*channel, *value) {
+                    eprintln!("MIDI pitch_bend failed: {e}");
+                }
+            }
         }
     }
 
@@ -396,6 +421,7 @@ impl PlayerLoop {
         {
             let store_r = self.store.read().unwrap();
             if let Some(project) = store_r.active() {
+                self.pitch_bend_channels.clear();
                 for track in &project.tracks {
                     let last = self.last_instruments.get(&track.channel).copied();
                     if last != Some(track.instrument) {
@@ -405,6 +431,9 @@ impl PlayerLoop {
                         }
                         self.last_instruments
                             .insert(track.channel, track.instrument);
+                    }
+                    if !track.pitch_bends.is_empty() {
+                        self.pitch_bend_channels.insert(track.channel);
                     }
                 }
             }
@@ -467,6 +496,16 @@ impl PlayerLoop {
                                 },
                             ));
                         }
+                    }
+
+                    for pb in &track.pitch_bends {
+                        events.push((
+                            pb.tick as u64,
+                            LoopEvent::PitchBend {
+                                channel: track.channel,
+                                value: pb.value as u16,
+                            },
+                        ));
                     }
                 }
 
@@ -735,7 +774,7 @@ pub fn run_player_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{Header, Note, Project, ProjectStore, Track};
+    use crate::domain::{Header, Note, PitchBend, Project, ProjectStore, Track};
     use crate::loop_engine::LoopEngine;
     use crate::loop_engine::midi::{CapturingMidiOutput, MidiEvent};
     use std::sync::{Arc, Mutex, RwLock};
@@ -789,6 +828,7 @@ mod tests {
                 channel: 1,
                 instrument: 0,
                 notes: vec![note],
+                pitch_bends: vec![],
             }],
         }
     }
@@ -804,15 +844,48 @@ mod tests {
             0
         );
         assert_eq!(
+            LoopEvent::PitchBend {
+                channel: 1,
+                value: 8192
+            }
+            .priority(),
+            1
+        );
+        assert_eq!(
             LoopEvent::NoteOn {
                 channel: 1,
                 pitch: 60,
                 velocity: 80
             }
             .priority(),
-            1
+            2
         );
-        assert_eq!(LoopEvent::ClockPulse.priority(), 2);
+        assert_eq!(LoopEvent::ClockPulse.priority(), 3);
+    }
+
+    // T-5: priority ordering NoteOff < PitchBend < NoteOn < ClockPulse (F-5, AC-5).
+    #[test]
+    fn test_loop_event_priority_ordering() {
+        let note_off = LoopEvent::NoteOff {
+            channel: 1,
+            pitch: 60,
+        }
+        .priority();
+        let pitch_bend = LoopEvent::PitchBend {
+            channel: 1,
+            value: 8192,
+        }
+        .priority();
+        let note_on = LoopEvent::NoteOn {
+            channel: 1,
+            pitch: 60,
+            velocity: 80,
+        }
+        .priority();
+        let clock_pulse = LoopEvent::ClockPulse.priority();
+        assert!(note_off < pitch_bend);
+        assert!(pitch_bend < note_on);
+        assert!(note_on < clock_pulse);
     }
 
     #[test]
@@ -879,6 +952,7 @@ mod tests {
                         velocity: 80,
                     },
                 ],
+                pitch_bends: vec![],
             }],
         };
         let (mut player, _tx, _) = make_player(Some(p));
@@ -900,6 +974,344 @@ mod tests {
             note_offs.len(),
             2,
             "expected two NoteOff events at tick 480"
+        );
+    }
+
+    // T-7: build_loop_events emits one PitchBend per track.pitch_bends entry, at its own
+    // tick and the track's channel (F-1, F-3, AC-1, AC-2).
+    #[test]
+    fn test_build_loop_events_pitch_bends() {
+        let p = Project {
+            header: Header {
+                bpm: 120,
+                loop_duration: 1920,
+            },
+            tracks: vec![Track {
+                name: "t".to_string(),
+                channel: 5,
+                instrument: 0,
+                notes: vec![],
+                pitch_bends: vec![
+                    PitchBend {
+                        tick: 100,
+                        value: 8192,
+                    },
+                    PitchBend {
+                        tick: 300,
+                        value: 0,
+                    },
+                ],
+            }],
+        };
+        let (mut player, _tx, _) = make_player(Some(p));
+        let BuildResult::Events(events) = player.build_loop_events() else {
+            panic!("expected Events")
+        };
+
+        let pb_100 = events
+            .iter()
+            .find(|(t, e)| *t == 100 && matches!(e, LoopEvent::PitchBend { .. }));
+        let pb_300 = events
+            .iter()
+            .find(|(t, e)| *t == 300 && matches!(e, LoopEvent::PitchBend { .. }));
+
+        assert!(
+            matches!(
+                pb_100,
+                Some((
+                    100,
+                    LoopEvent::PitchBend {
+                        channel: 5,
+                        value: 8192
+                    }
+                ))
+            ),
+            "expected PitchBend(channel=5, value=8192) at tick 100, got {:?}",
+            pb_100
+        );
+        assert!(
+            matches!(
+                pb_300,
+                Some((
+                    300,
+                    LoopEvent::PitchBend {
+                        channel: 5,
+                        value: 0
+                    }
+                ))
+            ),
+            "expected PitchBend(channel=5, value=0) at tick 300, got {:?}",
+            pb_300
+        );
+    }
+
+    // T-7: a pitch-bend and a note sharing a tick both appear, sorted note-off, pitch-bend,
+    // note-on (F-5, AC-5).
+    #[test]
+    fn test_build_loop_events_pitch_bend_and_note_off_same_tick_ordered() {
+        let p = Project {
+            header: Header {
+                bpm: 120,
+                loop_duration: 1920,
+            },
+            tracks: vec![Track {
+                name: "t".to_string(),
+                channel: 1,
+                instrument: 0,
+                notes: vec![Note {
+                    start_tick: 0,
+                    duration: 480,
+                    pitch: 60,
+                    velocity: 80,
+                }],
+                pitch_bends: vec![PitchBend {
+                    tick: 480,
+                    value: 8192,
+                }],
+            }],
+        };
+        let (mut player, _tx, _) = make_player(Some(p));
+        let BuildResult::Events(events) = player.build_loop_events() else {
+            panic!("expected Events")
+        };
+
+        let at_480: Vec<_> = events.iter().filter(|(t, _)| *t == 480).collect();
+        assert_eq!(at_480.len(), 2, "expected note-off and pitch-bend at 480");
+        assert!(
+            matches!(at_480[0].1, LoopEvent::NoteOff { .. }),
+            "note-off must come first at the shared tick"
+        );
+        assert!(
+            matches!(at_480[1].1, LoopEvent::PitchBend { .. }),
+            "pitch-bend must come after note-off at the shared tick"
+        );
+    }
+
+    #[test]
+    fn test_build_loop_events_pitch_bend_and_note_on_same_tick_ordered() {
+        let p = Project {
+            header: Header {
+                bpm: 120,
+                loop_duration: 1920,
+            },
+            tracks: vec![Track {
+                name: "t".to_string(),
+                channel: 1,
+                instrument: 0,
+                notes: vec![Note {
+                    start_tick: 480,
+                    duration: 480,
+                    pitch: 64,
+                    velocity: 80,
+                }],
+                pitch_bends: vec![PitchBend {
+                    tick: 480,
+                    value: 8192,
+                }],
+            }],
+        };
+        let (mut player, _tx, _) = make_player(Some(p));
+        let BuildResult::Events(events) = player.build_loop_events() else {
+            panic!("expected Events")
+        };
+
+        let at_480: Vec<_> = events.iter().filter(|(t, _)| *t == 480).collect();
+        assert_eq!(at_480.len(), 2, "expected pitch-bend and note-on at 480");
+        assert!(
+            matches!(at_480[0].1, LoopEvent::PitchBend { .. }),
+            "pitch-bend must come before note-on at the shared tick"
+        );
+        assert!(
+            matches!(at_480[1].1, LoopEvent::NoteOn { .. }),
+            "note-on must come after pitch-bend at the shared tick"
+        );
+    }
+
+    // T-9: emit_event calls output.pitch_bend with the event's channel and value (F-1, AC-1).
+    #[test]
+    fn test_emit_event_pitch_bend_calls_output() {
+        let (mut player, _tx, recorded) = make_player(None);
+        player.emit_event(&LoopEvent::PitchBend {
+            channel: 7,
+            value: 12000,
+        });
+        assert_eq!(
+            recorded.lock().unwrap().clone(),
+            vec![MidiEvent::PitchBend {
+                channel: 7,
+                value: 12000
+            }]
+        );
+    }
+
+    // T-11: play_events sends a note-off, pitch-bend, and note-on all scheduled at the
+    // same tick, and the deadline for the next distinct tick is unaffected by the extra
+    // dispatch (F-2, NF-1, AC-2, AC-4).
+    #[test]
+    fn test_play_events_shared_tick_dispatch_does_not_delay_next_tick() {
+        let (mut player, _tx, recorded) = make_player(None);
+        player.scheduler = Scheduler::new(6000);
+        player.anchor = Instant::now();
+
+        let events = vec![
+            (
+                0,
+                LoopEvent::NoteOff {
+                    channel: 1,
+                    pitch: 60,
+                },
+            ),
+            (
+                0,
+                LoopEvent::PitchBend {
+                    channel: 1,
+                    value: 8192,
+                },
+            ),
+            (
+                0,
+                LoopEvent::NoteOn {
+                    channel: 1,
+                    pitch: 64,
+                    velocity: 80,
+                },
+            ),
+            (10, LoopEvent::ClockPulse),
+        ];
+        let expected_tick_10_deadline = player.scheduler.deadline_for_tick(player.anchor, 10);
+
+        let outcome = player.play_events(events);
+        let after = Instant::now();
+
+        assert!(matches!(outcome, LoopOutcome::Complete));
+        assert_eq!(
+            recorded.lock().unwrap().clone(),
+            vec![
+                MidiEvent::NoteOff {
+                    channel: 1,
+                    pitch: 60
+                },
+                MidiEvent::PitchBend {
+                    channel: 1,
+                    value: 8192
+                },
+                MidiEvent::NoteOn {
+                    channel: 1,
+                    pitch: 64,
+                    velocity: 80
+                },
+                MidiEvent::ClockTick,
+            ],
+            "note-off, pitch-bend, and note-on at the shared tick must all be sent, in order"
+        );
+        assert!(
+            after >= expected_tick_10_deadline,
+            "tick 10 must not be processed before its scheduled deadline"
+        );
+        assert!(
+            after - expected_tick_10_deadline < Duration::from_millis(5),
+            "extra pitch-bend dispatch must not delay tick 10 noticeably, overshoot: {:?}",
+            after - expected_tick_10_deadline
+        );
+    }
+
+    // T-13: build_loop_events emits the same PitchBend events at the same ticks on
+    // successive loop passes (F-4, AC-3).
+    #[test]
+    fn test_build_loop_events_replays_pitch_bends_each_pass() {
+        let p = Project {
+            header: Header {
+                bpm: 120,
+                loop_duration: 1920,
+            },
+            tracks: vec![Track {
+                name: "t".to_string(),
+                channel: 1,
+                instrument: 0,
+                notes: vec![],
+                pitch_bends: vec![
+                    PitchBend {
+                        tick: 100,
+                        value: 8192,
+                    },
+                    PitchBend {
+                        tick: 300,
+                        value: 0,
+                    },
+                ],
+            }],
+        };
+        let (mut player, _tx, _) = make_player(Some(p));
+
+        let BuildResult::Events(first_pass) = player.build_loop_events() else {
+            panic!("expected Events on first pass")
+        };
+        let BuildResult::Events(second_pass) = player.build_loop_events() else {
+            panic!("expected Events on second pass")
+        };
+
+        let pitch_bend_ticks = |events: &[(u64, LoopEvent)]| -> Vec<(u64, u8, u16)> {
+            events
+                .iter()
+                .filter_map(|(t, e)| match e {
+                    LoopEvent::PitchBend { channel, value } => Some((*t, *channel, *value)),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        assert_eq!(
+            pitch_bend_ticks(&first_pass),
+            pitch_bend_ticks(&second_pass),
+            "pitch-bend events must replay identically on every loop pass"
+        );
+        assert_eq!(
+            pitch_bend_ticks(&first_pass),
+            vec![(100, 1, 8192), (300, 1, 0)]
+        );
+    }
+
+    // T-19: build_loop_events clears and repopulates pitch_bend_channels with exactly the
+    // channels of tracks that have a non-empty pitch_bends, fresh each pass (F-6, F-7).
+    #[test]
+    fn test_build_loop_events_repopulates_pitch_bend_channels() {
+        let p = Project {
+            header: Header {
+                bpm: 120,
+                loop_duration: 1920,
+            },
+            tracks: vec![
+                Track {
+                    name: "bent".to_string(),
+                    channel: 3,
+                    instrument: 0,
+                    notes: vec![],
+                    pitch_bends: vec![PitchBend {
+                        tick: 0,
+                        value: 8192,
+                    }],
+                },
+                Track {
+                    name: "unbent".to_string(),
+                    channel: 4,
+                    instrument: 0,
+                    notes: vec![],
+                    pitch_bends: vec![],
+                },
+            ],
+        };
+        let (mut player, _tx, _) = make_player(Some(p));
+        player.pitch_bend_channels.insert(99); // stale entry from a previous pass
+
+        let BuildResult::Events(_) = player.build_loop_events() else {
+            panic!("expected Events")
+        };
+
+        assert_eq!(
+            player.pitch_bend_channels,
+            std::collections::HashSet::from([3]),
+            "pitch_bend_channels must contain exactly the channels with pitch-bend events, \
+             with stale entries cleared"
         );
     }
 
@@ -1174,6 +1586,7 @@ mod tests {
                         velocity: 80,
                     },
                 ],
+                pitch_bends: vec![],
             }],
         };
         let (mut player, _tx, _) = make_player(Some(p));
@@ -1254,6 +1667,71 @@ mod tests {
         );
     }
 
+    // T-15: do_stop, do_clock_stop, and do_sync_stop each reset every channel with
+    // pitch-bend events to center (8192); do_sync_restart sends no reset (F-6, AC-6).
+    #[test]
+    fn test_do_stop_resets_pitch_bend_channels_to_center() {
+        let (mut player, _tx, recorded) = make_player(None);
+        player.pitch_bend_channels = std::collections::HashSet::from([2, 5]);
+
+        player.do_stop();
+
+        let events = recorded.lock().unwrap().clone();
+        assert!(events.contains(&MidiEvent::PitchBend {
+            channel: 2,
+            value: 8192
+        }));
+        assert!(events.contains(&MidiEvent::PitchBend {
+            channel: 5,
+            value: 8192
+        }));
+    }
+
+    #[test]
+    fn test_do_clock_stop_resets_pitch_bend_channels_to_center() {
+        let (mut player, _tx, recorded) = make_player(None);
+        player.pitch_bend_channels = std::collections::HashSet::from([7]);
+
+        player.do_clock_stop();
+
+        let events = recorded.lock().unwrap().clone();
+        assert!(events.contains(&MidiEvent::PitchBend {
+            channel: 7,
+            value: 8192
+        }));
+    }
+
+    #[test]
+    fn test_do_sync_stop_resets_pitch_bend_channels_to_center() {
+        let (mut player, _tx, recorded) = make_player(None);
+        player.pitch_bend_channels = std::collections::HashSet::from([9]);
+
+        player.do_sync_stop();
+
+        let events = recorded.lock().unwrap().clone();
+        assert!(events.contains(&MidiEvent::PitchBend {
+            channel: 9,
+            value: 8192
+        }));
+    }
+
+    #[test]
+    fn test_do_sync_restart_sends_no_pitch_bend_reset() {
+        let (mut player, _tx, recorded) = make_player(None);
+        player.pitch_bend_channels = std::collections::HashSet::from([9]);
+
+        player.do_sync_restart();
+
+        let events = recorded.lock().unwrap().clone();
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, MidiEvent::PitchBend { .. })),
+            "do_sync_restart must not send a pitch-bend reset, got {:?}",
+            events
+        );
+    }
+
     #[test]
     fn test_pause_stores_context() {
         let remaining = vec![
@@ -1288,6 +1766,25 @@ mod tests {
         assert_eq!(ctx.remaining_events[1].0, 960);
     }
 
+    // T-17: do_pause resets every channel with pitch-bend events to center (8192) (F-7, AC-7).
+    #[test]
+    fn test_do_pause_resets_pitch_bend_channels_to_center() {
+        let (mut player, _tx, recorded) = make_player(None);
+        player.pitch_bend_channels = std::collections::HashSet::from([2, 6]);
+
+        player.do_pause(vec![]);
+
+        let events = recorded.lock().unwrap().clone();
+        assert!(events.contains(&MidiEvent::PitchBend {
+            channel: 2,
+            value: 8192
+        }));
+        assert!(events.contains(&MidiEvent::PitchBend {
+            channel: 6,
+            value: 8192
+        }));
+    }
+
     // Integration: player emits NoteOn and NoteOff from Note.start_tick and Note.duration.
     #[test]
     fn player_emits_note_on_off_from_start_tick_and_duration() {
@@ -1306,6 +1803,7 @@ mod tests {
                     pitch: 60,
                     velocity: 80,
                 }],
+                pitch_bends: vec![],
             }],
         };
         let store = make_store_with_project(project);

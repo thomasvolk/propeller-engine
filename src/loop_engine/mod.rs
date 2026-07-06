@@ -157,6 +157,7 @@ fn make_test_store_with_project() -> Arc<RwLock<ProjectStore>> {
                 pitch: 60,
                 velocity: 80,
             }],
+            pitch_bends: vec![],
         }],
     };
     store.write().unwrap().set_pending(project).unwrap();
@@ -190,6 +191,7 @@ fn make_store_with_delayed_note() -> Arc<RwLock<ProjectStore>> {
                 pitch: 60,
                 velocity: 80,
             }],
+            pitch_bends: vec![],
         }],
     };
     store.write().unwrap().set_pending(project).unwrap();
@@ -228,6 +230,7 @@ fn make_store_with_two_widely_spaced_notes() -> Arc<RwLock<ProjectStore>> {
                     velocity: 80,
                 },
             ],
+            pitch_bends: vec![],
         }],
     };
     store.write().unwrap().set_pending(project).unwrap();
@@ -311,6 +314,13 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(midi::MidiEvent::ProgramChange { channel, program });
+            Ok(())
+        }
+        fn pitch_bend(&mut self, channel: u8, value: u16) -> Result<(), MidiSendError> {
+            self.captured
+                .lock()
+                .unwrap()
+                .push(midi::MidiEvent::PitchBend { channel, value });
             Ok(())
         }
         fn clock_tick(&mut self) -> Result<(), MidiSendError> {
@@ -716,6 +726,7 @@ mod tests {
                 channel: 1,
                 instrument: 0,
                 notes: vec![],
+                pitch_bends: vec![],
             }],
         };
         store.write().unwrap().set_pending(project).unwrap();
@@ -762,6 +773,7 @@ mod tests {
                         pitch: 60,
                         velocity: 80,
                     }],
+                    pitch_bends: vec![],
                 },
                 Track {
                     name: "t2".to_string(),
@@ -773,6 +785,7 @@ mod tests {
                         pitch: 64,
                         velocity: 80,
                     }],
+                    pitch_bends: vec![],
                 },
             ],
         };
@@ -873,6 +886,7 @@ mod tests {
                     pitch: 62,
                     velocity: 80,
                 }],
+                pitch_bends: vec![],
             }],
         };
         store.write().unwrap().set_pending(new_project).unwrap();
@@ -918,6 +932,7 @@ mod tests {
                     pitch: 60,
                     velocity: 80,
                 }],
+                pitch_bends: vec![],
             }],
         };
         store.write().unwrap().set_pending(new_project).unwrap();
@@ -962,6 +977,7 @@ mod tests {
                     pitch: 60,
                     velocity: 80,
                 }],
+                pitch_bends: vec![],
             }],
         };
         store.write().unwrap().set_pending(new_project).unwrap();
@@ -1012,6 +1028,7 @@ mod tests {
                     pitch: 60,
                     velocity: 80,
                 }],
+                pitch_bends: vec![],
             }],
         };
         store.write().unwrap().set_pending(project).unwrap();
@@ -1041,6 +1058,7 @@ mod tests {
                     pitch: 60,
                     velocity: 80,
                 }],
+                pitch_bends: vec![],
             }],
         };
         store.write().unwrap().set_pending(project).unwrap();
@@ -1101,6 +1119,7 @@ mod tests {
                         velocity: 80,
                     },
                 ],
+                pitch_bends: vec![],
             }],
         };
         store.write().unwrap().set_pending(project).unwrap();
@@ -1218,6 +1237,13 @@ mod tests {
                 ));
                 Ok(())
             }
+            fn pitch_bend(&mut self, channel: u8, value: u16) -> Result<(), MidiSendError> {
+                self.timestamps.lock().unwrap().push((
+                    Instant::now(),
+                    midi::MidiEvent::PitchBend { channel, value },
+                ));
+                Ok(())
+            }
             fn clock_tick(&mut self) -> Result<(), MidiSendError> {
                 Ok(())
             }
@@ -1269,6 +1295,7 @@ mod tests {
                         velocity: 80,
                     },
                 ],
+                pitch_bends: vec![],
             }],
         };
         store.write().unwrap().set_pending(project).unwrap();
@@ -1396,6 +1423,7 @@ mod tests {
                     pitch: 60,
                     velocity: 80,
                 }],
+                pitch_bends: vec![],
             }],
         };
         store.write().unwrap().set_pending(project).unwrap();
@@ -1507,6 +1535,7 @@ mod tests {
                     pitch: 60,
                     velocity: 80,
                 }],
+                pitch_bends: vec![],
             }],
         };
         store.write().unwrap().set_pending(project).unwrap();
@@ -1581,6 +1610,7 @@ mod tests {
                     pitch: 60,
                     velocity: 80,
                 }],
+                pitch_bends: vec![],
             }],
         };
         store.write().unwrap().set_pending(new_project).unwrap();
@@ -1745,6 +1775,7 @@ mod tests {
                     pitch: 60,
                     velocity: 80,
                 }],
+                pitch_bends: vec![],
             }],
         };
         store.write().unwrap().set_pending(project).unwrap();
