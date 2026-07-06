@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.4.0] - 2026-07-06
+
+### Changes
+
+- Added pitch bend support: tracks can now declare a `pitch-bends` event list alongside notes,
+  scheduled and sent as MIDI Pitch Bend messages during playback.
+- Any channel with pitch bend events is automatically reset to center (8192) whenever the loop
+  or clock stops or pauses, preventing a connected synth from being left permanently detuned.
+- Added an example project (`examples/pitch_bend.json`) demonstrating the new feature.
+- Extended the IPC wire format with a `pitch-bends` field on tracks, defaulting to empty when
+  absent for backward compatibility with existing projects.
+- Added Allium briefing, roadmap, and specs (EP-1, EP-2) describing the pitch bend feature.
+- Documented the center-reset behavior as a known issue and updated the README, internals, and
+  JSON socket interface docs to cover pitch bend.
+
+---
+
 ## [0.3.0] - 2026-07-06
 
 ### Changes
