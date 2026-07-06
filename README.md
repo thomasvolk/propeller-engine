@@ -116,6 +116,28 @@ propeller loop stop
 
 Starts or stops the loop in standalone or clock mode. In sync mode these commands are rejected — the external device controls transport via MIDI Start (0xFA) and Stop (0xFC).
 
+### Querying the current loop position
+
+```sh
+propeller loop position
+```
+
+Prints the current tick position and exits, in the form `tick/loop_duration` — for example `240/1920`. When no project is loaded, `loop_duration` is printed as `-` (e.g. `0/-`).
+
+To keep watching the position — useful for driving a step-highlight UI — poll continuously:
+
+```sh
+propeller loop position --poll
+```
+
+This prints one line every 50 ms until interrupted with Ctrl-C. Change the refresh rate with `--interval-ms`:
+
+```sh
+propeller loop position --poll --interval-ms 100
+```
+
+If the daemon is unreachable, `loop position` prints a diagnostic to stderr and exits with a non-zero code (this also applies mid-poll, if the daemon goes away while `--poll` is running).
+
 ### Configuring the socket path
 
 Set `PROPELLER_SOCK` to override the default socket location:
@@ -303,6 +325,22 @@ In sync mode the response includes an additional field:
 
 `sync_clock_state` values: `waiting` (no clock signal yet), `tracking` (clock pulses are flowing), `lost` (clock was present but has gone silent).
 
+#### get_position
+
+Returns the current tick position. Note this message uses a `"type"` field instead of `"command"`:
+
+```json
+{"type": "get_position"}
+```
+
+Example response:
+
+```json
+{"type": "position", "tick": 1234, "loop_duration": 4800}
+```
+
+`tick` is the current playback position within the loop, in ticks. `loop_duration` is `null` when no project is loaded. `tick` freezes while the engine is paused and resets to 0 on loop restart, stop, or an incoming MIDI Start (0xFA) in sync mode.
+
 #### Response format
 
 Every command returns a JSON object. On success:
@@ -331,6 +369,7 @@ On error:
 - **Continuous loop playback** — repeats the project endlessly with no timing gap between repetitions.
 - **Bar-boundary updates** — pending project changes take effect at the next bar boundary; the current bar always plays to completion.
 - **Runtime JSON interface** — load projects, control playback, adjust BPM and mode, and query status over the socket without restarting the engine.
+- **Position query** — `propeller loop position` (with an optional `--poll`) or the `get_position` socket message report the current tick position for driving visual feedback such as step highlighting.
 - **Operating modes** — `standalone`, `clock`, and `sync` modes are supported. `standalone` and `clock` are switchable at runtime via `set-mode`; `sync` requires `--sync` at daemon startup.
 
 ## Changelog

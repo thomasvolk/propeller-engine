@@ -13,14 +13,14 @@ Work through the steps below **in order**. Do not skip any step.
 
 Read the following files:
 
-- `spec/roadmap.md` — locate the section for $ARGUMENTS and extract its description, requirements, and dependencies
-- `spec/$ARGUMENTS.md` — the PRD (may not exist yet)
+- `specs/roadmap.md` — locate the section for $ARGUMENTS and extract its description, requirements, and dependencies
+- `specs/$ARGUMENTS.md` — the PRD (may not exist yet)
 
 ---
 
 ## Step 2 — Create the PRD if it does not exist
 
-If `spec/$ARGUMENTS.md` does not exist, create it using the roadmap entry for $ARGUMENTS as the source of truth.
+If `specs/$ARGUMENTS.md` does not exist, create it using the roadmap entry for $ARGUMENTS as the source of truth.
 Populate it with whatever can be derived from the roadmap (overview, initial user journeys, functional requirements, non-functional requirements, ACs).
 Leave gaps where the roadmap is silent — those become questions in Step 5.
 
@@ -32,7 +32,7 @@ If the file already exists, skip this step and proceed to Step 3.
 
 ## Step 3 — Reconcile answered questions
 
-Read the **Open Questions** section of `spec/$ARGUMENTS.md`.
+Read the **Open Questions** section of `specs/$ARGUMENTS.md`.
 
 For every question whose **Answer** field is filled in:
 
@@ -52,7 +52,7 @@ If there are no answered questions, skip this step and proceed to Step 4.
 
 ## Step 4 — Assess confidence
 
-Analyse the current state of `spec/$ARGUMENTS.md` and assign a confidence level (0–100%) that reflects how completely and unambiguously the PRD captures the epic's requirements.
+Analyse the current state of `specs/$ARGUMENTS.md` and assign a confidence level (0–100%) that reflects how completely and unambiguously the PRD captures the epic's requirements.
 
 Use this rubric:
 
@@ -105,7 +105,7 @@ If nothing was reconciled and nothing was added, still append the entry with the
 
 ## Step 7 — Save the file
 
-Write the fully updated document back to `spec/$ARGUMENTS.md`.
+Write the fully updated document back to `specs/$ARGUMENTS.md`.
 
 ---
 

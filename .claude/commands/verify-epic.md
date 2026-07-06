@@ -17,14 +17,14 @@ Work through the steps below **in order**.
 
 Read the following files:
 
-- `spec/$ARGUMENTS.md` — the PRD (must exist)
-- `spec/$ARGUMENTS-spec.md` — the technical specification (must exist)
+- `specs/$ARGUMENTS.md` — the PRD (must exist)
+- `specs/$ARGUMENTS-spec.md` — the technical specification (must exist)
 
-If `spec/$ARGUMENTS.md` does not exist, stop and output:
+If `specs/$ARGUMENTS.md` does not exist, stop and output:
 
 > No PRD found for $ARGUMENTS. Run `/refine-epic $ARGUMENTS` first.
 
-If `spec/$ARGUMENTS-spec.md` does not exist, stop and output:
+If `specs/$ARGUMENTS-spec.md` does not exist, stop and output:
 
 > No spec found for $ARGUMENTS. Run `/refine-spec $ARGUMENTS` first.
 

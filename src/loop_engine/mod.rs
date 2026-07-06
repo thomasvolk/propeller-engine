@@ -5,6 +5,7 @@ pub mod midi;
 pub mod player;
 pub mod scheduler;
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, mpsc};
 
 use crate::domain::ProjectStore;
@@ -36,6 +37,8 @@ pub(crate) enum LoopCommand {
 pub struct LoopEngine {
     sender: mpsc::Sender<LoopCommand>,
     state: Arc<Mutex<EngineState>>,
+    current_tick: Arc<AtomicU64>,
+    loop_duration_ticks: Arc<AtomicU64>,
 }
 
 impl LoopEngine {
@@ -43,12 +46,28 @@ impl LoopEngine {
         let (sender, receiver) = mpsc::channel::<LoopCommand>();
         let state = Arc::new(Mutex::new(EngineState::Stopped));
         let state_clone = Arc::clone(&state);
+        let current_tick = Arc::new(AtomicU64::new(0));
+        let current_tick_clone = Arc::clone(&current_tick);
+        let loop_duration_ticks = Arc::new(AtomicU64::new(0));
+        let loop_duration_ticks_clone = Arc::clone(&loop_duration_ticks);
 
         std::thread::spawn(move || {
-            run_player_loop(receiver, store, output, state_clone);
+            run_player_loop(
+                receiver,
+                store,
+                output,
+                state_clone,
+                current_tick_clone,
+                loop_duration_ticks_clone,
+            );
         });
 
-        LoopEngine { sender, state }
+        LoopEngine {
+            sender,
+            state,
+            current_tick,
+            loop_duration_ticks,
+        }
     }
 
     pub fn start(&self) {
@@ -92,6 +111,14 @@ impl LoopEngine {
 
     pub fn state(&self) -> EngineState {
         self.state.lock().unwrap().clone()
+    }
+
+    pub fn current_tick(&self) -> u64 {
+        self.current_tick.load(Ordering::Relaxed)
+    }
+
+    pub fn loop_duration_ticks(&self) -> u64 {
+        self.loop_duration_ticks.load(Ordering::Relaxed)
     }
 
     pub fn sync_start(&self) {
@@ -140,6 +167,84 @@ fn make_test_store_with_project() -> Arc<RwLock<ProjectStore>> {
 #[cfg(test)]
 fn make_empty_store() -> Arc<RwLock<ProjectStore>> {
     Arc::new(RwLock::new(ProjectStore::new()))
+}
+
+// A note that does not start at tick 0, so the only way current_tick can read 0 once
+// events have started firing is an explicit reset (loop boundary, stop, sync-restart).
+#[cfg(test)]
+fn make_store_with_delayed_note() -> Arc<RwLock<ProjectStore>> {
+    use crate::domain::*;
+    let store = Arc::new(RwLock::new(ProjectStore::new()));
+    let project = Project {
+        header: Header {
+            bpm: 300,
+            loop_duration: 960,
+        },
+        tracks: vec![Track {
+            name: "t".to_string(),
+            channel: 1,
+            instrument: 0,
+            notes: vec![Note {
+                start_tick: 100,
+                duration: 100,
+                pitch: 60,
+                velocity: 80,
+            }],
+        }],
+    };
+    store.write().unwrap().set_pending(project).unwrap();
+    store.write().unwrap().commit_pending();
+    store
+}
+
+// Two notes far apart in the loop. advance_loop() fires immediately once the last event
+// of a pass is processed, so a nonzero tick value is only observable for a wide window
+// when the next write is far away in real time — the gap between these two notes gives
+// that window, rather than the brief instant before the loop boundary reset.
+#[cfg(test)]
+fn make_store_with_two_widely_spaced_notes() -> Arc<RwLock<ProjectStore>> {
+    use crate::domain::*;
+    let store = Arc::new(RwLock::new(ProjectStore::new()));
+    let project = Project {
+        header: Header {
+            bpm: 300,
+            loop_duration: 960,
+        },
+        tracks: vec![Track {
+            name: "t".to_string(),
+            channel: 1,
+            instrument: 0,
+            notes: vec![
+                Note {
+                    start_tick: 0,
+                    duration: 10,
+                    pitch: 60,
+                    velocity: 80,
+                },
+                Note {
+                    start_tick: 900,
+                    duration: 10,
+                    pitch: 62,
+                    velocity: 80,
+                },
+            ],
+        }],
+    };
+    store.write().unwrap().set_pending(project).unwrap();
+    store.write().unwrap().commit_pending();
+    store
+}
+
+#[cfg(test)]
+fn wait_for_nonzero_tick(engine: &LoopEngine, timeout_ms: u64) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    while std::time::Instant::now() < deadline {
+        if engine.current_tick() > 0 {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    false
 }
 
 #[cfg(test)]
@@ -245,6 +350,41 @@ mod tests {
     }
 
     #[test]
+    fn new_engine_current_tick_is_zero() {
+        let (engine, _) = make_engine_no_project();
+        assert_eq!(engine.current_tick(), 0);
+    }
+
+    #[test]
+    fn new_engine_loop_duration_ticks_is_zero() {
+        let (engine, _) = make_engine_no_project();
+        assert_eq!(engine.loop_duration_ticks(), 0);
+    }
+
+    #[test]
+    fn loop_duration_ticks_matches_project_after_full_loop() {
+        // BPM 300, loop_duration = 480 ticks; loop ≈ 200ms.
+        let (engine, _) = make_engine_with_project();
+        engine.start();
+        std::thread::sleep(Duration::from_millis(300));
+        engine.stop();
+        wait_for_state(&engine, EngineState::Stopped, 200);
+
+        assert_eq!(engine.loop_duration_ticks(), 480);
+    }
+
+    #[test]
+    fn loop_duration_ticks_zero_while_waiting_with_no_project() {
+        let (engine, _) = make_engine_no_project();
+        engine.start();
+        wait_for_state(&engine, EngineState::Waiting, 200);
+        std::thread::sleep(Duration::from_millis(50));
+
+        assert_eq!(engine.loop_duration_ticks(), 0);
+        engine.stop();
+    }
+
+    #[test]
     fn start_with_no_project_is_waiting() {
         let (engine, captured) = make_engine_no_project();
         engine.start();
@@ -270,6 +410,266 @@ mod tests {
         engine.stop();
         wait_for_state(&engine, EngineState::Stopped, 500);
         assert_eq!(engine.state(), EngineState::Stopped);
+    }
+
+    #[test]
+    fn current_tick_advances_after_events_fire() {
+        let store = make_store_with_two_widely_spaced_notes();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
+        let engine = LoopEngine::new(store, Box::new(output));
+        engine.start();
+
+        let deadline = Instant::now() + Duration::from_millis(300);
+        let mut saw_nonzero = false;
+        while Instant::now() < deadline {
+            if engine.current_tick() > 0 {
+                saw_nonzero = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        engine.stop();
+        assert!(
+            saw_nonzero,
+            "expected current_tick() > 0 after events fired"
+        );
+    }
+
+    #[test]
+    fn current_tick_resets_at_loop_boundary() {
+        let store = make_store_with_delayed_note();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
+        let engine = LoopEngine::new(store, Box::new(output));
+        engine.start();
+
+        assert!(
+            wait_for_nonzero_tick(&engine, 300),
+            "precondition failed: expected an event to have fired"
+        );
+
+        // Sample across 2+ loop boundaries (loop ≈ 400ms) looking for a reset to 0.
+        let deadline = Instant::now() + Duration::from_millis(900);
+        let mut saw_zero = false;
+        while Instant::now() < deadline {
+            if engine.current_tick() == 0 {
+                saw_zero = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        engine.stop();
+        assert!(
+            saw_zero,
+            "expected current_tick() == 0 to be observed after a loop boundary"
+        );
+    }
+
+    #[test]
+    fn current_tick_zero_after_stop() {
+        let store = make_store_with_delayed_note();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
+        let engine = LoopEngine::new(store, Box::new(output));
+        engine.start();
+
+        assert!(
+            wait_for_nonzero_tick(&engine, 300),
+            "precondition failed: expected an event to have fired"
+        );
+
+        engine.stop();
+        wait_for_state(&engine, EngineState::Stopped, 500);
+        assert_eq!(
+            engine.current_tick(),
+            0,
+            "expected current_tick() == 0 after stop()"
+        );
+    }
+
+    #[test]
+    fn current_tick_zero_after_clock_stop() {
+        let store = make_store_with_delayed_note();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
+        let engine = LoopEngine::new(store, Box::new(output));
+        engine.clock_start();
+
+        assert!(
+            wait_for_nonzero_tick(&engine, 300),
+            "precondition failed: expected an event to have fired"
+        );
+
+        engine.clock_stop();
+        wait_for_state(&engine, EngineState::Stopped, 500);
+        assert_eq!(
+            engine.current_tick(),
+            0,
+            "expected current_tick() == 0 after clock_stop()"
+        );
+    }
+
+    #[test]
+    fn current_tick_zero_after_sync_stop() {
+        let store = make_store_with_delayed_note();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
+        let engine = LoopEngine::new(store, Box::new(output));
+        engine.sync_start();
+
+        assert!(
+            wait_for_nonzero_tick(&engine, 300),
+            "precondition failed: expected an event to have fired"
+        );
+
+        engine.sync_stop();
+        wait_for_state(&engine, EngineState::Stopped, 500);
+        assert_eq!(
+            engine.current_tick(),
+            0,
+            "expected current_tick() == 0 after sync_stop()"
+        );
+    }
+
+    #[test]
+    fn current_tick_frozen_while_paused() {
+        let store = make_store_with_delayed_note();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
+        let engine = LoopEngine::new(store, Box::new(output));
+        engine.clock_start();
+
+        assert!(
+            wait_for_nonzero_tick(&engine, 300),
+            "precondition failed: expected an event to have fired"
+        );
+
+        engine.clock_pause();
+        wait_for_state(&engine, EngineState::Paused, 500);
+
+        let first = engine.current_tick();
+        std::thread::sleep(Duration::from_millis(50));
+        let second = engine.current_tick();
+
+        engine.clock_stop();
+        wait_for_state(&engine, EngineState::Stopped, 500);
+
+        assert_eq!(
+            first, second,
+            "expected current_tick() to stay unchanged while paused"
+        );
+    }
+
+    #[test]
+    fn current_tick_zero_after_stop_from_paused() {
+        // TickResetsOnStop applies to every transition into Stopped, including the one
+        // handled directly inside handle_paused() (Stop/ClockStop received while paused).
+        let store = make_store_with_delayed_note();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
+        let engine = LoopEngine::new(store, Box::new(output));
+        engine.clock_start();
+
+        assert!(
+            wait_for_nonzero_tick(&engine, 300),
+            "precondition failed: expected an event to have fired"
+        );
+
+        engine.clock_pause();
+        wait_for_state(&engine, EngineState::Paused, 500);
+
+        engine.clock_stop();
+        wait_for_state(&engine, EngineState::Stopped, 500);
+
+        assert_eq!(
+            engine.current_tick(),
+            0,
+            "expected current_tick() == 0 after stopping from Paused"
+        );
+    }
+
+    #[test]
+    fn current_tick_resets_on_sync_start_mid_loop() {
+        // Sample immediately (well before the restarted loop's first event, which fires
+        // ~62ms after restart at bpm 300 given START_LATENCY_MICROS) so this test isolates
+        // do_sync_restart's own reset from the unrelated loop-boundary reset (advance_loop)
+        // that would otherwise also zero the counter a bit later in the same loop pass.
+        let store = make_store_with_delayed_note();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
+        let engine = LoopEngine::new(store, Box::new(output));
+        engine.sync_start();
+        wait_for_state(&engine, EngineState::Running, 500);
+
+        assert!(
+            wait_for_nonzero_tick(&engine, 300),
+            "precondition failed: expected an event to have fired"
+        );
+
+        engine.sync_start();
+
+        let deadline = Instant::now() + Duration::from_millis(40);
+        let mut saw_zero = false;
+        while Instant::now() < deadline {
+            if engine.current_tick() == 0 {
+                saw_zero = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        engine.sync_stop();
+        wait_for_state(&engine, EngineState::Stopped, 500);
+        assert!(
+            saw_zero,
+            "expected current_tick() == 0 shortly after SyncStart mid-loop"
+        );
+    }
+
+    #[test]
+    fn current_tick_not_reset_by_sync_continue() {
+        let store = make_store_with_two_widely_spaced_notes();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
+        let engine = LoopEngine::new(store, Box::new(output));
+        engine.sync_start();
+        wait_for_state(&engine, EngineState::Running, 500);
+
+        assert!(
+            wait_for_nonzero_tick(&engine, 300),
+            "precondition failed: expected an event to have fired"
+        );
+        let t = engine.current_tick();
+
+        engine.sync_continue();
+        std::thread::sleep(Duration::from_millis(50));
+
+        let after = engine.current_tick();
+        engine.sync_stop();
+        wait_for_state(&engine, EngineState::Stopped, 500);
+
+        assert!(
+            after >= t,
+            "expected current_tick() ({after}) >= T ({t}) after SyncContinue"
+        );
     }
 
     #[test]
@@ -754,9 +1154,18 @@ mod tests {
         let state = Arc::new(Mutex::new(EngineState::Stopped));
         let state_clone = Arc::clone(&state);
         let output: Box<dyn MidiOutput> = Box::new(MockMidiOutput::new());
+        let current_tick = Arc::new(AtomicU64::new(0));
+        let loop_duration_ticks = Arc::new(AtomicU64::new(0));
 
         let handle = std::thread::spawn(move || {
-            run_player_loop(receiver, store, output, state_clone);
+            run_player_loop(
+                receiver,
+                store,
+                output,
+                state_clone,
+                current_tick,
+                loop_duration_ticks,
+            );
         });
 
         // Drop the sender to simulate LoopEngine drop

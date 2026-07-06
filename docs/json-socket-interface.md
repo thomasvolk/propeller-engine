@@ -166,6 +166,16 @@ Returns the current engine state. See the Response reference below.
 
 Shuts down the daemon cleanly. Equivalent to `propeller stop`.
 
+### get_position
+
+```json
+{"type": "get_position"}
+```
+
+Returns the current tick position. Unlike every other message in this reference, `get_position`
+is tagged with `"type"` instead of `"command"` — the daemon checks for a `"type"` field first and
+routes accordingly, so both forms coexist on the same socket. See the Response reference below.
+
 ## Field reference
 
 ### Header fields
@@ -206,6 +216,18 @@ Each note is a four-element integer array `[start_tick, duration, pitch, velocit
 | `clock_state`      | `"started"`, `"stopped"`             | Whether the loop is currently playing                              |
 | `project_present`  | boolean                              | Whether a project is currently loaded                              |
 | `sync_clock_state` | `"waiting"`, `"tracking"`, `"lost"`  | Sync mode only: state of the incoming external clock signal        |
+
+### Position response fields
+
+| Field           | Type / Values     | Description                                                  |
+| --------------- | ----------------- | ------------------------------------------------------------ |
+| `type`          | `"position"`      | Message discriminant                                         |
+| `tick`          | integer, ≥ 0      | Current playback position within the loop, in ticks          |
+| `loop_duration` | integer or `null` | Total loop length in ticks; `null` when no project is loaded |
+
+`tick` freezes while the engine is paused, and resets to 0 on loop restart, on `stop`/`clock-stop`,
+and on an incoming MIDI Start (0xFA) while in sync mode. On `clock-resume` or an incoming MIDI
+Continue (0xFB), `tick` resumes from its frozen value rather than resetting.
 
 ## Overlapping notes
 
@@ -265,6 +287,7 @@ The NoteOn is emitted at tick 1440 of the current loop. The NoteOff is emitted a
 | `no_project`                   | `clock-start` sent with no active project                            | Load a project with `create-project` first                                  |
 | `sync_mode_active`             | `loop-start`, `loop-stop`, or `set-bpm` sent while in sync mode     | Use the external MIDI device to control transport and tempo                 |
 | `sync_requires_port`           | `set-mode` to `sync` without `--sync` at daemon startup             | Restart the daemon with `PROPELLER_SYNC_PORT=<port> propeller start --sync` |
+| `unknown_type`                 | The `"type"` value is not recognised                                 | Only `"get_position"` is a valid `"type"` value                             |
 
 ## Examples
 
@@ -295,6 +318,22 @@ printf '{"command":"set-bpm","bpm":130}\n' | nc -U /tmp/propeller.sock
 ```
 
 The new tempo takes effect at the next loop boundary.
+
+### Poll the current tick position
+
+Read the playback position for a step-highlight UI. Note the `"type"` field, not `"command"`:
+
+```sh
+printf '{"type":"get_position"}\n' | nc -U /tmp/propeller.sock
+```
+
+```json
+{"type":"position","tick":960,"loop_duration":1920}
+```
+
+Divide `tick` by `loop_duration` for fractional progress through the loop. The CLI wraps this in
+`propeller loop position --poll` for repeated queries at a fixed interval — see the
+[Querying the current loop position section in README](../README.md#querying-the-current-loop-position).
 
 ### Use a custom socket path
 

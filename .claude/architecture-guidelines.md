@@ -1,7 +1,5 @@
 # Architecture Guidelines
 
-These guidelines are derived from the decisions made in EP-1 and apply to all subsequent epics.
-
 ---
 
 ## Runtime Model

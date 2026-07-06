@@ -2,6 +2,7 @@
 // Copyright 2026 Thomas Volk
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, mpsc};
 use std::time::{Duration, Instant};
 
@@ -126,6 +127,8 @@ struct PlayerLoop {
     next_carry_over: Vec<(u64, LoopEvent)>,
     loop_elapsed_ticks: u64,
     pending_sync_bpm: Option<u32>,
+    current_tick: Arc<AtomicU64>,
+    loop_duration_ticks: Arc<AtomicU64>,
 }
 
 impl PlayerLoop {
@@ -134,6 +137,8 @@ impl PlayerLoop {
         store: Arc<RwLock<ProjectStore>>,
         output: Box<dyn MidiOutput>,
         shared_state: Arc<Mutex<EngineState>>,
+        current_tick: Arc<AtomicU64>,
+        loop_duration_ticks: Arc<AtomicU64>,
     ) -> Self {
         PlayerLoop {
             receiver,
@@ -152,6 +157,8 @@ impl PlayerLoop {
             next_carry_over: Vec::new(),
             loop_elapsed_ticks: 0,
             pending_sync_bpm: None,
+            current_tick,
+            loop_duration_ticks,
         }
     }
 
@@ -169,6 +176,7 @@ impl PlayerLoop {
     }
 
     fn do_stop(&mut self) {
+        self.current_tick.store(0, Ordering::Relaxed);
         self.flush_notes();
         self.carry_over.clear();
         self.next_carry_over.clear();
@@ -182,6 +190,7 @@ impl PlayerLoop {
     }
 
     fn do_clock_stop(&mut self) {
+        self.current_tick.store(0, Ordering::Relaxed);
         self.flush_notes();
         self.carry_over.clear();
         self.next_carry_over.clear();
@@ -193,6 +202,7 @@ impl PlayerLoop {
     }
 
     fn do_sync_stop(&mut self) {
+        self.current_tick.store(0, Ordering::Relaxed);
         self.flush_notes();
         self.carry_over.clear();
         self.next_carry_over.clear();
@@ -200,6 +210,7 @@ impl PlayerLoop {
     }
 
     fn do_sync_restart(&mut self) {
+        self.current_tick.store(0, Ordering::Relaxed);
         self.flush_notes();
         self.carry_over.clear();
         self.next_carry_over.clear();
@@ -217,6 +228,8 @@ impl PlayerLoop {
     }
 
     fn do_sync_continue(&mut self) {
+        // current_tick is intentionally not written here: the counter resumes
+        // incrementing from its frozen value on Continue (F-10).
         if let BuildResult::Events(events) = self.build_loop_events() {
             let elapsed = self.loop_elapsed_ticks;
             let filtered: Vec<_> = events
@@ -358,6 +371,7 @@ impl PlayerLoop {
             }
 
             self.loop_elapsed_ticks = tick;
+            self.current_tick.store(tick, Ordering::Relaxed);
             let event = &events[i].1;
             self.emit_event(event);
 
@@ -504,6 +518,15 @@ impl PlayerLoop {
 
         self.store.write().unwrap().commit_pending();
 
+        let loop_dur = self
+            .store
+            .read()
+            .unwrap()
+            .active()
+            .map(|p| p.header.loop_duration as u64)
+            .unwrap_or(0);
+        self.loop_duration_ticks.store(loop_dur, Ordering::Relaxed);
+
         if let Some(sync_bpm) = self.pending_sync_bpm.take() {
             if sync_bpm != self.scheduler.bpm() {
                 self.scheduler.update_bpm(sync_bpm);
@@ -530,6 +553,7 @@ impl PlayerLoop {
         self.carry_over.sort_unstable_by_key(|(offset, _)| *offset);
 
         self.loop_elapsed_ticks = 0;
+        self.current_tick.store(0, Ordering::Relaxed);
     }
 
     // Returns false when the player thread should exit.
@@ -651,6 +675,8 @@ impl PlayerLoop {
 
     fn handle_paused(&mut self) -> bool {
         match self.receiver.recv() {
+            // current_tick is intentionally not written here: the counter freezes during
+            // pause and resumes from its frozen value on Continue (F-5 / F-10).
             Ok(LoopCommand::ClockResume) => {
                 if let Err(e) = self.output.clock_continue() {
                     eprintln!("MIDI clock_continue failed: {e}");
@@ -658,6 +684,7 @@ impl PlayerLoop {
                 self.set_state(EngineState::Running);
             }
             Ok(LoopCommand::ClockStop | LoopCommand::Stop) => {
+                self.current_tick.store(0, Ordering::Relaxed);
                 self.pause_context = None;
                 if let Err(e) = self.output.clock_stop() {
                     eprintln!("MIDI clock_stop failed: {e}");
@@ -691,8 +718,18 @@ pub fn run_player_loop(
     store: Arc<RwLock<ProjectStore>>,
     output: Box<dyn MidiOutput>,
     shared_state: Arc<Mutex<EngineState>>,
+    current_tick: Arc<AtomicU64>,
+    loop_duration_ticks: Arc<AtomicU64>,
 ) {
-    PlayerLoop::new(receiver, store, output, shared_state).run();
+    PlayerLoop::new(
+        receiver,
+        store,
+        output,
+        shared_state,
+        current_tick,
+        loop_duration_ticks,
+    )
+    .run();
 }
 
 #[cfg(test)]
@@ -724,7 +761,16 @@ mod tests {
         let recorded: Arc<Mutex<Vec<MidiEvent>>> = Arc::new(Mutex::new(Vec::new()));
         let output = Box::new(CapturingMidiOutput::new(Arc::clone(&recorded)));
         let shared_state = Arc::new(Mutex::new(EngineState::Stopped));
-        let player = PlayerLoop::new(rx, store, output, shared_state);
+        let current_tick = Arc::new(AtomicU64::new(0));
+        let loop_duration_ticks = Arc::new(AtomicU64::new(0));
+        let player = PlayerLoop::new(
+            rx,
+            store,
+            output,
+            shared_state,
+            current_tick,
+            loop_duration_ticks,
+        );
         (player, tx, recorded)
     }
 
@@ -990,6 +1036,8 @@ mod tests {
             Arc::clone(&store),
             Box::new(CapturingMidiOutput::new(recorded)),
             Arc::new(Mutex::new(EngineState::Stopped)),
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(AtomicU64::new(0)),
         );
         player.loop_duration = 960;
         drop(tx);
@@ -1078,6 +1126,8 @@ mod tests {
             Arc::clone(&store),
             Box::new(CapturingMidiOutput::new(recorded)),
             Arc::new(Mutex::new(EngineState::Stopped)),
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(AtomicU64::new(0)),
         );
         drop(tx);
 

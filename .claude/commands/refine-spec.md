@@ -13,10 +13,10 @@ Work through the steps below **in order**. Do not skip any step.
 
 Read the following files:
 
-- `spec/$ARGUMENTS.md` — the PRD for this epic (must exist)
-- `spec/$ARGUMENTS-spec.md` — the existing technical specification (may not exist yet)
+- `specs/$ARGUMENTS.md` — the PRD for this epic (must exist)
+- `specs/$ARGUMENTS-spec.md` — the existing technical specification (may not exist yet)
 
-If `spec/$ARGUMENTS.md` does not exist, output the following message and stop immediately. Do not proceed to any further step.
+If `specs/$ARGUMENTS.md` does not exist, output the following message and stop immediately. Do not proceed to any further step.
 
 > No PRD found for $ARGUMENTS. Run `/refine-epic $ARGUMENTS` first to create and refine the PRD before generating a technical specification.
 
@@ -24,7 +24,7 @@ If `spec/$ARGUMENTS.md` does not exist, output the following message and stop im
 
 ## Step 2 — Create the spec if it does not exist
 
-If `spec/$ARGUMENTS-spec.md` does not exist, derive the initial technical specification from the PRD.
+If `specs/$ARGUMENTS-spec.md` does not exist, derive the initial technical specification from the PRD.
 
 For each functional requirement (F-x) and acceptance criterion (AC-x) in the PRD, plan at least one test task (type: test) and one implementation task (type: impl). Tests must appear before their corresponding implementation tasks — preserve strict TDD order throughout the task table.
 
@@ -38,13 +38,13 @@ Place all high-impact architecture and technology decisions in the **Open Decisi
 
 Use the document structure defined at the bottom of these instructions.
 
-If `spec/$ARGUMENTS-spec.md` already exists, skip this step and proceed to Step 3.
+If `specs/$ARGUMENTS-spec.md` already exists, skip this step and proceed to Step 3.
 
 ---
 
 ## Step 3 — Reconcile checked decisions
 
-Read the **Open Decisions** section of `spec/$ARGUMENTS-spec.md`.
+Read the **Open Decisions** section of `specs/$ARGUMENTS-spec.md`.
 
 For every decision that has a selected option (a `[x]` checked box):
 
@@ -62,7 +62,7 @@ If there are no checked decisions, skip this step and proceed to Step 4.
 
 ## Step 4 — Reconcile answered questions
 
-Read the **Open Questions** section of `spec/$ARGUMENTS-spec.md`.
+Read the **Open Questions** section of `specs/$ARGUMENTS-spec.md`.
 
 For every question whose **Answer** field is filled in:
 
@@ -81,7 +81,7 @@ If there are no answered questions, skip this step and proceed to Step 5.
 
 ## Step 5 — Assess confidence
 
-Analyse the current state of `spec/$ARGUMENTS-spec.md` and assign a confidence level (0–100%) reflecting how completely and unambiguously the specification covers the PRD.
+Analyse the current state of `specs/$ARGUMENTS-spec.md` and assign a confidence level (0–100%) reflecting how completely and unambiguously the specification covers the PRD.
 
 Use this rubric:
 
@@ -135,7 +135,7 @@ If nothing was reconciled and nothing was added, still append the entry with the
 
 ## Step 8 — Save the file
 
-Write the fully updated document to `spec/$ARGUMENTS-spec.md`.
+Write the fully updated document to `specs/$ARGUMENTS-spec.md`.
 
 ---
 

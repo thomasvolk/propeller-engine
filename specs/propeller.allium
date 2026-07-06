@@ -62,6 +62,7 @@ entity Engine {
     sync_clock_status: SyncClockStatus?  -- null when mode != sync
     last_pulse_at: Timestamp?            -- set on each 0xF8 pulse; null when not in sync mode
     last_pulse_interval: Duration?       -- interval between the two most recent pulses; null until two pulses received
+    current_tick: Integer  -- 0 ≤ current_tick < loop_duration; 0 when stopped or paused
 
     transitions state {
         stopped  -> running
@@ -417,6 +418,33 @@ invariant CrossLoopNoteCarryOver {
     -- The engine carries the sounding note into the next iteration and emits NoteOff
     -- at the tick (start_tick + duration) - loop_duration within the next loop.
     -- No note may span more than two loop iterations: duration ≤ 2 × loop_duration.
+}
+
+invariant TickAdvances {
+    -- While engine.state = running, engine.current_tick equals the tick of the most
+    -- recently processed event (NoteOn, NoteOff, or ClockPulse).
+}
+
+invariant TickResetsAtLoopBoundary {
+    -- engine.current_tick is set to 0 at every loop boundary, before the first event
+    -- of the new iteration is processed.
+}
+
+invariant TickResetsOnStop {
+    -- Any transition to engine.state = stopped sets engine.current_tick to 0.
+    -- Covers LoopStop, ClockStop, ExternalClockStop, DaemonStop, and ExternalClockLost.
+}
+
+invariant TickResetsOnExternalClockStart {
+    -- ExternalClockStart (MIDI 0xFA) sets engine.current_tick to 0 regardless of the
+    -- prior state. This also applies to LoopStart / ClockStart which restart from
+    -- tick 0 by design.
+}
+
+invariant TickFreezesDuringPause {
+    -- While engine.state = paused, engine.current_tick is not modified.
+    -- ExternalClockContinue (MIDI 0xFB) does not reset engine.current_tick; playback
+    -- resumes from the frozen value.
 }
 
 ------------------------------------------------------------
