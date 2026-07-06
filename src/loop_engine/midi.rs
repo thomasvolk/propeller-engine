@@ -25,6 +25,7 @@ pub trait MidiOutput: Send + 'static {
     fn note_on(&mut self, channel: u8, pitch: u8, velocity: u8) -> Result<(), MidiSendError>;
     fn note_off(&mut self, channel: u8, pitch: u8) -> Result<(), MidiSendError>;
     fn program_change(&mut self, channel: u8, program: u8) -> Result<(), MidiSendError>;
+    fn pitch_bend(&mut self, channel: u8, value: u16) -> Result<(), MidiSendError>;
     fn clock_tick(&mut self) -> Result<(), MidiSendError>;
     fn clock_start(&mut self) -> Result<(), MidiSendError>;
     fn clock_continue(&mut self) -> Result<(), MidiSendError>;
@@ -46,6 +47,10 @@ pub enum MidiEvent {
     ProgramChange {
         channel: u8,
         program: u8,
+    },
+    PitchBend {
+        channel: u8,
+        value: u16,
     },
     ClockTick,
     ClockStart,
@@ -84,6 +89,11 @@ impl MidiOutput for MockMidiOutput {
     fn program_change(&mut self, channel: u8, program: u8) -> Result<(), MidiSendError> {
         self.events
             .push(MidiEvent::ProgramChange { channel, program });
+        Ok(())
+    }
+
+    fn pitch_bend(&mut self, channel: u8, value: u16) -> Result<(), MidiSendError> {
+        self.events.push(MidiEvent::PitchBend { channel, value });
         Ok(())
     }
 
@@ -147,6 +157,14 @@ impl MidiOutput for CapturingMidiOutput {
         Ok(())
     }
 
+    fn pitch_bend(&mut self, channel: u8, value: u16) -> Result<(), MidiSendError> {
+        self.events
+            .lock()
+            .unwrap()
+            .push(MidiEvent::PitchBend { channel, value });
+        Ok(())
+    }
+
     fn clock_tick(&mut self) -> Result<(), MidiSendError> {
         self.events.lock().unwrap().push(MidiEvent::ClockTick);
         Ok(())
@@ -171,6 +189,34 @@ impl MidiOutput for CapturingMidiOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // T-1: MockMidiOutput/CapturingMidiOutput record a PitchBend event (F-1).
+    #[test]
+    fn mock_records_pitch_bend_event() {
+        let mut m = MockMidiOutput::new();
+        m.pitch_bend(1, 8192).unwrap();
+        assert_eq!(
+            m.events,
+            vec![MidiEvent::PitchBend {
+                channel: 1,
+                value: 8192
+            }]
+        );
+    }
+
+    #[test]
+    fn capturing_records_pitch_bend_event() {
+        let events: Arc<Mutex<Vec<MidiEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut c = CapturingMidiOutput::new(Arc::clone(&events));
+        c.pitch_bend(3, 0).unwrap();
+        assert_eq!(
+            events.lock().unwrap().clone(),
+            vec![MidiEvent::PitchBend {
+                channel: 3,
+                value: 0
+            }]
+        );
+    }
 
     #[test]
     fn mock_records_events_in_order() {

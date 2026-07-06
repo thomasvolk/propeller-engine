@@ -8,7 +8,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::sync::oneshot;
 
-use crate::domain::{Header, Note, Project, ProjectStore, Track, ValidationError};
+use crate::domain::{Header, Note, PitchBend, Project, ProjectStore, Track, ValidationError};
 use crate::loop_engine::{EngineState, LoopEngine};
 use crate::midi_clock::SyncClockState;
 
@@ -255,6 +255,14 @@ fn handle_set_bpm(
                             velocity: n.velocity,
                         })
                         .collect(),
+                    pitch_bends: t
+                        .pitch_bends
+                        .iter()
+                        .map(|pb| PitchBend {
+                            tick: pb.tick,
+                            value: pb.value,
+                        })
+                        .collect(),
                 })
                 .collect::<Vec<_>>();
             (p.header.loop_duration, tracks)
@@ -369,6 +377,11 @@ fn wire_track_to_domain(t: WireTrack) -> Track {
                 velocity: velocity as u8,
             })
             .collect(),
+        pitch_bends: t
+            .pitch_bends
+            .into_iter()
+            .map(|[tick, value]| PitchBend { tick, value })
+            .collect(),
     }
 }
 
@@ -407,6 +420,24 @@ fn validation_error_response(e: ValidationError) -> Value {
             format!(
                 "track {track} note {note}: duration {duration} exceeds limit {limit} \
                  (2 * loop_duration)"
+            )
+        }
+        ValidationError::PitchBendValueOutOfRange {
+            track,
+            event,
+            actual,
+        } => {
+            format!("track {track} pitch-bend {event}: value {actual} is out of range (0–16383)")
+        }
+        ValidationError::PitchBendTickOutOfRange {
+            track,
+            event,
+            tick,
+            loop_duration,
+        } => {
+            format!(
+                "track {track} pitch-bend {event}: tick {tick} is out of range \
+                 (must be < loop_duration {loop_duration})"
             )
         }
     };
@@ -677,6 +708,7 @@ mod tests {
                         pitch: 60,
                         velocity: 80,
                     }],
+                    pitch_bends: vec![],
                 }],
             };
             store.write().unwrap().set_pending(project).unwrap();
@@ -824,6 +856,7 @@ mod tests {
                         pitch: 60,
                         velocity: 80,
                     }],
+                    pitch_bends: vec![],
                 }],
             };
             store.write().unwrap().set_pending(project).unwrap();
@@ -935,6 +968,7 @@ mod tests {
                         pitch: 60,
                         velocity: 80,
                     }],
+                    pitch_bends: vec![],
                 }],
             };
             store.write().unwrap().set_pending(project).unwrap();
@@ -1106,6 +1140,24 @@ mod tests {
         assert_eq!(v["code"], "sync_requires_port");
     }
 
+    // T-5: wire_track_to_domain maps WireTrack.pitch_bends [tick, value] pairs (F-1, F-4, AC-1)
+    #[test]
+    fn wire_track_to_domain_maps_pitch_bends() {
+        let wire = WireTrack {
+            name: "piano".to_string(),
+            channel: 1,
+            instrument: 0,
+            notes: vec![],
+            pitch_bends: vec![[0, 8192], [240, 0]],
+        };
+        let track = wire_track_to_domain(wire);
+        assert_eq!(track.pitch_bends.len(), 2);
+        assert_eq!(track.pitch_bends[0].tick, 0);
+        assert_eq!(track.pitch_bends[0].value, 8192);
+        assert_eq!(track.pitch_bends[1].tick, 240);
+        assert_eq!(track.pitch_bends[1].value, 0);
+    }
+
     #[test]
     fn validation_error_response_loop_duration_zero() {
         let v = validation_error_response(ValidationError::LoopDurationZero);
@@ -1155,6 +1207,47 @@ mod tests {
         assert!(
             msg.contains("3840"),
             "message should include limit 3840, got: {msg}"
+        );
+    }
+
+    // T-15: validation_error_response formats both new pitch-bend variants, naming the
+    // track and event (NF-2).
+    #[test]
+    fn validation_error_response_pitch_bend_value_out_of_range() {
+        let v = validation_error_response(ValidationError::PitchBendValueOutOfRange {
+            track: 2,
+            event: 3,
+            actual: 20000,
+        });
+        assert_eq!(v["status"], "error");
+        assert_eq!(v["code"], "validation_error");
+        let msg = v["message"].as_str().unwrap();
+        assert!(msg.contains('2'), "message should name track 2, got: {msg}");
+        assert!(msg.contains('3'), "message should name event 3, got: {msg}");
+        assert!(
+            msg.contains("20000"),
+            "message should include actual value 20000, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn validation_error_response_pitch_bend_tick_out_of_range() {
+        let v = validation_error_response(ValidationError::PitchBendTickOutOfRange {
+            track: 1,
+            event: 4,
+            tick: 5000,
+            loop_duration: 1920,
+        });
+        assert_eq!(v["status"], "error");
+        assert_eq!(v["code"], "validation_error");
+        let msg = v["message"].as_str().unwrap();
+        assert!(
+            msg.contains("5000"),
+            "message should include tick 5000, got: {msg}"
+        );
+        assert!(
+            msg.contains("1920"),
+            "message should include loop_duration 1920, got: {msg}"
         );
     }
 
@@ -1368,6 +1461,7 @@ mod tests {
                             velocity: 80,
                         },
                     ],
+                    pitch_bends: vec![],
                 }],
             };
             store.write().unwrap().set_pending(project).unwrap();
@@ -1496,6 +1590,7 @@ mod tests {
                         pitch: 60,
                         velocity: 80,
                     }],
+                    pitch_bends: vec![],
                 }],
             };
             store.write().unwrap().set_pending(project).unwrap();

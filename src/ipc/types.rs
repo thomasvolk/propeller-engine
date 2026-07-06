@@ -58,6 +58,8 @@ pub struct WireTrack {
     pub channel: u8,
     pub instrument: u8,
     pub notes: Vec<[u32; 4]>,
+    #[serde(default, rename = "pitch-bends")]
+    pub pitch_bends: Vec<[u32; 2]>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -251,6 +253,26 @@ mod tests {
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert_eq!(json, r#"{"type":"position","tick":0,"loop_duration":null}"#);
+    }
+
+    // T-3: WireTrack deserialises "pitch-bends" and defaults to empty when absent (F-1, F-9)
+    #[test]
+    fn wire_track_pitch_bends_deserialise() {
+        let t: WireTrack = serde_json::from_str(
+            r#"{"name":"piano","channel":1,"instrument":0,"notes":[],"pitch-bends":[[0,8192],[240,0]]}"#,
+        )
+        .unwrap();
+        assert_eq!(t.pitch_bends.len(), 2);
+        assert_eq!(t.pitch_bends[0], [0, 8192]);
+        assert_eq!(t.pitch_bends[1], [240, 0]);
+    }
+
+    #[test]
+    fn wire_track_pitch_bends_absent_defaults_to_empty() {
+        let t: WireTrack =
+            serde_json::from_str(r#"{"name":"piano","channel":1,"instrument":0,"notes":[]}"#)
+                .unwrap();
+        assert_eq!(t.pitch_bends.len(), 0);
     }
 
     // EP-NP-2: create-project with new wire format deserialises correctly

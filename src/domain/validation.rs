@@ -33,6 +33,17 @@ pub enum ValidationError {
         duration: u32,
         limit: u32,
     },
+    PitchBendValueOutOfRange {
+        track: usize,
+        event: usize,
+        actual: u32,
+    },
+    PitchBendTickOutOfRange {
+        track: usize,
+        event: usize,
+        tick: u32,
+        loop_duration: u32,
+    },
 }
 
 pub fn validate(project: &Project) -> Result<(), ValidationError> {
@@ -88,6 +99,25 @@ pub fn validate(project: &Project) -> Result<(), ValidationError> {
                 });
             }
         }
+
+        // F-8: pitch-bends are validated only after all of this track's notes pass.
+        for (ei, event) in track.pitch_bends.iter().enumerate() {
+            if event.value > 16383 {
+                return Err(ValidationError::PitchBendValueOutOfRange {
+                    track: ti,
+                    event: ei,
+                    actual: event.value,
+                });
+            }
+            if event.tick >= loop_duration {
+                return Err(ValidationError::PitchBendTickOutOfRange {
+                    track: ti,
+                    event: ei,
+                    tick: event.tick,
+                    loop_duration,
+                });
+            }
+        }
     }
 
     Ok(())
@@ -114,6 +144,7 @@ mod tests {
                     pitch: 60,
                     velocity: 80,
                 }],
+                pitch_bends: vec![],
             }],
         }
     }
@@ -209,6 +240,7 @@ mod tests {
                 channel: 0, // invalid
                 instrument: 0,
                 notes: vec![],
+                pitch_bends: vec![],
             }],
         };
         assert_eq!(validate(&p), Err(ValidationError::LoopDurationZero));
@@ -293,6 +325,7 @@ mod tests {
                         velocity: 80,
                     },
                 ],
+                pitch_bends: vec![],
             }],
         };
         assert_eq!(validate(&p), Ok(()));
@@ -310,6 +343,7 @@ mod tests {
                 channel: 1,
                 instrument: 0,
                 notes: vec![],
+                pitch_bends: vec![],
             }],
         };
         assert_eq!(validate(&p), Ok(()));
@@ -332,6 +366,7 @@ mod tests {
                     pitch: 60,
                     velocity: 80,
                 }],
+                pitch_bends: vec![],
             }],
         };
         assert_eq!(
@@ -357,6 +392,7 @@ mod tests {
                     pitch: 60,
                     velocity: 80,
                 }],
+                pitch_bends: vec![],
             }],
         };
         assert_eq!(
@@ -367,6 +403,155 @@ mod tests {
                 start_tick: 150,
                 loop_duration: 100,
             })
+        );
+    }
+
+    // T-7: validate() accepts pitch-bend values 0, 8192, 16383 and rejects out-of-range
+    // values, identifying the failing track/event index (F-2, F-6, AC-2, AC-3, AC-4, AC-5).
+    #[test]
+    fn test_validate_pitch_bend_value_boundaries_ok() {
+        for value in [0u32, 8192, 16383] {
+            let mut p = make_valid_project();
+            p.tracks[0].pitch_bends = vec![PitchBend { tick: 0, value }];
+            assert_eq!(validate(&p), Ok(()));
+        }
+    }
+
+    #[test]
+    fn test_validate_pitch_bend_value_out_of_range() {
+        let mut p = make_valid_project();
+        p.tracks[0].pitch_bends = vec![PitchBend {
+            tick: 0,
+            value: 16384,
+        }];
+        assert_eq!(
+            validate(&p),
+            Err(ValidationError::PitchBendValueOutOfRange {
+                track: 0,
+                event: 0,
+                actual: 16384,
+            })
+        );
+    }
+
+    #[test]
+    fn test_validate_pitch_bend_value_out_of_range_second_event() {
+        let mut p = make_valid_project();
+        p.tracks[0].pitch_bends = vec![
+            PitchBend {
+                tick: 0,
+                value: 8192,
+            },
+            PitchBend {
+                tick: 1,
+                value: 99999,
+            },
+        ];
+        assert_eq!(
+            validate(&p),
+            Err(ValidationError::PitchBendValueOutOfRange {
+                track: 0,
+                event: 1,
+                actual: 99999,
+            })
+        );
+    }
+
+    // T-9: validate() accepts a tick < loop_duration and rejects a tick >= loop_duration,
+    // identifying the failing track/event index (F-3, F-6, AC-6).
+    #[test]
+    fn test_validate_pitch_bend_tick_below_loop_duration_ok() {
+        let mut p = make_valid_project();
+        p.tracks[0].pitch_bends = vec![PitchBend {
+            tick: 1919,
+            value: 8192,
+        }];
+        assert_eq!(validate(&p), Ok(()));
+    }
+
+    #[test]
+    fn test_validate_pitch_bend_tick_at_loop_duration_rejected() {
+        let mut p = make_valid_project();
+        p.tracks[0].pitch_bends = vec![PitchBend {
+            tick: 1920,
+            value: 8192,
+        }];
+        assert_eq!(
+            validate(&p),
+            Err(ValidationError::PitchBendTickOutOfRange {
+                track: 0,
+                event: 0,
+                tick: 1920,
+                loop_duration: 1920,
+            })
+        );
+    }
+
+    #[test]
+    fn test_validate_pitch_bend_tick_exceeds_loop_duration_rejected() {
+        let mut p = make_valid_project();
+        p.tracks[0].pitch_bends = vec![PitchBend {
+            tick: 5000,
+            value: 8192,
+        }];
+        assert_eq!(
+            validate(&p),
+            Err(ValidationError::PitchBendTickOutOfRange {
+                track: 0,
+                event: 0,
+                tick: 5000,
+                loop_duration: 1920,
+            })
+        );
+    }
+
+    // T-11: validate() applies no ordering, dedup, or count limit to pitch-bend events
+    // (F-7, F-10).
+    #[test]
+    fn test_validate_pitch_bend_out_of_order_and_repeated_ticks_ok() {
+        let mut p = make_valid_project();
+        p.tracks[0].pitch_bends = vec![
+            PitchBend {
+                tick: 500,
+                value: 100,
+            },
+            PitchBend {
+                tick: 100,
+                value: 200,
+            },
+            PitchBend {
+                tick: 100,
+                value: 300,
+            },
+        ];
+        assert_eq!(validate(&p), Ok(()));
+    }
+
+    #[test]
+    fn test_validate_pitch_bend_large_event_count_ok() {
+        let mut p = make_valid_project();
+        p.tracks[0].pitch_bends = (0..10_000)
+            .map(|i| PitchBend {
+                tick: i % 1920,
+                value: 8192,
+            })
+            .collect();
+        assert_eq!(validate(&p), Ok(()));
+    }
+
+    // T-13: given a track with both an invalid note and an invalid pitch-bend event,
+    // validate() reports the note's error, not the pitch-bend's (F-8).
+    #[test]
+    fn test_validate_note_error_wins_over_pitch_bend_error() {
+        let mut p = make_valid_project();
+        p.tracks[0].notes[0].duration = 0;
+        p.tracks[0].pitch_bends = vec![PitchBend {
+            tick: 0,
+            value: 99999,
+        }];
+        assert_eq!(
+            validate(&p),
+            Err(ValidationError::NoteDurationZero { track: 0, note: 0 })
         );
     }
 }

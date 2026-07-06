@@ -139,16 +139,21 @@ Project
   tracks: Vec<Track>
 
 Track
-  name:       String
-  channel:    u8   (MIDI channel 1–16)
-  instrument: u8   (GM program 0–127)
-  notes:      Vec<Note>
+  name:        String
+  channel:     u8   (MIDI channel 1–16)
+  instrument:  u8   (GM program 0–127)
+  notes:       Vec<Note>
+  pitch_bends: Vec<PitchBend>
 
 Note
   start_tick: u32  (offset from loop start)
   duration:   u32  (in ticks)
   pitch:      u8   (MIDI note number)
   velocity:   u8
+
+PitchBend
+  tick:  u32  (offset from loop start)
+  value: u32  (14-bit MIDI pitch-bend value, 0–16383; 8192 is center)
 ```
 
 Time is measured in **ticks**. The resolution is 480 PPQN (pulses per quarter note),
@@ -167,6 +172,8 @@ A `loop_duration` of 1920 ticks represents four quarter notes (one 4/4 bar).
 - Instrument in 0–127
 - Note duration > 0 and note start\_tick < loop\_duration
 - Note duration ≤ 2 × loop\_duration
+- Pitch-bend value ≤ 16383 and pitch-bend tick < loop\_duration (checked only after every note
+  on the same track passes)
 
 Validation errors are returned as typed `ValidationError` variants and translated
 into structured JSON error responses.
@@ -265,15 +272,24 @@ At the start of each loop pass `build_loop_events` builds a flat, sorted list of
 
 ```rust
 enum LoopEvent {
-    NoteOn  { channel, pitch, velocity },
-    NoteOff { channel, pitch },
+    NoteOn     { channel, pitch, velocity },
+    NoteOff    { channel, pitch },
+    PitchBend  { channel, value },
     ClockPulse,                           // only in clock/sync modes
 }
 ```
 
-Events at the same tick are ordered by priority: `NoteOff` (0) before `NoteOn` (1)
-before `ClockPulse` (2). This ensures a note that ends and another that begins at
-the same tick do not create a stuck-note condition.
+Events at the same tick are ordered by priority: `NoteOff` (0) before `PitchBend` (1) before
+`NoteOn` (2) before `ClockPulse` (3). This ensures a note that ends and another that begins at
+the same tick do not create a stuck-note condition, and that a pitch-bend scheduled for the same
+tick as a NoteOn is applied before the note sounds.
+
+One `PitchBend` event is emitted per `track.pitch_bends` entry, at its own tick, on the track's
+channel — built into the event list the same way notes are. Before each loop pass the player
+rebuilds a `pitch_bend_channels` set from every track with a non-empty `pitch_bends` list. On any
+stop or pause (`Stop`, `ClockStop`, `SyncStop`, `ClockPause`), `reset_pitch_bend_channels` sends a
+`Pitch Bend` message with value `8192` (center) to every channel in that set — pitch bend does not
+persist or interpolate back to center on its own, so the engine resets it explicitly.
 
 MIDI clock pulses are inserted at every 20-tick interval (= 24 pulses per quarter
 note at 480 PPQN) when clock mode is active.
@@ -400,6 +416,7 @@ pub trait MidiOutput: Send + 'static {
     fn note_on(&mut self, channel: u8, pitch: u8, velocity: u8) -> Result<(), MidiSendError>;
     fn note_off(&mut self, channel: u8, pitch: u8) -> Result<(), MidiSendError>;
     fn program_change(&mut self, channel: u8, program: u8) -> Result<(), MidiSendError>;
+    fn pitch_bend(&mut self, channel: u8, value: u16) -> Result<(), MidiSendError>;
     fn clock_tick(&mut self) -> Result<(), MidiSendError>;
     fn clock_start(&mut self) -> Result<(), MidiSendError>;
     fn clock_continue(&mut self) -> Result<(), MidiSendError>;
@@ -416,9 +433,15 @@ It encodes MIDI messages as raw byte arrays before sending:
 fn note_on_bytes(channel: u8, pitch: u8, velocity: u8) -> [u8; 3] {
     [0x90 | (channel - 1), pitch, velocity]
 }
+fn pitch_bend_bytes(channel: u8, value: u16) -> [u8; 3] {
+    [0xE0 | (channel - 1), (value & 0x7F) as u8, ((value >> 7) & 0x7F) as u8]
+}
 fn clock_tick_bytes() -> [u8; 1] { [0xF8] }
 fn clock_start_bytes() -> [u8; 1] { [0xFA] }
 ```
+
+Pitch bend (`0xEx`) carries the 14-bit value as two 7-bit data bytes, LSB first then MSB —
+the same little-endian split used elsewhere in the MIDI 1.0 wire format (e.g. RPN/NRPN).
 
 If `PROPELLER_MIDI_PORT` is unset the daemon opens a virtual MIDI port named
 `"propeller"` via `midir`'s `create_virtual` API. Downstream software (DAWs, other

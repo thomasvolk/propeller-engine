@@ -1,11 +1,11 @@
 ---
 name: readme
-description: "Creates, updates, or reorganizes a README.md file following the Write the Docs beginner's guide. Use when the user wants to write a new README, improve an existing one, add missing sections, restructure documentation, or make a project easier to understand and adopt."
+description: "Creates, updates, or reorganizes a README.md file following the Write the Docs beginner's guide, keeping docs/json-socket-interface.md, docs/known-issues.md, and docs/internals.md in sync. Use when the user wants to write a new README, improve an existing one, add missing sections, restructure documentation, or make a project easier to understand and adopt."
 ---
 
 # README
 
-You write, update, or reorganize a project's `README.md` following the Write the Docs beginner's guide to documentation.
+You write, update, or reorganize a project's `README.md` following the Write the Docs beginner's guide to documentation, and keep the companion files in `docs/` consistent with it.
 
 ## Startup
 
@@ -13,6 +13,7 @@ You write, update, or reorganize a project's `README.md` following the Write the
 2. Read the project's build system file (`Cargo.toml`, `package.json`, `pyproject.toml`, etc.) to learn the project name, description, version, and license.
 3. Briefly explore the project structure to understand what it does, how it is built, and how it is run. Focus on entry points, key directories, and any existing docs.
 4. If a `README.md` exists, read it in full before making any changes.
+5. Read every file in `docs/` that exists. These are companion pages the README links out to for extended detail — see "Companion docs/ files" below.
 
 ## Mode detection
 
@@ -84,6 +85,38 @@ State the license name and include a brief licence notice or a link to the full 
 MIT — see [LICENSE](LICENSE) for details.
 ```
 
+## Companion docs/ files
+
+The README is not the only place that documents the runtime interface, operational quirks, and
+internal design. `docs/` holds three companion pages that must stay consistent with whatever the
+README says. Whenever a README edit touches the area a given file covers, update that file in the
+same pass — do not leave it to drift out of sync.
+
+| File                            | Covers                                                                                            | Update it when README changes...                                                                                                        |
+| ------------------------------- | ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `docs/json-socket-interface.md` | Full command reference, field reference, error codes, and worked examples for the JSON socket API | The "Runtime interface" or "Managing projects" sections: new/renamed commands, fields, ranges, or error codes                           |
+| `docs/known-issues.md`          | Limitations, surprising behaviors, and workarounds encountered in live use                        | Port-selection env vars, timing behavior, or any workaround the README documents that also has a known-issue entry                      |
+| `docs/internals.md`             | Internal architecture: process model, domain data structures, IPC dispatch, loop engine internals | The "Features" section, the domain model (`Project`/`Track`/`Note` and friends), or anything describing how the engine works internally |
+
+Rules for keeping them in sync:
+
+- Treat field/command/error-code tables in `docs/json-socket-interface.md` as the detailed
+  counterpart of README's "Runtime interface" section. If you add a field to one, add it to the
+  other with matching name, type, and range.
+- `docs/internals.md` embeds real Rust struct/enum snippets (e.g. `Project`, `Track`, `Command`).
+  If the README's description of the domain model or feature set implies a struct changed, check
+  the actual source (not just the README) before editing `internals.md`'s snippets — copy what the
+  code says, don't infer it from README prose alone.
+- Each companion file ends with a "See also" section linking back to specific README anchors
+  (e.g. `../README.md#runtime-interface`). If you rename or remove a README heading, update every
+  anchor link in `docs/` that points to it.
+- Do not duplicate full explanations in the README. The README should summarize and link to the
+  `docs/` page for depth, matching the pattern already used (e.g. "See the Runtime interface
+  section" cross-links). Never inline the full command/error-code reference from
+  `docs/json-socket-interface.md` into the README.
+- If a README change has no counterpart concept in `docs/`, leave the `docs/` files untouched —
+  do not manufacture unrelated edits.
+
 ## Optional sections
 
 Include these only when they add real value:
@@ -103,21 +136,25 @@ Do not add a FAQ section. The Write the Docs guide warns that FAQs become outdat
 1. Gather all facts from the codebase (name, purpose, dependencies, build commands, run commands, license).
 2. Draft each required section in order.
 3. Write the Quick Example using real invocations from the project — do not invent commands.
-4. Write the file and report which sections you included and what assumptions you made.
+4. Write the file.
+5. Check each `docs/` companion file against the table above; update any that now need a matching entry (e.g. a newly documented command needs a `docs/json-socket-interface.md` entry).
+6. Report which sections you included, what assumptions you made, and which `docs/` files you touched.
 
 ### Update mode
 
 1. List which required sections are present and which are missing or thin.
 2. Confirm with the user which sections to add or improve, unless the task is unambiguous.
 3. Edit only the sections that need work. Preserve the author's voice in sections that are already good.
-4. Report what changed.
+4. For each edited section, check the Companion docs/ files table: if the section maps to a `docs/` file, update that file's corresponding table/example/snippet in the same pass.
+5. Report what changed, in the README and in `docs/`.
 
 ### Reorganize mode
 
 1. Audit the existing sections against the required order above.
 2. Identify sections that are misplaced, redundant, or should be merged.
 3. Rewrite the file with sections in the correct order. Preserve all existing content — move and reshape, do not delete.
-4. Report the before/after structure.
+4. If any heading anchors changed (renamed or moved in a way that changes the `#anchor`), grep `docs/` for links to the old anchor and update them.
+5. Report the before/after structure, and any `docs/` links you fixed.
 
 ## Project-specific rules
 
@@ -137,3 +174,5 @@ Before writing the final file, verify:
 - [ ] No section describes features that do not yet exist.
 - [ ] No FAQ section.
 - [ ] No references to the `specs/` or `.claude/` directories.
+- [ ] Every `docs/` companion file affected by the change (per the Companion docs/ files table) has been checked and, if needed, updated to match.
+- [ ] `docs/` anchor links to the README (`../README.md#...`) still resolve to headings that exist.

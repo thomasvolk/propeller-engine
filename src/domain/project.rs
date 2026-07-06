@@ -19,6 +19,7 @@ pub struct Track {
     pub channel: u8,
     pub instrument: u8,
     pub notes: Vec<Note>,
+    pub pitch_bends: Vec<PitchBend>,
 }
 
 pub struct Note {
@@ -26,6 +27,11 @@ pub struct Note {
     pub duration: u32,
     pub pitch: u8,
     pub velocity: u8,
+}
+
+pub struct PitchBend {
+    pub tick: u32,
+    pub value: u32,
 }
 
 #[cfg(test)]
@@ -85,6 +91,7 @@ mod tests {
                     velocity: 80,
                 },
             ],
+            pitch_bends: vec![],
         };
         assert_eq!(track.notes.len(), 2);
         assert_eq!(track.notes[0].pitch, 60);
@@ -98,8 +105,43 @@ mod tests {
             channel: 1,
             instrument: 0,
             notes: vec![],
+            pitch_bends: vec![],
         };
         assert_eq!(track.notes.len(), 0);
+    }
+
+    // T-1: PitchBend construction and Track.pitch_bends list (F-1)
+    #[test]
+    fn test_pitch_bend_fields() {
+        let pb = PitchBend {
+            tick: 240,
+            value: 8192,
+        };
+        assert_eq!(pb.tick, 240);
+        assert_eq!(pb.value, 8192);
+    }
+
+    #[test]
+    fn test_track_with_pitch_bends() {
+        let track = Track {
+            name: "piano".to_string(),
+            channel: 1,
+            instrument: 0,
+            notes: vec![],
+            pitch_bends: vec![
+                PitchBend {
+                    tick: 0,
+                    value: 8192,
+                },
+                PitchBend {
+                    tick: 240,
+                    value: 0,
+                },
+            ],
+        };
+        assert_eq!(track.pitch_bends.len(), 2);
+        assert_eq!(track.pitch_bends[0].value, 8192);
+        assert_eq!(track.pitch_bends[1].tick, 240);
     }
 
     #[test]

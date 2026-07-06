@@ -64,6 +64,7 @@ mod tests {
                     pitch: 60,
                     velocity: 80,
                 }],
+                pitch_bends: vec![],
             }],
         }
     }
