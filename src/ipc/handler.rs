@@ -13,7 +13,8 @@ use crate::loop_engine::{EngineState, LoopEngine};
 use crate::midi_clock::SyncClockState;
 
 use super::types::{
-    Command, EngineMode, EngineSettings, WireHeader, WireTrack, error_response, ok_response,
+    Command, EngineMode, EngineSettings, IpcMessage, WireHeader, WireTrack, error_response,
+    ok_response,
 };
 
 pub async fn connection_handler(
@@ -72,6 +73,14 @@ async fn dispatch(
         Err(_) => return error_response("parse_error", "malformed JSON"),
         Ok(v) => v,
     };
+
+    if raw.get("type").is_some() {
+        let msg: Result<IpcMessage, _> = serde_json::from_str(line);
+        return match msg {
+            Ok(IpcMessage::GetPosition) => handle_get_position(engine),
+            _ => error_response("unknown_type", "unrecognised type value"),
+        };
+    }
 
     if raw.get("command").is_none() {
         return error_response(
@@ -155,6 +164,13 @@ async fn dispatch(
         Command::Status => handle_status(store, engine, settings),
         Command::Stop => ok_response(),
     }
+}
+
+fn handle_get_position(engine: &Arc<LoopEngine>) -> Value {
+    let tick = engine.current_tick();
+    let raw_dur = engine.loop_duration_ticks();
+    let loop_duration = if raw_dur == 0 { None } else { Some(raw_dur) };
+    json!({"type": "position", "tick": tick, "loop_duration": loop_duration})
 }
 
 fn build_domain_project(header: WireHeader, tracks: Vec<WireTrack>) -> Project {
@@ -1308,6 +1324,230 @@ mod tests {
         assert_eq!(v["status"], "ok");
         assert_eq!(v["loop_duration"], 1920);
         assert!(v.get("time_signature").is_none());
+    }
+
+    // EP-2 AC-3: get_position with no project loaded returns tick 0, loop_duration null
+    #[tokio::test]
+    async fn get_position_no_project_returns_zero_tick_null_duration() {
+        let response = send_command_get_response(r#"{"type":"get_position"}"#).await;
+        let v: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+        assert_eq!(v["type"], "position");
+        assert_eq!(v["tick"], 0);
+        assert!(v["loop_duration"].is_null());
+    }
+
+    // EP-2 AC-1/AC-5: get_position while playing returns tick and matching loop_duration
+    #[tokio::test]
+    async fn get_position_while_playing_returns_tick_and_loop_duration() {
+        let (store, engine, settings, shutdown_tx) = make_shared_state();
+        {
+            use crate::domain::*;
+            // Two widely-spaced notes so current_tick sits non-zero for a wide real-time
+            // window (the player resets the counter as soon as the built event list for
+            // the pass is exhausted, not when loop_duration itself is reached).
+            let project = Project {
+                header: Header {
+                    bpm: 300,
+                    loop_duration: 960,
+                },
+                tracks: vec![Track {
+                    name: "t".to_string(),
+                    channel: 1,
+                    instrument: 0,
+                    notes: vec![
+                        Note {
+                            start_tick: 0,
+                            duration: 10,
+                            pitch: 60,
+                            velocity: 80,
+                        },
+                        Note {
+                            start_tick: 900,
+                            duration: 10,
+                            pitch: 62,
+                            velocity: 80,
+                        },
+                    ],
+                }],
+            };
+            store.write().unwrap().set_pending(project).unwrap();
+            store.write().unwrap().commit_pending();
+        }
+        engine.start();
+        // loop_duration_ticks is only written at a loop boundary (F-9), so wait for the
+        // first pass to complete before it reflects the project's loop_duration.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(800);
+        while std::time::Instant::now() < deadline && engine.loop_duration_ticks() == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+        assert_eq!(
+            engine.loop_duration_ticks(),
+            960,
+            "precondition: loop_duration_ticks must be populated after the first pass"
+        );
+        // Now in the second pass; poll until an event has fired so tick is > 0 (AC-1).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
+        while std::time::Instant::now() < deadline && engine.current_tick() == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+        assert!(
+            engine.current_tick() > 0,
+            "precondition: tick must have advanced"
+        );
+
+        let (client, server) = UnixStream::pair().unwrap();
+        let s = Arc::clone(&store);
+        let e = Arc::clone(&engine);
+        tokio::spawn(async move {
+            connection_handler(server, s, e, settings, shutdown_tx).await;
+        });
+
+        let cmd = r#"{"type":"get_position"}"#.to_string() + "\n";
+        let mut client = client;
+        use tokio::io::AsyncWriteExt;
+        client.write_all(cmd.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        client.read_to_string(&mut resp).await.unwrap();
+
+        let v: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
+        assert_eq!(v["type"], "position");
+        assert!(
+            v["tick"].as_u64().unwrap() > 0,
+            "AC-1: tick must be > 0 after ticks have advanced"
+        );
+        assert_eq!(v["loop_duration"], 960);
+        engine.stop();
+    }
+
+    // EP-2 AC-4: two sequential get_position responses have non-decreasing tick
+    #[tokio::test]
+    async fn get_position_tick_monotonically_non_decreasing() {
+        let (store, engine, settings, shutdown_tx) = make_shared_state();
+        {
+            use crate::domain::*;
+            // Low BPM + long loop_duration so the loop does not restart between requests.
+            let project = Project {
+                header: Header {
+                    bpm: 60,
+                    loop_duration: 480_000,
+                },
+                tracks: vec![],
+            };
+            store.write().unwrap().set_pending(project).unwrap();
+            store.write().unwrap().commit_pending();
+        }
+        engine.start();
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+
+        async fn send_get_position(
+            store: &Arc<RwLock<ProjectStore>>,
+            engine: &Arc<LoopEngine>,
+            settings: &Arc<Mutex<EngineSettings>>,
+            shutdown_tx: &Arc<Mutex<Option<oneshot::Sender<()>>>>,
+        ) -> u64 {
+            let (client, server) = UnixStream::pair().unwrap();
+            let s = Arc::clone(store);
+            let e = Arc::clone(engine);
+            let se = Arc::clone(settings);
+            let st = Arc::clone(shutdown_tx);
+            tokio::spawn(async move {
+                connection_handler(server, s, e, se, st).await;
+            });
+            let cmd = r#"{"type":"get_position"}"#.to_string() + "\n";
+            let mut client = client;
+            use tokio::io::AsyncWriteExt;
+            client.write_all(cmd.as_bytes()).await.unwrap();
+            let mut resp = String::new();
+            client.read_to_string(&mut resp).await.unwrap();
+            let v: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
+            v["tick"].as_u64().unwrap()
+        }
+
+        let first = send_get_position(&store, &engine, &settings, &shutdown_tx).await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let second = send_get_position(&store, &engine, &settings, &shutdown_tx).await;
+
+        assert!(
+            second >= first,
+            "expected second tick ({second}) >= first tick ({first})"
+        );
+        engine.stop();
+    }
+
+    // EP-2 AC-6: while paused, tick is frozen across responses and loop_duration is non-null
+    #[tokio::test]
+    async fn get_position_while_paused_tick_frozen_and_loop_duration_present() {
+        let (store, engine, settings, shutdown_tx) = make_shared_state();
+        {
+            use crate::domain::*;
+            // BPM 300, loop_duration 480 => one loop pass ≈ 200ms.
+            let project = Project {
+                header: Header {
+                    bpm: 300,
+                    loop_duration: 480,
+                },
+                tracks: vec![Track {
+                    name: "t".to_string(),
+                    channel: 1,
+                    instrument: 0,
+                    notes: vec![Note {
+                        start_tick: 0,
+                        duration: 480,
+                        pitch: 60,
+                        velocity: 80,
+                    }],
+                }],
+            };
+            store.write().unwrap().set_pending(project).unwrap();
+            store.write().unwrap().commit_pending();
+        }
+        engine.clock_start();
+        // Wait past the first loop boundary so loop_duration_ticks has been written (F-9).
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        engine.clock_pause();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        while std::time::Instant::now() < deadline && engine.state() != EngineState::Paused {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(engine.state(), EngineState::Paused);
+
+        async fn send_get_position(
+            store: &Arc<RwLock<ProjectStore>>,
+            engine: &Arc<LoopEngine>,
+            settings: &Arc<Mutex<EngineSettings>>,
+            shutdown_tx: &Arc<Mutex<Option<oneshot::Sender<()>>>>,
+        ) -> serde_json::Value {
+            let (client, server) = UnixStream::pair().unwrap();
+            let s = Arc::clone(store);
+            let e = Arc::clone(engine);
+            let se = Arc::clone(settings);
+            let st = Arc::clone(shutdown_tx);
+            tokio::spawn(async move {
+                connection_handler(server, s, e, se, st).await;
+            });
+            let cmd = r#"{"type":"get_position"}"#.to_string() + "\n";
+            let mut client = client;
+            use tokio::io::AsyncWriteExt;
+            client.write_all(cmd.as_bytes()).await.unwrap();
+            let mut resp = String::new();
+            client.read_to_string(&mut resp).await.unwrap();
+            serde_json::from_str(resp.trim()).unwrap()
+        }
+
+        let first = send_get_position(&store, &engine, &settings, &shutdown_tx).await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let second = send_get_position(&store, &engine, &settings, &shutdown_tx).await;
+
+        assert_eq!(
+            first["tick"], second["tick"],
+            "tick must not advance while paused"
+        );
+        assert!(
+            !second["loop_duration"].is_null(),
+            "loop_duration must be non-null while paused"
+        );
+        engine.clock_stop();
     }
 
     #[tokio::test]

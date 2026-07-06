@@ -83,6 +83,15 @@ enum LoopCommand {
     Start,
     /// Send a loop-stop command to the daemon
     Stop,
+    /// Query current tick position
+    Position {
+        /// Poll continuously until interrupted
+        #[arg(long)]
+        poll: bool,
+        /// Poll interval in milliseconds (only meaningful with --poll)
+        #[arg(long, default_value_t = 50)]
+        interval_ms: u64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -104,6 +113,7 @@ fn main() {
         Commands::Loop { command } => match command {
             LoopCommand::Start => cmd_loop_start(),
             LoopCommand::Stop => cmd_loop_stop(),
+            LoopCommand::Position { poll, interval_ms } => cmd_loop_position(poll, interval_ms),
         },
         Commands::Midi { command } => match command {
             MidiCommand::Ports => cmd_midi_ports(),
@@ -351,6 +361,49 @@ fn cmd_loop_start() {
     }
 }
 
+fn cmd_loop_position(poll: bool, interval_ms: u64) {
+    let sock_path = socket_path::resolve();
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+
+    if !poll {
+        rt.block_on(async {
+            match client::query_position(&sock_path).await {
+                Ok((tick, loop_duration)) => {
+                    println!("{}", client::format_position_output(tick, loop_duration));
+                }
+                Err(e) => handle_client_error(e, &sock_path),
+            }
+        });
+        return;
+    }
+
+    let poll_result: Result<(), client::ClientError> = rt.block_on(async {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(interval_ms));
+        let mut sigint = signal(SignalKind::interrupt()).expect("failed to install SIGINT handler");
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    match client::query_position(&sock_path).await {
+                        Ok((tick, loop_duration)) => {
+                            println!("{}", client::format_position_output(tick, loop_duration));
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+                _ = sigint.recv() => {
+                    return Ok(());
+                }
+            }
+        }
+    });
+
+    if let Err(e) = poll_result {
+        handle_client_error(e, &sock_path);
+    }
+}
+
 fn cmd_loop_stop() {
     let sock_path = socket_path::resolve();
     if let Err(e) = client::send_command(&sock_path, serde_json::json!({"command": "loop-stop"})) {
@@ -361,6 +414,51 @@ fn cmd_loop_stop() {
 fn cmd_midi_ports() {
     for port in midi_port::list_ports() {
         println!("{}", port.name);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // EP-3 T-1: `loop position` parses with defaults poll=false, interval_ms=50
+    #[test]
+    fn loop_position_parses_with_defaults() {
+        let cli = Cli::try_parse_from(["propeller", "loop", "position"]).unwrap();
+        match cli.command {
+            Commands::Loop {
+                command: LoopCommand::Position { poll, interval_ms },
+            } => {
+                assert!(!poll);
+                assert_eq!(interval_ms, 50);
+            }
+            _ => panic!("expected Loop Position"),
+        }
+    }
+
+    // EP-3 T-1: `--poll` sets poll=true
+    #[test]
+    fn loop_position_parses_poll_flag() {
+        let cli = Cli::try_parse_from(["propeller", "loop", "position", "--poll"]).unwrap();
+        match cli.command {
+            Commands::Loop {
+                command: LoopCommand::Position { poll, .. },
+            } => assert!(poll),
+            _ => panic!("expected Loop Position"),
+        }
+    }
+
+    // EP-3 T-1: `--interval-ms 100` sets interval_ms=100
+    #[test]
+    fn loop_position_parses_interval_ms() {
+        let cli =
+            Cli::try_parse_from(["propeller", "loop", "position", "--interval-ms", "100"]).unwrap();
+        match cli.command {
+            Commands::Loop {
+                command: LoopCommand::Position { interval_ms, .. },
+            } => assert_eq!(interval_ms, 100),
+            _ => panic!("expected Loop Position"),
+        }
     }
 }
 

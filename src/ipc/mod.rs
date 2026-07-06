@@ -6,4 +6,4 @@ pub mod server;
 pub mod types;
 
 pub use server::run_ipc_server;
-pub use types::{EngineMode, EngineSettings};
+pub use types::{EngineMode, EngineSettings, IpcMessage};

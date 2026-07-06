@@ -1,7 +1,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -809,4 +809,359 @@ fn ep9_error_when_daemon_returns_error() {
         stderr.contains("intentional test error") || stderr.contains("propeller"),
         "stderr should mention the error, got: {stderr}"
     );
+}
+
+// ── EP-3 : `loop position` ────────────────────────────────────────────────
+
+/// T-7: single-shot `loop position` with a project loaded — one `\d+/\d+`
+/// line on stdout, exit 0 (AC-1)
+#[test]
+fn ep3_loop_position_single_shot_with_project() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let sock = dir.path().join("test.sock");
+    spawn_cli_mock(
+        &sock,
+        r#"{"type":"position","tick":1234,"loop_duration":480}"#,
+    );
+
+    let output = Command::new(propeller_bin())
+        .args(["loop", "position"])
+        .env("PROPELLER_SOCK", &sock)
+        .output()
+        .expect("run propeller loop position");
+
+    assert!(
+        output.status.success(),
+        "expected exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 1, "expected exactly one line, got: {stdout:?}");
+    assert!(
+        matches_position_line(lines[0]),
+        "expected `\\d+/\\d+`, got: {}",
+        lines[0]
+    );
+    assert_eq!(lines[0], "1234/480");
+}
+
+/// T-9: single-shot `loop position` with no project loaded — one `\d+/-`
+/// line on stdout, exit 0 (AC-2)
+#[test]
+fn ep3_loop_position_single_shot_no_project() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let sock = dir.path().join("test.sock");
+    spawn_cli_mock(
+        &sock,
+        r#"{"type":"position","tick":0,"loop_duration":null}"#,
+    );
+
+    let output = Command::new(propeller_bin())
+        .args(["loop", "position"])
+        .env("PROPELLER_SOCK", &sock)
+        .output()
+        .expect("run propeller loop position");
+
+    assert!(
+        output.status.success(),
+        "expected exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 1, "expected exactly one line, got: {stdout:?}");
+    assert_eq!(lines[0], "0/-");
+}
+
+/// T-10: single-shot `loop position`, daemon not running — stderr error,
+/// nothing on stdout, exit 1 (AC-5 / F-9)
+#[test]
+fn ep3_loop_position_single_shot_daemon_not_running() {
+    let sock = unique_sock_path();
+
+    let output = Command::new(propeller_bin())
+        .args(["loop", "position"])
+        .env("PROPELLER_SOCK", &sock)
+        .output()
+        .expect("run propeller loop position");
+
+    assert!(!output.status.success(), "expected non-zero exit");
+    assert!(output.stdout.is_empty(), "expected no stdout");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.is_empty(), "expected error message in stderr");
+    assert!(
+        stderr.contains("propeller"),
+        "stderr should be a human-readable diagnostic, got: {stderr}"
+    );
+}
+
+/// T-12: `--interval-ms` without `--poll` is a no-op — single-shot path taken,
+/// one output line (F-11)
+#[test]
+fn ep3_loop_position_interval_ms_without_poll_is_noop() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let sock = dir.path().join("test.sock");
+    spawn_cli_mock(
+        &sock,
+        r#"{"type":"position","tick":10,"loop_duration":100}"#,
+    );
+
+    let output = Command::new(propeller_bin())
+        .args(["loop", "position", "--interval-ms", "100"])
+        .env("PROPELLER_SOCK", &sock)
+        .output()
+        .expect("run propeller loop position");
+
+    assert!(
+        output.status.success(),
+        "expected exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 1, "expected exactly one line, got: {stdout:?}");
+    assert_eq!(lines[0], "10/100");
+}
+
+/// Accepts connections in a loop (F-10: a fresh connection per poll
+/// iteration), replying with a monotonically increasing tick each time.
+fn spawn_position_poll_mock(sock_path: &Path) {
+    let listener = UnixListener::bind(sock_path).expect("bind mock server");
+    std::thread::spawn(move || {
+        let mut tick: u64 = 0;
+        for stream in listener.incoming() {
+            let mut stream = match stream {
+                Ok(s) => s,
+                Err(_) => break,
+            };
+            let mut reader = BufReader::new(&stream);
+            let mut line = String::new();
+            if reader.read_line(&mut line).is_err() || line.is_empty() {
+                break;
+            }
+            let response =
+                format!("{{\"type\":\"position\",\"tick\":{tick},\"loop_duration\":480}}\n");
+            if stream.write_all(response.as_bytes()).is_err() {
+                break;
+            }
+            tick += 10;
+        }
+    });
+}
+
+/// T-13: `--poll` with mock daemon → produces >=2 output lines, each
+/// matching `\d+/\d+` (F-5, AC-3)
+#[test]
+fn ep3_loop_position_poll_produces_multiple_lines() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let sock = dir.path().join("test.sock");
+    spawn_position_poll_mock(&sock);
+
+    let mut child = Command::new(propeller_bin())
+        .args(["loop", "position", "--poll"])
+        .env("PROPELLER_SOCK", &sock)
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn propeller loop position --poll");
+
+    let stdout = child.stdout.take().unwrap();
+    let mut reader = BufReader::new(stdout);
+    let mut lines = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while lines.len() < 2 && Instant::now() < deadline {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => lines.push(line.trim().to_string()),
+        }
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    assert!(lines.len() >= 2, "expected at least 2 lines, got {lines:?}");
+    for l in &lines {
+        assert!(matches_position_line(l), "line didn't match \\d+/\\d+: {l}");
+    }
+}
+
+/// T-15: `--poll --interval-ms 100` run for 500ms → ~5 lines produced
+/// (±1 tolerance) (AC-4)
+#[test]
+fn ep3_loop_position_poll_interval_ms_produces_expected_line_count() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let sock = dir.path().join("test.sock");
+    spawn_position_poll_mock(&sock);
+
+    let mut child = Command::new(propeller_bin())
+        .args(["loop", "position", "--poll", "--interval-ms", "100"])
+        .env("PROPELLER_SOCK", &sock)
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn propeller loop position --poll --interval-ms 100");
+
+    let stdout = child.stdout.take().unwrap();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    if tx.send(line.trim().to_string()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    // Wait for the first line before starting the 500ms measurement window, so
+    // process spawn/connect latency (which varies under test-suite load) isn't
+    // counted against the interval budget being asserted here.
+    let first = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("expected at least one line before the measurement window");
+    let mut lines = vec![first];
+    let deadline = Instant::now() + Duration::from_millis(500);
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match rx.recv_timeout(remaining) {
+            Ok(l) => lines.push(l),
+            Err(_) => break,
+        }
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    assert!(
+        (4..=6).contains(&lines.len()),
+        "expected ~5 lines (±1), got {} : {lines:?}",
+        lines.len()
+    );
+}
+
+/// Accepts exactly `respond_count` connections (as `spawn_position_poll_mock`
+/// does), then stops listening and removes the socket file so subsequent
+/// connection attempts fail (simulating the daemon going away mid-poll).
+fn spawn_position_poll_mock_limited(sock_path: &Path, respond_count: usize) {
+    let listener = UnixListener::bind(sock_path).expect("bind mock server");
+    let sock_path = sock_path.to_path_buf();
+    std::thread::spawn(move || {
+        let mut served = 0;
+        for stream in listener.incoming() {
+            if served >= respond_count {
+                break;
+            }
+            let mut stream = match stream {
+                Ok(s) => s,
+                Err(_) => break,
+            };
+            let mut reader = BufReader::new(&stream);
+            let mut line = String::new();
+            if reader.read_line(&mut line).is_err() {
+                break;
+            }
+            let response = format!(
+                "{{\"type\":\"position\",\"tick\":{},\"loop_duration\":480}}\n",
+                served * 10
+            );
+            if stream.write_all(response.as_bytes()).is_err() {
+                break;
+            }
+            served += 1;
+        }
+        drop(listener);
+        let _ = std::fs::remove_file(&sock_path);
+    });
+}
+
+/// T-18: mock daemon becomes unreachable mid-poll → human-readable error on
+/// stderr, exit code 1 (AC-6 / F-12)
+#[test]
+fn ep3_loop_position_poll_daemon_unreachable_mid_poll() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let sock = dir.path().join("test.sock");
+    spawn_position_poll_mock_limited(&sock, 2);
+
+    let child = Command::new(propeller_bin())
+        .args(["loop", "position", "--poll"])
+        .env("PROPELLER_SOCK", &sock)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn propeller loop position --poll");
+
+    let output = child.wait_with_output().expect("wait for child");
+
+    assert!(!output.status.success(), "expected non-zero exit");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.is_empty(), "expected error message in stderr");
+    assert!(
+        stderr.contains("propeller"),
+        "expected human-readable diagnostic, got: {stderr}"
+    );
+}
+
+/// T-16: `--poll` mode, process receives SIGINT → exits with code 0 (F-8, AC-3)
+#[test]
+fn ep3_loop_position_poll_sigint_exits_zero() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let sock = dir.path().join("test.sock");
+    spawn_position_poll_mock(&sock);
+
+    let mut child = Command::new(propeller_bin())
+        .args(["loop", "position", "--poll"])
+        .env("PROPELLER_SOCK", &sock)
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn propeller loop position --poll");
+
+    // Wait for the first line before signalling, so the SIGINT handler is
+    // guaranteed to be installed (process startup latency varies under
+    // test-suite load and can otherwise race the signal against `signal()`
+    // registration, hitting the OS default disposition instead).
+    let mut reader = BufReader::new(child.stdout.take().unwrap());
+    let mut first_line = String::new();
+    reader
+        .read_line(&mut first_line)
+        .expect("expected at least one line before sending SIGINT");
+
+    Command::new("kill")
+        .args(["-2", &child.id().to_string()])
+        .status()
+        .expect("send SIGINT");
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut exit_status = None;
+    while Instant::now() < deadline {
+        if let Ok(Some(status)) = child.try_wait() {
+            exit_status = Some(status);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let status = exit_status.expect("process should exit after SIGINT within 3s");
+    assert!(
+        status.success(),
+        "expected exit 0 after SIGINT, got {:?}",
+        status.code()
+    );
+}
+
+/// Matches `\d+/\d+` or `\d+/-` without pulling in the `regex` crate.
+fn matches_position_line(line: &str) -> bool {
+    let Some((left, right)) = line.split_once('/') else {
+        return false;
+    };
+    !left.is_empty()
+        && left.chars().all(|c| c.is_ascii_digit())
+        && (right == "-" || (!right.is_empty() && right.chars().all(|c| c.is_ascii_digit())))
 }
