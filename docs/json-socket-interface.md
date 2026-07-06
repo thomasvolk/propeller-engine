@@ -180,19 +180,20 @@ routes accordingly, so both forms coexist on the same socket. See the Response r
 
 ### Header fields
 
-| Field           | Type / Values   | Description                        |
-| --------------- | --------------- | ---------------------------------- |
-| `bpm`           | integer, 20–300 | Tempo in beats per minute          |
-| `loop_duration` | integer, > 0    | Total loop length in ticks         |
+| Field           | Type / Values   | Description                |
+| --------------- | --------------- | -------------------------- |
+| `bpm`           | integer, 20–300 | Tempo in beats per minute  |
+| `loop_duration` | integer, > 0    | Total loop length in ticks |
 
 ### Track fields
 
-| Field        | Type / Values   | Description                                        |
-| ------------ | --------------- | -------------------------------------------------- |
-| `name`       | string          | Human-readable label; not sent to MIDI             |
-| `channel`    | integer, 1–16   | MIDI channel                                       |
-| `instrument` | integer, 0–127  | MIDI program number                                |
-| `notes`      | array of tuples | Flat list of notes as four-element integer arrays  |
+| Field         | Type / Values             | Description                                                  |
+| ------------- | ------------------------- | ------------------------------------------------------------ |
+| `name`        | string                    | Human-readable label; not sent to MIDI                       |
+| `channel`     | integer, 1–16             | MIDI channel                                                 |
+| `instrument`  | integer, 0–127            | MIDI program number                                          |
+| `notes`       | array of tuples           | Flat list of notes as four-element integer arrays            |
+| `pitch-bends` | array of tuples, optional | Flat list of pitch-bend events as two-element integer arrays |
 
 ### Note fields
 
@@ -205,17 +206,31 @@ Each note is a four-element integer array `[start_tick, duration, pitch, velocit
 | 2     | `pitch`      | integer, 0–127 | MIDI note number (middle C = 60)       |
 | 3     | `velocity`   | integer, 0–127 | Note-on velocity                       |
 
+### Pitch-bend fields
+
+Each pitch-bend event is a two-element integer array `[tick, value]`:
+
+| Index | Field   | Type / Values    | Description                                                       |
+| ----- | ------- | ---------------- | ----------------------------------------------------------------- |
+| 0     | `tick`  | integer, ≥ 0     | Tick offset from the start of the loop; must be < `loop_duration` |
+| 1     | `value` | integer, 0–16383 | 14-bit MIDI pitch-bend value; 8192 is center (no bend)            |
+
+`pitch-bends` is optional and defaults to an empty list. Events need not be sorted by tick, and
+repeated ticks are allowed — the engine emits a Pitch Bend message (`0xEx`) for every entry, in
+tick order within the loop. Every channel with at least one pitch-bend event is reset to center
+(8192) whenever the loop or clock stops or pauses.
+
 ### Status response fields
 
-| Field              | Type / Values                        | Description                                                        |
-| ------------------ | ------------------------------------ | ------------------------------------------------------------------ |
-| `status`           | `"ok"` or `"error"`                  | Whether the command succeeded                                      |
-| `mode`             | `"standalone"`, `"clock"`, `"sync"`  | Current operating mode                                             |
-| `bpm`              | integer                              | Active BPM (from project if loaded, otherwise from engine setting) |
-| `loop_duration`    | integer or absent                    | Loop length in ticks; absent when no project is loaded             |
-| `clock_state`      | `"started"`, `"stopped"`             | Whether the loop is currently playing                              |
-| `project_present`  | boolean                              | Whether a project is currently loaded                              |
-| `sync_clock_state` | `"waiting"`, `"tracking"`, `"lost"`  | Sync mode only: state of the incoming external clock signal        |
+| Field              | Type / Values                       | Description                                                        |
+| ------------------ | ----------------------------------- | ------------------------------------------------------------------ |
+| `status`           | `"ok"` or `"error"`                 | Whether the command succeeded                                      |
+| `mode`             | `"standalone"`, `"clock"`, `"sync"` | Current operating mode                                             |
+| `bpm`              | integer                             | Active BPM (from project if loaded, otherwise from engine setting) |
+| `loop_duration`    | integer or absent                   | Loop length in ticks; absent when no project is loaded             |
+| `clock_state`      | `"started"`, `"stopped"`            | Whether the loop is currently playing                              |
+| `project_present`  | boolean                             | Whether a project is currently loaded                              |
+| `sync_clock_state` | `"waiting"`, `"tracking"`, `"lost"` | Sync mode only: state of the incoming external clock signal        |
 
 ### Position response fields
 
@@ -271,23 +286,23 @@ The NoteOn is emitted at tick 1440 of the current loop. The NoteOff is emitted a
 
 ## Error codes
 
-| Code                           | Meaning                                                              | How to fix                                                                  |
-| ------------------------------ | -------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| `parse_error`                  | The JSON is malformed                                                | Check your JSON syntax; ensure the payload is valid UTF-8                   |
-| `missing_command`              | The JSON object has no `"command"` field                             | Add `"command": "<name>"` to your payload                                   |
-| `unknown_command`              | The `"command"` value is not recognised                              | Check the spelling; refer to the command list above                         |
-| `validation_error`             | A field value failed domain validation                               | Check ranges: BPM 20–300, channel 1–16, instrument 0–127, etc.             |
-| `bpm_non_integer`              | The `bpm` value has a fractional part                                | Use a whole number, e.g. `120` not `120.5`                                  |
-| `bpm_out_of_range`             | BPM integer is outside 20–300                                        | Use a value between 20 and 300 inclusive                                    |
-| `loop_duration_zero`           | `loop_duration` is 0 or negative                                     | Use a positive integer, e.g. `1920`                                         |
-| `note_start_tick_out_of_range` | A note's `start_tick` is ≥ `loop_duration`                          | Ensure every note starts within the loop: `start_tick < loop_duration`      |
-| `note_duration_zero`           | A note's `duration` is 0 or negative                                 | Use a positive integer for duration                                         |
-| `note_duration_exceeds_limit`  | A note's `start_tick + duration > 2 × loop_duration`                | Shorten the note or move its start tick earlier                             |
-| `invalid_mode`                 | The `"mode"` string is not recognised                                | Use `"standalone"`, `"clock"`, or `"sync"`                                  |
-| `no_project`                   | `clock-start` sent with no active project                            | Load a project with `create-project` first                                  |
-| `sync_mode_active`             | `loop-start`, `loop-stop`, or `set-bpm` sent while in sync mode     | Use the external MIDI device to control transport and tempo                 |
-| `sync_requires_port`           | `set-mode` to `sync` without `--sync` at daemon startup             | Restart the daemon with `PROPELLER_SYNC_PORT=<port> propeller start --sync` |
-| `unknown_type`                 | The `"type"` value is not recognised                                 | Only `"get_position"` is a valid `"type"` value                             |
+| Code                           | Meaning                                                         | How to fix                                                                                                                  |
+| ------------------------------ | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `parse_error`                  | The JSON is malformed                                           | Check your JSON syntax; ensure the payload is valid UTF-8                                                                   |
+| `missing_command`              | The JSON object has no `"command"` field                        | Add `"command": "<name>"` to your payload                                                                                   |
+| `unknown_command`              | The `"command"` value is not recognised                         | Check the spelling; refer to the command list above                                                                         |
+| `validation_error`             | A field value failed domain validation                          | Check ranges: BPM 20–300, channel 1–16, instrument 0–127, pitch-bend value 0–16383, pitch-bend tick < `loop_duration`, etc. |
+| `bpm_non_integer`              | The `bpm` value has a fractional part                           | Use a whole number, e.g. `120` not `120.5`                                                                                  |
+| `bpm_out_of_range`             | BPM integer is outside 20–300                                   | Use a value between 20 and 300 inclusive                                                                                    |
+| `loop_duration_zero`           | `loop_duration` is 0 or negative                                | Use a positive integer, e.g. `1920`                                                                                         |
+| `note_start_tick_out_of_range` | A note's `start_tick` is ≥ `loop_duration`                      | Ensure every note starts within the loop: `start_tick < loop_duration`                                                      |
+| `note_duration_zero`           | A note's `duration` is 0 or negative                            | Use a positive integer for duration                                                                                         |
+| `note_duration_exceeds_limit`  | A note's `start_tick + duration > 2 × loop_duration`            | Shorten the note or move its start tick earlier                                                                             |
+| `invalid_mode`                 | The `"mode"` string is not recognised                           | Use `"standalone"`, `"clock"`, or `"sync"`                                                                                  |
+| `no_project`                   | `clock-start` sent with no active project                       | Load a project with `create-project` first                                                                                  |
+| `sync_mode_active`             | `loop-start`, `loop-stop`, or `set-bpm` sent while in sync mode | Use the external MIDI device to control transport and tempo                                                                 |
+| `sync_requires_port`           | `set-mode` to `sync` without `--sync` at daemon startup         | Restart the daemon with `PROPELLER_SYNC_PORT=<port> propeller start --sync`                                                 |
+| `unknown_type`                 | The `"type"` value is not recognised                            | Only `"get_position"` is a valid `"type"` value                                                                             |
 
 ## Examples
 
@@ -308,6 +323,18 @@ printf '{"command":"create-project","header":{"bpm":100,"loop_duration":1920},"t
   | nc -U /tmp/propeller.sock
 printf '{"command":"loop-start"}\n' | nc -U /tmp/propeller.sock
 ```
+
+### Load a project with a pitch bend
+
+Bend a sustained note up and back to center over the course of the loop:
+
+```sh
+printf '{"command":"create-project","header":{"bpm":100,"loop_duration":1920},"tracks":[{"name":"lead","channel":1,"instrument":0,"notes":[[0,1920,60,100]],"pitch-bends":[[0,8192],[480,10192],[960,12192],[1440,10192]]}]}\n' \
+  | nc -U /tmp/propeller.sock
+printf '{"command":"loop-start"}\n' | nc -U /tmp/propeller.sock
+```
+
+The channel resets to center (8192) automatically when the loop is stopped.
 
 ### Change BPM while playing
 

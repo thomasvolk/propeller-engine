@@ -116,6 +116,20 @@ This is by design: auto-restart on clock recovery would cause unintended playbac
 
 There is no way to force an immediate mid-bar update. Use `create-project` (not `modify-project`) to replace the active project; it also takes effect at the next bar boundary.
 
+## Pitch bend resets to center on stop or pause, not to its pre-loop value
+
+Any channel with at least one `pitch-bends` event on its track is reset to center (value 8192)
+whenever the loop or clock stops or pauses (`loop-stop`, `clock-stop`, `clock-pause`, or an
+incoming MIDI Stop in sync mode). This happens even if the channel's pitch bend was already at
+center, and even if the track's last scheduled bend for the loop left it away from center.
+
+**Cause:** MIDI pitch bend has no implicit decay — a synth holds the last received bend value
+indefinitely. Without an explicit reset, stopping playback mid-bend would leave a connected synth
+permanently detuned on that channel. Resetting to center on every stop/pause avoids that, at the
+cost of not preserving whatever bend value was active at the moment of the stop.
+
+This is by design; there is no way to opt out of the reset or resume from a non-center bend value.
+
 ## `loop-start` with no project loads silently
 
 If you issue `loop-start` (or send `{"command":"loop-start"}` over the socket) before loading a project, the engine enters a waiting state without producing any MIDI output or error. The status response shows `clock_state: "started"` and `project_present: false`. Playback begins automatically once you load a project.

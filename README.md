@@ -231,6 +231,20 @@ Field notes:
   - `duration` — note length in ticks; must be greater than 0.
   - `pitch` — MIDI note number, 0–127 (middle C = 60).
   - `velocity` — note-on velocity, 0–127.
+- `pitch-bends` (optional) — a per-track array of two-element arrays `[tick, value]`.
+  - `tick` — tick offset from loop start; must be less than `loop_duration`.
+  - `value` — 14-bit pitch-bend value, 0–16383; 8192 is center (no bend).
+
+  ```json
+  "pitch-bends": [
+    [0,   8192],
+    [120, 10192],
+    [240, 8192]
+  ]
+  ```
+
+  Every channel with at least one `pitch-bends` entry is reset to center (8192) whenever the
+  loop or clock stops or pauses. See `examples/pitch_bend.json` for a working example.
 
 #### modify-project
 
@@ -366,6 +380,7 @@ On error:
 - **Status check** — `propeller status` reports whether the daemon is running; exits 0 if running, non-zero if not.
 - **Structured logging** — writes to the platform log file using `tracing`.
 - **Project model** — a project defines a header (BPM, time signature) and tracks (MIDI channel, instrument, bars of notes). Notes carry pitch, velocity, and duration in ticks; a note can be a rest.
+- **Pitch bend** — tracks may carry 14-bit pitch-bend events (0–16383, center 8192) at arbitrary tick offsets; bent channels reset to center whenever playback stops or pauses.
 - **Continuous loop playback** — repeats the project endlessly with no timing gap between repetitions.
 - **Bar-boundary updates** — pending project changes take effect at the next bar boundary; the current bar always plays to completion.
 - **Runtime JSON interface** — load projects, control playback, adjust BPM and mode, and query status over the socket without restarting the engine.
