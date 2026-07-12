@@ -521,3 +521,11 @@ The `ProjectStore` is wrapped in `Arc<RwLock<_>>` so the tokio connection handle
 (writers on `create-project`) and the player thread (reader at loop boundary, writer
 at `advance_loop`) can share it safely without blocking each other longer than
 necessary.
+
+---
+
+## See also
+
+- [JSON Socket Interface](json-socket-interface.md) — command reference for the IPC dispatch logic described above
+- [Known Issues](known-issues.md) — operational quirks that fall out of this architecture
+- [Contributing section in README](../README.md#contributing)

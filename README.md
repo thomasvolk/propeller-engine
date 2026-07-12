@@ -183,6 +183,12 @@ Diagnostic output is written to:
 - **macOS:** `~/Library/Logs/propeller/propeller.log`
 - **Linux:** `~/.local/share/propeller/propeller.log`
 
+### Known issues and workarounds
+
+Startup latency, stuck-note recovery, pitch-bend reset behavior, and sync-mode limitations
+encountered in live use are documented with workarounds in
+[docs/known-issues.md](docs/known-issues.md).
+
 ### Runtime interface
 
 All commands are sent as a single-line JSON object to the Unix socket (`/tmp/propeller.sock` by default, overridden by `PROPELLER_SOCK`). Each connection carries exactly one request and receives one JSON response.
@@ -259,7 +265,7 @@ Queues a new project definition; the change takes effect at the next bar boundar
 
 `loop-start` with no active project transitions the engine to a waiting state; playback begins automatically once a project is loaded.
 
-In sync mode both commands are rejected with a `sync_mode_active` error. Transport is controlled entirely by the external device: MIDI Start (0xFA) starts the loop, MIDI Stop (0xFC) halts it.
+In sync mode both commands are rejected with a `sync_mode_active` error. Transport is controlled entirely by the external device: MIDI Start (0xFA) starts the loop from the beginning, and MIDI Stop (0xFC) pauses it, retaining the current position so a following MIDI Continue (0xFB) resumes exactly where it left off.
 
 #### clock-start, clock-pause, clock-resume, clock-stop
 
@@ -393,7 +399,10 @@ See [CHANGELOG.md](CHANGELOG.md) for the full release history.
 
 ## Contributing
 
-Open issues and submit pull requests at <https://github.com/thomasvolk/propeller-engine>.
+Open issues and submit pull requests at <https://github.com/thomasvolk/propeller-engine>. See
+[docs/internals.md](docs/internals.md) for the process model, IPC dispatch, and loop-engine
+internals before diving into the code. Run `cargo fmt` and `cargo test` before submitting a pull
+request; the codebase must build without compiler warnings.
 
 ## Support
 
