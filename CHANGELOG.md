@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.5.0] - 2026-07-12
+
+### Changes
+
+- Fixed MIDI sync playback so a MIDI Stop (0xFC) now pauses and retains the current song
+  position instead of hard-stopping, per the MIDI 1.0 spec.
+- Fixed a following MIDI Continue (0xFB) to resume playback from the exact tick where it was
+  paused, rather than restarting the loop from the beginning.
+- MIDI Start (0xFA) continues to reset the song position to 0, distinguishing it from Stop/
+  Continue behavior.
+- Updated the internal loop-engine state machine so `SyncStop` transitions to `Paused` (reusing
+  the existing pause/resume mechanism) instead of `Stopped`.
+- Documented the known-issues, JSON socket interface, and internals docs to describe the
+  corrected sync-mode pause/resume semantics and cross-link related documentation pages.
+- Updated the README with contributing guidelines (`cargo fmt`/`cargo test`, no compiler
+  warnings) and a link to the known issues document.
+
+---
+
 ## [0.4.0] - 2026-07-06
 
 ### Changes
