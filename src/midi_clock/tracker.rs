@@ -54,13 +54,6 @@ impl PulseTracker {
         Some(last_interval.mul_f64(3.5))
     }
 
-    pub fn is_clock_active(&self, now: Instant) -> bool {
-        match (self.timeout_duration(), self.history.back()) {
-            (Some(timeout), Some(last)) => now.duration_since(*last) <= timeout,
-            _ => false,
-        }
-    }
-
     pub fn reset(&mut self) {
         self.history.clear();
     }
@@ -135,31 +128,6 @@ mod tests {
     }
 
     #[test]
-    fn is_clock_active_true_immediately_after_pulse() {
-        let mut tracker = PulseTracker::new();
-        let base = Instant::now();
-        let interval = Duration::from_micros(20_833);
-        tracker.update(base);
-        tracker.update(base + interval);
-        // Right at the last pulse timestamp — well within timeout
-        assert!(tracker.is_clock_active(base + interval));
-        // 1 ms after — still well within the ~72.9 ms timeout
-        assert!(tracker.is_clock_active(base + interval + Duration::from_millis(1)));
-    }
-
-    #[test]
-    fn is_clock_active_false_after_4_intervals_silence() {
-        let mut tracker = PulseTracker::new();
-        let base = Instant::now();
-        let interval = Duration::from_micros(20_833);
-        tracker.update(base);
-        tracker.update(base + interval);
-        // 4 intervals of silence: 4 × 20_833 μs = 83_332 μs > timeout (~72_916 μs)
-        let after_silence = base + interval + interval * 4;
-        assert!(!tracker.is_clock_active(after_silence));
-    }
-
-    #[test]
     fn reset_clears_all_state() {
         let mut tracker = PulseTracker::new();
         let base = Instant::now();
@@ -169,12 +137,10 @@ mod tests {
         }
         assert!(tracker.bpm().is_some());
         assert!(tracker.timeout_duration().is_some());
-        assert!(tracker.is_clock_active(base + interval * 4 + Duration::from_millis(1)));
 
         tracker.reset();
 
         assert_eq!(tracker.bpm(), None);
         assert_eq!(tracker.timeout_duration(), None);
-        assert!(!tracker.is_clock_active(base + interval * 5));
     }
 }

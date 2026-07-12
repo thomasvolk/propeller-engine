@@ -133,8 +133,10 @@ fn run_receiver(
                 engine.sync_start();
             }
             Ok(ClockMessage::Continue) => {
-                let now = Instant::now();
-                if pulse_tracker.is_clock_active(now) {
+                // Sequencers commonly stop emitting clock pulses while paused, so a
+                // stale last-pulse timestamp does not mean the device is gone. Only
+                // reject Continue when no clock was ever established at all.
+                if pulse_tracker.timeout_duration().is_some() {
                     engine.sync_continue();
                 }
             }
@@ -256,20 +258,57 @@ mod tests {
         let (tx, rx) = mpsc::channel::<ClockMessage>();
         let receiver = MidiClockReceiver::new_for_test(rx, Arc::clone(&engine));
 
-        // Prime the pulse tracker with high-frequency pulses so is_clock_active = true
+        // Prime the pulse tracker with a few pulses to establish a tempo
         for _ in 0..3 {
             tx.send(ClockMessage::Pulse).unwrap();
             std::thread::sleep(Duration::from_micros(20_833));
         }
         wait_for_sync_state(&receiver, SyncClockState::Tracking, 500);
 
-        // Now Stop then Continue while clock is still active
+        // Now Stop then Continue shortly after
         tx.send(ClockMessage::Stop).unwrap();
         std::thread::sleep(Duration::from_millis(20));
         tx.send(ClockMessage::Continue).unwrap();
 
         wait_for_engine_state(&engine, EngineState::Running, 500);
         assert_eq!(engine.state(), EngineState::Running);
+        engine.sync_stop();
+    }
+
+    #[test]
+    fn continue_after_long_pause_still_resumes_engine() {
+        // Regression test: a sequencer that stops emitting clock pulses while
+        // paused must still be able to resume playback via an explicit
+        // Continue (0xFB), even though the pulse tracker's last-seen pulse is
+        // long stale by the time Continue arrives.
+        let engine = make_engine_with_project();
+        let (tx, rx) = mpsc::channel::<ClockMessage>();
+        let receiver = MidiClockReceiver::new_for_test(rx, Arc::clone(&engine));
+
+        // Establish tracking with a few pulses at 120 BPM (~20_833 μs interval,
+        // ~73 ms clock-loss timeout).
+        for _ in 0..3 {
+            tx.send(ClockMessage::Pulse).unwrap();
+            std::thread::sleep(Duration::from_micros(20_833));
+        }
+        wait_for_sync_state(&receiver, SyncClockState::Tracking, 500);
+
+        // Sequencer pauses: sends Stop and then falls silent for well over the
+        // clock-loss timeout, as many real sequencers do while paused.
+        tx.send(ClockMessage::Stop).unwrap();
+        wait_for_engine_state(&engine, EngineState::Stopped, 500);
+        std::thread::sleep(Duration::from_millis(150));
+
+        // User resumes playback on the sequencer: it sends Continue before any
+        // new pulses arrive.
+        tx.send(ClockMessage::Continue).unwrap();
+
+        wait_for_engine_state(&engine, EngineState::Running, 500);
+        assert_eq!(
+            engine.state(),
+            EngineState::Running,
+            "Continue must resume playback even after a long pause with no pulses"
+        );
         engine.sync_stop();
     }
 
