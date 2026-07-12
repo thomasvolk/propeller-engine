@@ -328,7 +328,10 @@ mod tests {
     }
 
     #[test]
-    fn stop_message_calls_sync_stop_and_sets_waiting() {
+    fn stop_message_pauses_engine_and_sets_sync_waiting() {
+        // MIDI Stop (0xFC) pauses the engine (retaining Song Position for a later
+        // Continue), it does not hard-stop it. The receiver's own SyncClockState still
+        // reports Waiting, since it is tracking clock activity, not playback position.
         let engine = make_engine_with_project();
         let (tx, rx) = mpsc::channel::<ClockMessage>();
         let receiver = MidiClockReceiver::new_for_test(rx, Arc::clone(&engine));
@@ -339,10 +342,10 @@ mod tests {
 
         // Then stop
         tx.send(ClockMessage::Stop).unwrap();
-        wait_for_engine_state(&engine, EngineState::Stopped, 500);
+        wait_for_engine_state(&engine, EngineState::Paused, 500);
         wait_for_sync_state(&receiver, SyncClockState::Waiting, 500);
 
-        assert_eq!(engine.state(), EngineState::Stopped);
+        assert_eq!(engine.state(), EngineState::Paused);
         assert_eq!(receiver.sync_clock_state(), SyncClockState::Waiting);
     }
 
@@ -369,11 +372,11 @@ mod tests {
 
         wait_for_sync_state(&receiver, SyncClockState::Lost, 500);
         assert_eq!(receiver.sync_clock_state(), SyncClockState::Lost);
-        // Engine should be Stopped (sync_stop was called)
-        wait_for_engine_state(&engine, EngineState::Stopped, 500);
-        assert_eq!(engine.state(), EngineState::Stopped);
+        // Engine should be Paused (sync_stop was called; position is retained for Continue)
+        wait_for_engine_state(&engine, EngineState::Paused, 500);
+        assert_eq!(engine.state(), EngineState::Paused);
 
-        // Now send pulses again — state should go to Tracking but engine stays Stopped
+        // Now send pulses again — state should go to Tracking but engine stays Paused
         for _ in 0..5 {
             tx.send(ClockMessage::Pulse).unwrap();
             std::thread::sleep(Duration::from_millis(2));
@@ -383,7 +386,7 @@ mod tests {
         // Engine must NOT have restarted (no sync_start called)
         assert_eq!(
             engine.state(),
-            EngineState::Stopped,
+            EngineState::Paused,
             "engine must not restart after clock recovery without Start/Continue"
         );
     }
@@ -406,13 +409,13 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50));
         wait_for_sync_state(&receiver, SyncClockState::Lost, 500);
 
-        // Resume pulses (tracking restored, engine still stopped)
+        // Resume pulses (tracking restored, engine still paused)
         for _ in 0..5 {
             tx.send(ClockMessage::Pulse).unwrap();
             std::thread::sleep(Duration::from_millis(2));
         }
         wait_for_sync_state(&receiver, SyncClockState::Tracking, 500);
-        assert_eq!(engine.state(), EngineState::Stopped);
+        assert_eq!(engine.state(), EngineState::Paused);
 
         // Now send Start — engine should restart
         tx.send(ClockMessage::Start).unwrap();

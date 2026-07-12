@@ -230,11 +230,18 @@ pub(crate) enum LoopCommand {
 ```
 Stopped  ──Start/ClockStart/SyncStart──►  Running / Waiting
 Waiting  ──project becomes available──►  Running
-Running  ──Stop/ClockStop/SyncStop──►  Stopped
-Running  ──ClockPause──►  Paused
-Paused   ──ClockResume──►  Running
+Running  ──Stop/ClockStop──►  Stopped
+Running  ──ClockPause/SyncStop──►  Paused
+Paused   ──ClockResume/SyncContinue──►  Running
+Paused   ──SyncStart──►  Running (position reset to 0)
 Paused   ──ClockStop/Stop──►  Stopped
 ```
+
+`SyncStop` (external MIDI Stop, 0xFC) pauses rather than hard-stops: per the MIDI 1.0
+spec, Stop retains Song Position so a following Continue (0xFB) resumes from the same
+tick, while Start (0xFA) explicitly resets position to 0. It reuses the same `Paused`
+state and `pause_context` mechanism as `ClockPause`/`ClockResume`, except it emits no
+MIDI clock output of its own — sync mode is a clock slave.
 
 **Waiting** is entered from `Stopped` when a `Start` (standalone) or `SyncStart`
 command arrives but no project is active. The player polls the store every 10 ms
@@ -376,13 +383,13 @@ as `ClockMessage` variants:
 A dedicated thread processes messages and drives the `LoopEngine` via `sync_*`
 methods:
 
-| Message            | Action                                                            |
-| ------------------ | ----------------------------------------------------------------- |
-| `Pulse` (0xF8)     | Update `PulseTracker`; if BPM changed notify engine              |
-| `Start` (0xFA)     | Reset tracker; call `engine.sync_start()`                        |
-| `Continue` (0xFB)  | Call `engine.sync_continue()` if clock is still active           |
-| `Stop` (0xFC)      | Call `engine.sync_stop()`; state → `Waiting`                     |
-| Timeout            | State → `Lost`; call `engine.sync_stop()`                        |
+| Message           | Action                                                                       |
+| ----------------- | ---------------------------------------------------------------------------- |
+| `Pulse` (0xF8)    | Update `PulseTracker`; if BPM changed notify engine                          |
+| `Start` (0xFA)    | Reset tracker; call `engine.sync_start()` (resets position to 0)             |
+| `Continue` (0xFB) | Call `engine.sync_continue()` if a clock was ever established               |
+| `Stop` (0xFC)     | Call `engine.sync_stop()` (pauses, retains position); sync state → `Waiting` |
+| Timeout           | Sync state → `Lost`; call `engine.sync_stop()` (pauses, retains position)    |
 
 ### PulseTracker
 
@@ -395,7 +402,11 @@ BPM = 60_000_000 / (avg_interval_μs × 24)
 
 The **timeout** is 3.5× the last pulse interval. If no pulse arrives within that
 window, the clock is declared lost. On resumption (`Pulse` after `Lost`) the state
-returns to `Tracking` without restarting playback — a new `Start` (0xFA) is required.
+returns to `Tracking` without restarting playback — an explicit `Start` (0xFA) or
+`Continue` (0xFB) is required. `Continue` works here because the tracker's pulse
+history survives the loss (only `Start` resets it), so `run_receiver`'s "was a clock
+ever established" check on `Continue` (`timeout_duration().is_some()`) still passes —
+it does not require a *recent* pulse, only a previously established one.
 
 ### SyncClockState
 

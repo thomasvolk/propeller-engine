@@ -529,7 +529,10 @@ mod tests {
     }
 
     #[test]
-    fn current_tick_zero_after_sync_stop() {
+    fn current_tick_frozen_after_sync_stop() {
+        // MIDI Stop (0xFC) pauses and retains Song Position, per the MIDI 1.0 spec, so
+        // a subsequent Continue can resume from here. It must not reset the tick to 0
+        // the way a hard Stop/ClockStop does.
         let store = make_store_with_delayed_note();
         let captured = Arc::new(Mutex::new(Vec::new()));
         let output = CapturingOutput {
@@ -544,11 +547,17 @@ mod tests {
         );
 
         engine.sync_stop();
-        wait_for_state(&engine, EngineState::Stopped, 500);
+        wait_for_state(&engine, EngineState::Paused, 500);
+
+        let first = engine.current_tick();
+        std::thread::sleep(Duration::from_millis(50));
+        let second = engine.current_tick();
+
+        assert_eq!(engine.state(), EngineState::Paused);
+        assert_ne!(first, 0, "expected a nonzero frozen tick, not a reset to 0");
         assert_eq!(
-            engine.current_tick(),
-            0,
-            "expected current_tick() == 0 after sync_stop()"
+            first, second,
+            "expected current_tick() to stay frozen after sync_stop()"
         );
     }
 
@@ -645,7 +654,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(1));
         }
         engine.sync_stop();
-        wait_for_state(&engine, EngineState::Stopped, 500);
+        wait_for_state(&engine, EngineState::Paused, 500);
         assert!(
             saw_zero,
             "expected current_tick() == 0 shortly after SyncStart mid-loop"
@@ -674,11 +683,124 @@ mod tests {
 
         let after = engine.current_tick();
         engine.sync_stop();
-        wait_for_state(&engine, EngineState::Stopped, 500);
+        wait_for_state(&engine, EngineState::Paused, 500);
 
         assert!(
             after >= t,
             "expected current_tick() ({after}) >= T ({t}) after SyncContinue"
+        );
+    }
+
+    #[test]
+    fn sync_stop_then_continue_resumes_from_paused_position_not_from_zero() {
+        // Regression test: an external sequencer sends MIDI Stop (0xFC) mid-loop, then
+        // later MIDI Continue (0xFB). Per the MIDI 1.0 spec, Continue must resume from
+        // the Song Position retained at Stop, not restart the loop from tick 0.
+        //
+        // Verified via the emitted MIDI event stream rather than current_tick() polling:
+        // once the second note (pitch 62) has fired, this short two-note project's event
+        // list is exhausted and the engine legitimately advances to the next pass — which
+        // resets current_tick to 0 on its own, racing any post-resume tick assertion. The
+        // event stream has no such ambiguity: a NoteOn for pitch 62 without a repeated
+        // NoteOn for pitch 60 in between proves playback resumed from the paused position.
+        let store = Arc::new(RwLock::new(ProjectStore::new()));
+        let project = Project {
+            header: Header {
+                bpm: 300,
+                loop_duration: 1_000_000,
+            },
+            tracks: vec![Track {
+                name: "t".to_string(),
+                channel: 1,
+                instrument: 0,
+                notes: vec![
+                    Note {
+                        start_tick: 0,
+                        duration: 10,
+                        pitch: 60,
+                        velocity: 80,
+                    },
+                    Note {
+                        start_tick: 900,
+                        duration: 10,
+                        pitch: 62,
+                        velocity: 80,
+                    },
+                ],
+                pitch_bends: vec![],
+            }],
+        };
+        store.write().unwrap().set_pending(project).unwrap();
+        store.write().unwrap().commit_pending();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
+        let engine = LoopEngine::new(store, Box::new(output));
+        engine.sync_start();
+        wait_for_state(&engine, EngineState::Running, 500);
+
+        assert!(
+            wait_for_nonzero_tick(&engine, 300),
+            "precondition failed: expected an event to have fired"
+        );
+        let frozen = engine.current_tick();
+        assert_ne!(frozen, 0, "precondition failed: expected a nonzero tick");
+
+        // Sequencer pauses: sends Stop and stays paused for a while, as a human pausing
+        // playback would (longer than a few pulse intervals).
+        engine.sync_stop();
+        wait_for_state(&engine, EngineState::Paused, 500);
+        std::thread::sleep(Duration::from_millis(80));
+        assert_eq!(
+            engine.current_tick(),
+            frozen,
+            "tick must stay frozen at its paused value while Paused"
+        );
+
+        let events_before_continue = captured.lock().unwrap().len();
+
+        // Sequencer resumes: sends Continue.
+        engine.sync_continue();
+        wait_for_state(&engine, EngineState::Running, 500);
+
+        // Wait for the pitch-62 NoteOn (tick 900) to appear in the events emitted after
+        // Continue.
+        let deadline = Instant::now() + Duration::from_millis(300);
+        let mut saw_second_note = false;
+        while Instant::now() < deadline {
+            let events = captured.lock().unwrap();
+            let after_continue = &events[events_before_continue..];
+            if after_continue.contains(&midi::MidiEvent::NoteOn {
+                channel: 1,
+                pitch: 62,
+                velocity: 80,
+            }) {
+                saw_second_note = true;
+                break;
+            }
+            drop(events);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        engine.sync_stop();
+
+        assert!(
+            saw_second_note,
+            "expected the pitch-62 NoteOn (tick 900) to fire after Continue"
+        );
+
+        // The pitch-60 NoteOn (tick 0) must not be repeated after Continue — that would
+        // mean the loop restarted from the beginning instead of resuming.
+        let events = captured.lock().unwrap();
+        let after_continue = &events[events_before_continue..];
+        assert!(
+            !after_continue.contains(&midi::MidiEvent::NoteOn {
+                channel: 1,
+                pitch: 60,
+                velocity: 80,
+            }),
+            "pitch-60 NoteOn (tick 0) must not repeat after Continue — \
+             playback restarted from the beginning instead of resuming from tick {frozen}"
         );
     }
 
@@ -1722,7 +1844,7 @@ mod tests {
         wait_for_state(&engine, EngineState::Running, 500);
         assert_eq!(engine.state(), EngineState::Running);
         engine.sync_stop();
-        wait_for_state(&engine, EngineState::Stopped, 500);
+        wait_for_state(&engine, EngineState::Paused, 500);
     }
 
     #[test]
@@ -1744,7 +1866,7 @@ mod tests {
             "expected more events after SyncStart restart"
         );
         engine.sync_stop();
-        wait_for_state(&engine, EngineState::Stopped, 500);
+        wait_for_state(&engine, EngineState::Paused, 500);
     }
 
     #[test]
@@ -1754,11 +1876,11 @@ mod tests {
         wait_for_state(&engine, EngineState::Running, 500);
         assert_eq!(engine.state(), EngineState::Running);
         engine.sync_stop();
-        wait_for_state(&engine, EngineState::Stopped, 500);
+        wait_for_state(&engine, EngineState::Paused, 500);
     }
 
     #[test]
-    fn sync_stop_transitions_to_stopped_and_flushes_notes() {
+    fn sync_stop_transitions_to_paused_and_flushes_notes() {
         let store = Arc::new(RwLock::new(ProjectStore::new()));
         let project = Project {
             header: Header {
@@ -1789,10 +1911,10 @@ mod tests {
         engine.sync_start();
         std::thread::sleep(Duration::from_millis(50)); // let NoteOn emit
         engine.sync_stop();
-        wait_for_state(&engine, EngineState::Stopped, 500);
+        wait_for_state(&engine, EngineState::Paused, 500);
 
         let events = captured.lock().unwrap().clone();
-        assert_eq!(engine.state(), EngineState::Stopped);
+        assert_eq!(engine.state(), EngineState::Paused);
         let has_note_off = events
             .iter()
             .any(|e| matches!(e, midi::MidiEvent::NoteOff { .. }));
@@ -1819,7 +1941,7 @@ mod tests {
             "engine should remain Running after SyncBpmUpdate"
         );
         engine.sync_stop();
-        wait_for_state(&engine, EngineState::Stopped, 500);
+        wait_for_state(&engine, EngineState::Paused, 500);
     }
 
     #[test]

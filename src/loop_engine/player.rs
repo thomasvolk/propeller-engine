@@ -219,15 +219,6 @@ impl PlayerLoop {
         self.set_state(EngineState::Stopped);
     }
 
-    fn do_sync_stop(&mut self) {
-        self.current_tick.store(0, Ordering::Relaxed);
-        self.flush_notes();
-        self.reset_pitch_bend_channels();
-        self.carry_over.clear();
-        self.next_carry_over.clear();
-        self.set_state(EngineState::Stopped);
-    }
-
     fn do_sync_restart(&mut self) {
         self.current_tick.store(0, Ordering::Relaxed);
         self.flush_notes();
@@ -278,10 +269,6 @@ impl PlayerLoop {
                 self.do_clock_stop();
                 Some(LoopOutcome::Stopped)
             }
-            SleepResult::SyncStop => {
-                self.do_sync_stop();
-                Some(LoopOutcome::Stopped)
-            }
             SleepResult::SyncStart => {
                 self.do_sync_restart();
                 Some(LoopOutcome::SyncRestart)
@@ -290,7 +277,10 @@ impl PlayerLoop {
                 self.do_sync_continue();
                 Some(LoopOutcome::SyncRestart)
             }
-            SleepResult::ClockPause => {
+            // MIDI Stop (0xFC) means "pause, retain Song Position" per the MIDI 1.0
+            // spec, not a hard reset — a following Continue (0xFB) must resume from
+            // here. Only Start (0xFA) explicitly resets position to 0.
+            SleepResult::ClockPause | SleepResult::SyncStop => {
                 self.do_pause(remaining.to_vec());
                 Some(LoopOutcome::Paused)
             }
@@ -312,10 +302,6 @@ impl PlayerLoop {
                 self.do_clock_stop();
                 Some(LoopOutcome::Stopped)
             }
-            LoopCommand::SyncStop => {
-                self.do_sync_stop();
-                Some(LoopOutcome::Stopped)
-            }
             LoopCommand::SyncStart => {
                 self.do_sync_restart();
                 Some(LoopOutcome::SyncRestart)
@@ -324,7 +310,10 @@ impl PlayerLoop {
                 self.do_sync_continue();
                 Some(LoopOutcome::SyncRestart)
             }
-            LoopCommand::ClockPause => {
+            // MIDI Stop (0xFC) means "pause, retain Song Position" per the MIDI 1.0
+            // spec, not a hard reset — a following Continue (0xFB) must resume from
+            // here. Only Start (0xFA) explicitly resets position to 0.
+            LoopCommand::ClockPause | LoopCommand::SyncStop => {
                 self.do_pause(remaining.to_vec());
                 Some(LoopOutcome::Paused)
             }
@@ -722,6 +711,18 @@ impl PlayerLoop {
                 }
                 self.set_state(EngineState::Running);
             }
+            // SyncContinue (external MIDI 0xFB) resumes from the same frozen position as
+            // ClockResume, but sync mode is a clock slave and must not emit output of its own.
+            Ok(LoopCommand::SyncContinue) => {
+                self.set_state(EngineState::Running);
+            }
+            // SyncStart (external MIDI 0xFA) explicitly resets Song Position to 0 even
+            // when paused, per the MIDI 1.0 spec, and discards the frozen pause context.
+            Ok(LoopCommand::SyncStart) => {
+                self.do_sync_restart();
+                self.pause_context = None;
+                self.set_state(EngineState::Running);
+            }
             Ok(LoopCommand::ClockStop | LoopCommand::Stop) => {
                 self.current_tick.store(0, Ordering::Relaxed);
                 self.pause_context = None;
@@ -731,7 +732,18 @@ impl PlayerLoop {
                 self.is_clock_mode = false;
                 self.set_state(EngineState::Stopped);
             }
-            Ok(_) => {}
+            Ok(LoopCommand::SyncBpmUpdate(bpm)) => {
+                self.pending_sync_bpm = Some(bpm);
+            }
+            // Start/ClockStart/ClockPause: standalone and clock-master commands do not apply
+            // to a paused sync session. SyncStop: a redundant Stop (e.g. duplicate 0xFC, or a
+            // clock-loss timeout while already paused) must not disturb the frozen position.
+            Ok(
+                LoopCommand::Start
+                | LoopCommand::ClockStart
+                | LoopCommand::ClockPause
+                | LoopCommand::SyncStop,
+            ) => {}
             Err(_) => return false,
         }
         true
@@ -1625,25 +1637,6 @@ mod tests {
     }
 
     #[test]
-    fn test_do_sync_stop_clears_carry_over() {
-        let (mut player, _tx, _) = make_player(None);
-        player.carry_over = vec![(
-            1,
-            LoopEvent::NoteOff {
-                channel: 1,
-                pitch: 60,
-            },
-        )];
-
-        player.do_sync_stop();
-
-        assert!(
-            player.carry_over.is_empty(),
-            "carry_over must be empty after do_sync_stop"
-        );
-    }
-
-    #[test]
     fn test_do_sync_restart_clears_carry_over() {
         let (mut player, _tx, _) = make_player(None);
         player.carry_over = vec![(
@@ -1667,7 +1660,7 @@ mod tests {
         );
     }
 
-    // T-15: do_stop, do_clock_stop, and do_sync_stop each reset every channel with
+    // T-15: do_stop, do_clock_stop, and do_pause each reset every channel with
     // pitch-bend events to center (8192); do_sync_restart sends no reset (F-6, AC-6).
     #[test]
     fn test_do_stop_resets_pitch_bend_channels_to_center() {
@@ -1697,20 +1690,6 @@ mod tests {
         let events = recorded.lock().unwrap().clone();
         assert!(events.contains(&MidiEvent::PitchBend {
             channel: 7,
-            value: 8192
-        }));
-    }
-
-    #[test]
-    fn test_do_sync_stop_resets_pitch_bend_channels_to_center() {
-        let (mut player, _tx, recorded) = make_player(None);
-        player.pitch_bend_channels = std::collections::HashSet::from([9]);
-
-        player.do_sync_stop();
-
-        let events = recorded.lock().unwrap().clone();
-        assert!(events.contains(&MidiEvent::PitchBend {
-            channel: 9,
             value: 8192
         }));
     }
