@@ -158,6 +158,14 @@ Switches the operating mode at runtime. Valid values: `standalone`, `clock`, `sy
 
 Returns the current engine state. See the Response reference below.
 
+### project
+
+```json
+{"command": "project"}
+```
+
+Returns the current (active) and pending (staged-but-uncommitted) project, in the same complete shape used to load a project (see `create-project` above). Read-only: never creates, modifies, commits, or discards a project as a side effect. The response is identical regardless of operating mode. See the Response reference below. Equivalent to `propeller project get`.
+
 ### stop
 
 ```json
@@ -231,6 +239,14 @@ tick order within the loop. Every channel with at least one pitch-bend event is 
 | `clock_state`      | `"started"`, `"stopped"`            | Whether the loop is currently playing                              |
 | `project_present`  | boolean                             | Whether a project is currently loaded                              |
 | `sync_clock_state` | `"waiting"`, `"tracking"`, `"lost"` | Sync mode only: state of the incoming external clock signal        |
+
+### Project response fields
+
+| Field     | Type / Values    | Description                                                                                                        |
+| --------- | ---------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `status`  | `"ok"`           | Always `"ok"` — the query is read-only and cannot fail                                                             |
+| `current` | object, optional | The active project's complete data (same `header`/`tracks` shape as `create-project`); omitted when none is active |
+| `pending` | object, optional | The staged-but-uncommitted project's complete data; omitted when none is staged                                    |
 
 ### Position response fields
 
@@ -345,6 +361,22 @@ printf '{"command":"set-bpm","bpm":130}\n' | nc -U /tmp/propeller.sock
 ```
 
 The new tempo takes effect at the next loop boundary.
+
+### Query the current and pending project state
+
+Inspect what's active and what's staged without separately tracking what was last loaded:
+
+```sh
+printf '{"command":"project"}\n' | nc -U /tmp/propeller.sock
+```
+
+```json
+{"status":"ok","current":{"header":{"bpm":120,"loop_duration":1920},"tracks":[...]}}
+```
+
+`"current"`/`"pending"` are each omitted entirely when absent. The CLI wraps this in
+`propeller project get`, which additionally strips the `"status"` field — see the
+[Managing projects section in README](../README.md#managing-projects).
 
 ### Poll the current tick position
 

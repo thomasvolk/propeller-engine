@@ -75,6 +75,8 @@ enum ProjectCommand {
         /// Path to the project JSON file; reads from stdin if omitted
         filename: Option<PathBuf>,
     },
+    /// Print the current/pending project state as compact JSON
+    Get,
 }
 
 #[derive(Subcommand)]
@@ -109,6 +111,7 @@ fn main() {
         Commands::Project { command } => match command {
             ProjectCommand::Create { filename } => cmd_project_create(filename),
             ProjectCommand::Modify { filename } => cmd_project_modify(filename),
+            ProjectCommand::Get => cmd_project_get(),
         },
         Commands::Loop { command } => match command {
             LoopCommand::Start => cmd_loop_start(),
@@ -354,6 +357,14 @@ fn cmd_project_modify(filename: Option<PathBuf>) {
     }
 }
 
+fn cmd_project_get() {
+    let sock_path = socket_path::resolve();
+    match client::send_command(&sock_path, serde_json::json!({"command": "project"})) {
+        Ok(response) => println!("{}", client::format_project_get_output(&response)),
+        Err(e) => handle_client_error(e, &sock_path),
+    }
+}
+
 fn cmd_loop_start() {
     let sock_path = socket_path::resolve();
     if let Err(e) = client::send_command(&sock_path, serde_json::json!({"command": "loop-start"})) {
@@ -420,6 +431,18 @@ fn cmd_midi_ports() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // EP-2 T-6: `project get` parses to Commands::Project { command: ProjectCommand::Get } (F-6, NF-1)
+    #[test]
+    fn project_get_parses() {
+        let cli = Cli::try_parse_from(["propeller", "project", "get"]).unwrap();
+        match cli.command {
+            Commands::Project {
+                command: ProjectCommand::Get,
+            } => {}
+            _ => panic!("expected Project Get"),
+        }
+    }
 
     // EP-3 T-1: `loop position` parses with defaults poll=false, interval_ms=50
     #[test]

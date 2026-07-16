@@ -413,6 +413,73 @@ fn runtime_protocol_create_start_status_stop() {
     assert_eq!(status2["clock_state"], "stopped");
 }
 
+// ── T-14 / T-15 : "project" query over the real socket (EP-1) ─────────────
+
+/// T-14: create-project + modify-project (staged, uncommitted) + {"command":"project"}
+/// returns both "current" (committed) and "pending" (staged) with correct data,
+/// over the real socket/daemon subprocess (F-1, F-3, F-5).
+#[test]
+fn project_query_returns_current_and_pending_over_real_socket() {
+    let sock = unique_sock_path();
+    let _guard = DaemonGuard::start(sock.clone());
+
+    let create = send_command(
+        &sock,
+        r#"{"command":"create-project","header":{"bpm":120,"loop_duration":1920},"tracks":[{"name":"piano","channel":1,"instrument":0,"notes":[[0,480,60,80]]}]}"#,
+    );
+    assert_eq!(create["status"], "ok", "create-project failed");
+
+    let modify = send_command(
+        &sock,
+        r#"{"command":"modify-project","header":{"bpm":140,"loop_duration":960},"tracks":[{"name":"bass","channel":2,"instrument":33,"notes":[[0,240,40,90]]}]}"#,
+    );
+    assert_eq!(modify["status"], "ok", "modify-project failed");
+
+    let project = send_command(&sock, r#"{"command":"project"}"#);
+    assert_eq!(project["status"], "ok");
+    assert_eq!(project["current"]["header"]["bpm"], 120);
+    assert_eq!(project["current"]["tracks"][0]["name"], "piano");
+    assert_eq!(project["pending"]["header"]["bpm"], 140);
+    assert_eq!(project["pending"]["tracks"][0]["name"], "bass");
+}
+
+/// T-15: while playback is running, repeated "project" queries return promptly
+/// (no hang) and a subsequent status query still reports the loop as started,
+/// confirming the query does not block or interfere with playback (NF-3, AC-7).
+#[test]
+fn project_query_while_playing_does_not_block_playback() {
+    let sock = unique_sock_path();
+    let _guard = DaemonGuard::start(sock.clone());
+
+    let create = send_command(
+        &sock,
+        r#"{"command":"create-project","header":{"bpm":120,"loop_duration":1920},"tracks":[{"name":"piano","channel":1,"instrument":0,"notes":[[0,480,60,80]]}]}"#,
+    );
+    assert_eq!(create["status"], "ok", "create-project failed");
+
+    let start = send_command(&sock, r#"{"command":"loop-start"}"#);
+    assert_eq!(start["status"], "ok", "loop-start failed");
+
+    std::thread::sleep(Duration::from_millis(100));
+
+    for _ in 0..10 {
+        let before = Instant::now();
+        let project = send_command(&sock, r#"{"command":"project"}"#);
+        let elapsed = before.elapsed();
+        assert_eq!(project["status"], "ok");
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "project query took too long: {elapsed:?}"
+        );
+    }
+
+    let status = send_command(&sock, r#"{"command":"status"}"#);
+    assert_eq!(
+        status["clock_state"], "started",
+        "playback must be unaffected by project queries"
+    );
+}
+
 // ── T-22 / T-23 : status subcommand (AC-11, AC-12) ────────────────────────
 
 /// T-22: `propeller status` exits 0 and reports running when daemon is up (AC-11)
@@ -727,6 +794,142 @@ fn ep9_error_when_daemon_not_running() {
     assert!(
         stderr.contains("propeller"),
         "stderr should contain 'propeller', got: {stderr}"
+    );
+}
+
+// ── EP-2: `project get` CLI command ────────────────────────────────────────
+
+/// T-8: mock daemon returns only "current" -> stdout is compact stripped JSON
+/// with just "current", exit code 0 (F-1, F-3, F-9, AC-1, AC-3).
+#[test]
+fn ep2_project_get_current_only() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let sock = dir.path().join("test.sock");
+    let rx = spawn_cli_mock(
+        &sock,
+        r#"{"status":"ok","current":{"header":{"bpm":120,"loop_duration":1920},"tracks":[]}}"#,
+    );
+
+    let output = Command::new(propeller_bin())
+        .args(["project", "get"])
+        .env("PROPELLER_SOCK", &sock)
+        .output()
+        .expect("run propeller project get");
+
+    assert!(
+        output.status.success(),
+        "expected exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout_trimmed = stdout.trim();
+    assert!(!stdout_trimmed.contains('\n'), "stdout must be single-line");
+    let v: serde_json::Value = serde_json::from_str(stdout_trimmed).unwrap();
+    assert_eq!(v["current"]["header"]["bpm"], 120);
+    assert!(v.get("pending").is_none());
+    assert!(v.get("status").is_none());
+
+    let received = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&received).unwrap();
+    assert_eq!(parsed["command"], "project");
+}
+
+/// T-10: mock daemon returns both "current" and "pending" -> stdout includes
+/// both entries (F-2, AC-2).
+#[test]
+fn ep2_project_get_current_and_pending() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let sock = dir.path().join("test.sock");
+    spawn_cli_mock(
+        &sock,
+        r#"{"status":"ok","current":{"header":{"bpm":120,"loop_duration":1920},"tracks":[]},"pending":{"header":{"bpm":140,"loop_duration":960},"tracks":[]}}"#,
+    );
+
+    let output = Command::new(propeller_bin())
+        .args(["project", "get"])
+        .env("PROPELLER_SOCK", &sock)
+        .output()
+        .expect("run propeller project get");
+
+    assert!(output.status.success(), "expected exit 0");
+    let v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).unwrap();
+    assert_eq!(v["current"]["header"]["bpm"], 120);
+    assert_eq!(v["pending"]["header"]["bpm"], 140);
+}
+
+/// T-11: mock daemon returns no current, no pending -> exit 0, stdout is "{}",
+/// no error printed (F-4, AC-4).
+#[test]
+fn ep2_project_get_no_current_no_pending() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let sock = dir.path().join("test.sock");
+    spawn_cli_mock(&sock, r#"{"status":"ok"}"#);
+
+    let output = Command::new(propeller_bin())
+        .args(["project", "get"])
+        .env("PROPELLER_SOCK", &sock)
+        .output()
+        .expect("run propeller project get");
+
+    assert!(output.status.success(), "expected exit 0");
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "{}");
+    assert!(
+        output.stderr.is_empty(),
+        "expected no stderr, got: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// T-12: no listener bound on the resolved socket path -> stderr is
+/// `propeller: cannot connect to <path>: <err>`, exit non-zero, nothing on
+/// stdout (F-5, F-8, NF-2, AC-5).
+#[test]
+fn ep2_project_get_daemon_not_running() {
+    let sock = PathBuf::from(format!(
+        "/tmp/propeller_ep2_no_daemon_{}.sock",
+        std::process::id()
+    ));
+
+    let output = Command::new(propeller_bin())
+        .args(["project", "get"])
+        .env("PROPELLER_SOCK", &sock)
+        .output()
+        .expect("run propeller project get");
+
+    assert!(!output.status.success(), "expected non-zero exit");
+    assert!(output.stdout.is_empty(), "expected no stdout");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("cannot connect"),
+        "stderr should mention connection failure, got: {stderr}"
+    );
+}
+
+/// T-14: mock daemon replies with a daemon-reported error -> stderr carries the
+/// daemon error message via the shared handler, exit non-zero, no project JSON
+/// on stdout (F-10, NF-2, AC-6).
+#[test]
+fn ep2_project_get_daemon_reports_error() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let sock = dir.path().join("test.sock");
+    spawn_cli_mock(
+        &sock,
+        r#"{"status":"error","message":"intentional test error"}"#,
+    );
+
+    let output = Command::new(propeller_bin())
+        .args(["project", "get"])
+        .env("PROPELLER_SOCK", &sock)
+        .output()
+        .expect("run propeller project get");
+
+    assert!(!output.status.success(), "expected non-zero exit");
+    assert!(output.stdout.is_empty(), "expected no stdout");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("intentional test error"),
+        "stderr should mention the daemon error, got: {stderr}"
     );
 }
 

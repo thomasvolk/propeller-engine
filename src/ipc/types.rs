@@ -33,6 +33,7 @@ pub enum Command {
     ClockStop,
     ListMidiPorts,
     Status,
+    Project,
     Stop,
 }
 
@@ -130,6 +131,13 @@ mod tests {
             Command::SetBpm { bpm } => assert_eq!(bpm, 120.0),
             _ => panic!("expected SetBpm"),
         }
+    }
+
+    // T-5: {"command":"project"} deserialises to Command::Project (F-6)
+    #[test]
+    fn deserialize_project() {
+        let cmd: Command = serde_json::from_str(r#"{"command":"project"}"#).unwrap();
+        assert!(matches!(cmd, Command::Project));
     }
 
     #[test]

@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.6.0] - 2026-07-16
+
+### Changes
+
+- Added a `"project"` socket command that reports the current (active) and pending
+  (staged-but-uncommitted) project as complete data, read-only and identical regardless of
+  operating mode.
+- Added a `propeller project get` CLI command that queries the daemon for project state and
+  prints it as compact JSON, following the same connection and error-reporting conventions as
+  the other CLI commands.
+- Extended `ProjectStore` with a read-only `pending()` accessor mirroring the existing `active()`.
+- Added Allium specs (EP-1, EP-2) describing the project-state query feature and its roadmap.
+- Documented the new command in the README's runtime interface and JSON socket interface
+  reference, including a worked example and field reference table.
+
+---
+
 ## [0.5.0] - 2026-07-12
 
 ### Changes
