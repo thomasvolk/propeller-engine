@@ -42,6 +42,17 @@ pub(crate) fn send_command(sock_path: &Path, cmd: Value) -> Result<Value, Client
     Ok(response)
 }
 
+pub(crate) fn format_project_get_output(response: &Value) -> String {
+    let mut out = serde_json::Map::new();
+    if let Some(current) = response.get("current") {
+        out.insert("current".to_string(), current.clone());
+    }
+    if let Some(pending) = response.get("pending") {
+        out.insert("pending".to_string(), pending.clone());
+    }
+    serde_json::to_string(&out).expect("map serialisation cannot fail")
+}
+
 pub(crate) fn format_position_output(tick: u64, loop_duration: Option<u64>) -> String {
     match loop_duration {
         Some(duration) => format!("{tick}/{duration}"),
@@ -107,6 +118,51 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
     use tempfile::TempDir;
+
+    // EP-2 T-1: format_project_get_output keeps only current/pending, strips
+    // status, and produces compact (no-whitespace) JSON (F-1, F-2, F-7, F-9).
+    #[test]
+    fn format_project_get_output_keeps_current_and_pending_strips_status() {
+        let response = serde_json::json!({
+            "status": "ok",
+            "current": {"header": {"bpm": 120, "loop_duration": 1920}, "tracks": []},
+            "pending": {"header": {"bpm": 140, "loop_duration": 960}, "tracks": []},
+        });
+
+        let out = format_project_get_output(&response);
+
+        assert!(!out.contains(' '), "output should be compact: {out}");
+        assert!(!out.contains('\n'), "output should be single-line: {out}");
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["current"]["header"]["bpm"], 120);
+        assert_eq!(v["pending"]["header"]["bpm"], 140);
+        assert!(v.get("status").is_none(), "status must be stripped");
+    }
+
+    // EP-2 T-3: no "pending" key in input -> output has no "pending" key (F-3)
+    #[test]
+    fn format_project_get_output_no_pending_key_when_absent() {
+        let response = serde_json::json!({
+            "status": "ok",
+            "current": {"header": {"bpm": 120, "loop_duration": 1920}, "tracks": []},
+        });
+
+        let out = format_project_get_output(&response);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert!(v.get("current").is_some());
+        assert!(
+            v.get("pending").is_none(),
+            "pending must be absent, not null"
+        );
+    }
+
+    // EP-2 T-4: neither "current" nor "pending" present -> output is "{}" (F-4)
+    #[test]
+    fn format_project_get_output_empty_when_neither_present() {
+        let response = serde_json::json!({"status": "ok"});
+        let out = format_project_get_output(&response);
+        assert_eq!(out, "{}");
+    }
 
     // EP-3 T-3: format_position_output with a loop_duration
     #[test]

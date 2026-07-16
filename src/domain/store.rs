@@ -21,6 +21,10 @@ impl ProjectStore {
         self.active.as_ref()
     }
 
+    pub fn pending(&self) -> Option<&Project> {
+        self.pending.as_ref()
+    }
+
     pub fn set_pending(&mut self, project: Project) -> Result<(), ValidationError> {
         validate(&project)?;
         self.pending = Some(project);
@@ -108,6 +112,23 @@ mod tests {
     fn test_commit_pending_no_pending() {
         let mut store = ProjectStore::new();
         assert!(!store.commit_pending());
+        assert!(store.active().is_none());
+    }
+
+    // T-1: pending() returns None on a fresh store and Some after set_pending,
+    // without disturbing it (F-3, F-4).
+    #[test]
+    fn test_pending_none_on_fresh_store() {
+        let store = ProjectStore::new();
+        assert!(store.pending().is_none());
+    }
+
+    #[test]
+    fn test_pending_some_after_set_pending_before_commit() {
+        let mut store = ProjectStore::new();
+        store.set_pending(make_valid_project()).unwrap();
+        assert!(store.pending().is_some());
+        assert_eq!(store.pending().unwrap().header.bpm, 120);
         assert!(store.active().is_none());
     }
 

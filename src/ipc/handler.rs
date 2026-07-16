@@ -162,6 +162,7 @@ async fn dispatch(
             json!({"status": "ok", "ports": ports})
         }
         Command::Status => handle_status(store, engine, settings),
+        Command::Project => handle_get_project(store),
         Command::Stop => ok_response(),
     }
 }
@@ -181,6 +182,40 @@ fn build_domain_project(header: WireHeader, tracks: Vec<WireTrack>) -> Project {
         },
         tracks: tracks.into_iter().map(wire_track_to_domain).collect(),
     }
+}
+
+fn project_to_json(project: &Project) -> Value {
+    let tracks: Vec<Value> = project
+        .tracks
+        .iter()
+        .map(|t| {
+            let notes: Vec<Value> = t
+                .notes
+                .iter()
+                .map(|n| json!([n.start_tick, n.duration, n.pitch, n.velocity]))
+                .collect();
+            let pitch_bends: Vec<Value> = t
+                .pitch_bends
+                .iter()
+                .map(|pb| json!([pb.tick, pb.value]))
+                .collect();
+            json!({
+                "name": t.name,
+                "channel": t.channel,
+                "instrument": t.instrument,
+                "notes": notes,
+                "pitch-bends": pitch_bends,
+            })
+        })
+        .collect();
+
+    json!({
+        "header": {
+            "bpm": project.header.bpm,
+            "loop_duration": project.header.loop_duration,
+        },
+        "tracks": tracks,
+    })
 }
 
 fn handle_create_project(
@@ -357,6 +392,20 @@ fn handle_status(
             };
             resp["sync_clock_state"] = json!(label);
         }
+    }
+
+    resp
+}
+
+fn handle_get_project(store: &Arc<RwLock<ProjectStore>>) -> Value {
+    let store_read = store.read().unwrap();
+    let mut resp = json!({"status": "ok"});
+
+    if let Some(p) = store_read.active() {
+        resp["current"] = project_to_json(p);
+    }
+    if let Some(p) = store_read.pending() {
+        resp["pending"] = project_to_json(p);
     }
 
     resp
@@ -1138,6 +1187,250 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
         assert_eq!(v["status"], "error");
         assert_eq!(v["code"], "sync_requires_port");
+    }
+
+    // T-7: no project ever active or pending -> "current"/"pending" both omitted
+    // (F-2, F-4, AC-2, AC-4)
+    #[tokio::test]
+    async fn project_query_no_project_omits_current_and_pending() {
+        let response = send_command_get_response(r#"{"command":"project"}"#).await;
+        let v: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+        assert_eq!(v["status"], "ok");
+        assert!(v.get("current").is_none());
+        assert!(v.get("pending").is_none());
+    }
+
+    // T-8: only an active project exists -> "current" present with correct data,
+    // "pending" omitted (F-1, F-4, AC-1, AC-4)
+    #[tokio::test]
+    async fn project_query_active_only_includes_current_omits_pending() {
+        let (store, engine, settings, shutdown_tx) = make_shared_state();
+        {
+            use crate::domain::*;
+            let project = Project {
+                header: Header {
+                    bpm: 120,
+                    loop_duration: 1920,
+                },
+                tracks: vec![Track {
+                    name: "piano".to_string(),
+                    channel: 1,
+                    instrument: 0,
+                    notes: vec![Note {
+                        start_tick: 0,
+                        duration: 480,
+                        pitch: 60,
+                        velocity: 80,
+                    }],
+                    pitch_bends: vec![],
+                }],
+            };
+            store.write().unwrap().set_pending(project).unwrap();
+            store.write().unwrap().commit_pending();
+        }
+
+        let (client, server) = UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            connection_handler(server, store, engine, settings, shutdown_tx).await;
+        });
+
+        let cmd = r#"{"command":"project"}"#.to_string() + "\n";
+        let mut client = client;
+        use tokio::io::AsyncWriteExt;
+        client.write_all(cmd.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        client.read_to_string(&mut resp).await.unwrap();
+
+        let v: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["current"]["header"]["bpm"], 120);
+        assert_eq!(v["current"]["tracks"][0]["name"], "piano");
+        assert!(v.get("pending").is_none());
+    }
+
+    // T-9: an active project exists and a second project is staged without
+    // committing -> both "current" (original) and "pending" (staged) present with
+    // distinct data (F-3, F-5, AC-3, AC-5)
+    #[tokio::test]
+    async fn project_query_active_and_pending_both_present_and_distinct() {
+        let (store, engine, settings, shutdown_tx) = make_shared_state();
+        {
+            use crate::domain::*;
+            let active_project = Project {
+                header: Header {
+                    bpm: 120,
+                    loop_duration: 1920,
+                },
+                tracks: vec![],
+            };
+            store.write().unwrap().set_pending(active_project).unwrap();
+            store.write().unwrap().commit_pending();
+
+            let staged_project = Project {
+                header: Header {
+                    bpm: 140,
+                    loop_duration: 960,
+                },
+                tracks: vec![],
+            };
+            store.write().unwrap().set_pending(staged_project).unwrap();
+        }
+
+        let (client, server) = UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            connection_handler(server, store, engine, settings, shutdown_tx).await;
+        });
+
+        let cmd = r#"{"command":"project"}"#.to_string() + "\n";
+        let mut client = client;
+        use tokio::io::AsyncWriteExt;
+        client.write_all(cmd.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        client.read_to_string(&mut resp).await.unwrap();
+
+        let v: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["current"]["header"]["bpm"], 120);
+        assert_eq!(v["pending"]["header"]["bpm"], 140);
+    }
+
+    // T-12: identical ProjectStore state queried once in Standalone mode and once
+    // in Sync mode yields byte-identical responses (F-7, AC-6, AC-7, NF-3).
+    #[tokio::test]
+    async fn project_query_response_identical_across_modes() {
+        async fn query_with_mode(mode: EngineMode) -> String {
+            let (store, engine, settings, shutdown_tx) = make_shared_state();
+            {
+                use crate::domain::*;
+                let active_project = Project {
+                    header: Header {
+                        bpm: 120,
+                        loop_duration: 1920,
+                    },
+                    tracks: vec![],
+                };
+                store.write().unwrap().set_pending(active_project).unwrap();
+                store.write().unwrap().commit_pending();
+
+                let staged_project = Project {
+                    header: Header {
+                        bpm: 140,
+                        loop_duration: 960,
+                    },
+                    tracks: vec![],
+                };
+                store.write().unwrap().set_pending(staged_project).unwrap();
+            }
+            settings.lock().unwrap().mode = mode;
+
+            let (client, server) = UnixStream::pair().unwrap();
+            tokio::spawn(async move {
+                connection_handler(server, store, engine, settings, shutdown_tx).await;
+            });
+
+            let cmd = r#"{"command":"project"}"#.to_string() + "\n";
+            let mut client = client;
+            use tokio::io::AsyncWriteExt;
+            client.write_all(cmd.as_bytes()).await.unwrap();
+            let mut resp = String::new();
+            client.read_to_string(&mut resp).await.unwrap();
+            resp
+        }
+
+        let standalone_resp = query_with_mode(EngineMode::Standalone).await;
+        let sync_resp = query_with_mode(EngineMode::Sync).await;
+
+        assert_eq!(
+            standalone_resp, sync_resp,
+            "project query response must be identical regardless of daemon mode"
+        );
+    }
+
+    // T-13: invoking the "project" query (once, and repeated) never mutates
+    // ProjectStore::active()/pending() (NF-1).
+    #[tokio::test]
+    async fn project_query_does_not_mutate_store() {
+        let (store, engine, settings, shutdown_tx) = make_shared_state();
+        {
+            use crate::domain::*;
+            let active_project = Project {
+                header: Header {
+                    bpm: 120,
+                    loop_duration: 1920,
+                },
+                tracks: vec![],
+            };
+            store.write().unwrap().set_pending(active_project).unwrap();
+            store.write().unwrap().commit_pending();
+
+            let staged_project = Project {
+                header: Header {
+                    bpm: 140,
+                    loop_duration: 960,
+                },
+                tracks: vec![],
+            };
+            store.write().unwrap().set_pending(staged_project).unwrap();
+        }
+
+        for _ in 0..3 {
+            let (client, server) = UnixStream::pair().unwrap();
+            let s = Arc::clone(&store);
+            let e = Arc::clone(&engine);
+            let se = Arc::clone(&settings);
+            let st = Arc::clone(&shutdown_tx);
+            tokio::spawn(async move {
+                connection_handler(server, s, e, se, st).await;
+            });
+
+            let cmd = r#"{"command":"project"}"#.to_string() + "\n";
+            let mut client = client;
+            use tokio::io::AsyncWriteExt;
+            client.write_all(cmd.as_bytes()).await.unwrap();
+            let mut resp = String::new();
+            client.read_to_string(&mut resp).await.unwrap();
+        }
+
+        let store_r = store.read().unwrap();
+        assert_eq!(store_r.active().unwrap().header.bpm, 120);
+        assert_eq!(store_r.pending().unwrap().header.bpm, 140);
+    }
+
+    // T-3: project_to_json maps a Project to the WireHeader/WireTrack-mirrored JSON
+    // shape, including array-tuple notes and the "pitch-bends" key (F-1, F-3).
+    #[test]
+    fn project_to_json_maps_full_shape() {
+        let project = Project {
+            header: Header {
+                bpm: 120,
+                loop_duration: 1920,
+            },
+            tracks: vec![Track {
+                name: "piano".to_string(),
+                channel: 1,
+                instrument: 0,
+                notes: vec![Note {
+                    start_tick: 0,
+                    duration: 480,
+                    pitch: 60,
+                    velocity: 80,
+                }],
+                pitch_bends: vec![PitchBend {
+                    tick: 240,
+                    value: 8192,
+                }],
+            }],
+        };
+
+        let v = project_to_json(&project);
+
+        assert_eq!(v["header"]["bpm"], 120);
+        assert_eq!(v["header"]["loop_duration"], 1920);
+        assert_eq!(v["tracks"][0]["name"], "piano");
+        assert_eq!(v["tracks"][0]["channel"], 1);
+        assert_eq!(v["tracks"][0]["instrument"], 0);
+        assert_eq!(v["tracks"][0]["notes"][0], json!([0, 480, 60, 80]));
+        assert_eq!(v["tracks"][0]["pitch-bends"][0], json!([240, 8192]));
     }
 
     // T-5: wire_track_to_domain maps WireTrack.pitch_bends [tick, value] pairs (F-1, F-4, AC-1)
