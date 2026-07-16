@@ -107,6 +107,14 @@ Update a running project (change takes effect at the next bar boundary):
 propeller project modify examples/myproject.json
 ```
 
+View the current (active) and pending (staged-but-uncommitted) project state:
+
+```sh
+propeller project get
+```
+
+Prints compact JSON with a `"current"` entry, a `"pending"` entry, or both — each omitted entirely when absent, rather than shown as `null`. If the daemon is unreachable or reports an error, `project get` prints a diagnostic to stderr and exits with a non-zero code. See the Runtime interface section for the full response shape.
+
 ### Controlling loop playback
 
 ```sh
@@ -345,6 +353,32 @@ In sync mode the response includes an additional field:
 
 `sync_clock_state` values: `waiting` (no clock signal yet), `tracking` (clock pulses are flowing), `lost` (clock was present but has gone silent).
 
+#### project
+
+Returns the current (active) and pending (staged-but-uncommitted) project, in the same complete shape used to load a project — read-only, and identical regardless of operating mode.
+
+```json
+{"command": "project"}
+```
+
+Example response with both an active and a staged project:
+
+```json
+{
+  "status": "ok",
+  "current": {
+    "header": { "bpm": 120, "loop_duration": 1920 },
+    "tracks": [{ "name": "piano", "channel": 1, "instrument": 0, "notes": [[0, 480, 60, 80]] }]
+  },
+  "pending": {
+    "header": { "bpm": 140, "loop_duration": 960 },
+    "tracks": [{ "name": "bass", "channel": 2, "instrument": 33, "notes": [[0, 240, 40, 90]] }]
+  }
+}
+```
+
+`"current"` and `"pending"` are each omitted entirely when no project is active or staged, rather than appearing as `null`. `propeller project get` wraps this command and strips the `"status"` field before printing.
+
 #### get_position
 
 Returns the current tick position. Note this message uses a `"type"` field instead of `"command"`:
@@ -377,7 +411,7 @@ On error:
 
 ## Features
 
-- **CLI convenience commands** — `propeller project create/modify` and `propeller loop start/stop` wrap common socket operations; file or stdin input, no manual JSON construction required.
+- **CLI convenience commands** — `propeller project create/modify/get` and `propeller loop start/stop` wrap common socket operations; file or stdin input, no manual JSON construction required.
 - **Daemon lifecycle** — starts, stays running indefinitely, stops cleanly on command or SIGTERM.
 - **Unix socket IPC** — communicates over `/tmp/propeller.sock`; socket path is configurable via `PROPELLER_SOCK`.
 - **Single-instance guard** — rejects a second `start` if the daemon is already running.
@@ -391,6 +425,7 @@ On error:
 - **Bar-boundary updates** — pending project changes take effect at the next bar boundary; the current bar always plays to completion.
 - **Runtime JSON interface** — load projects, control playback, adjust BPM and mode, and query status over the socket without restarting the engine.
 - **Position query** — `propeller loop position` (with an optional `--poll`) or the `get_position` socket message report the current tick position for driving visual feedback such as step highlighting.
+- **Project state query** — `propeller project get` or the `project` socket command report the active and staged project as complete JSON, without needing to track separately what was last loaded.
 - **Operating modes** — `standalone`, `clock`, and `sync` modes are supported. `standalone` and `clock` are switchable at runtime via `set-mode`; `sync` requires `--sync` at daemon startup.
 
 ## Changelog

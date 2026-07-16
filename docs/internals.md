@@ -120,12 +120,19 @@ pub enum Command {
     ClockStart, ClockPause, ClockResume, ClockStop,
     ListMidiPorts,
     Status,
+    Project,
     Stop,
 }
 ```
 
 The `Stop` command is special: the response is flushed before the shutdown signal
 is sent so the CLI receives the `ok` reply before the socket disappears.
+
+`Project` is handled by `handle_get_project`, which deliberately takes only
+`&Arc<RwLock<ProjectStore>>` — not the `LoopEngine`/`EngineSettings` handles
+`handle_status` receives. With no access to engine state or operating mode, the
+handler cannot block on or share a lock with the playback path, and its response
+cannot vary by mode — both guaranteed structurally rather than by convention.
 
 ---
 
@@ -187,7 +194,8 @@ into structured JSON error responses.
 
 ```rust
 pub fn set_pending(&mut self, project: Project) -> Result<(), ValidationError>
-pub fn commit_pending(&mut self) -> bool   // swaps pending → active
+pub fn commit_pending(&mut self) -> bool          // swaps pending → active
+pub fn pending(&self) -> Option<&Project>         // read-only peek, mirrors active()
 ```
 
 The loop engine calls `commit_pending` at every loop boundary. This lets a live
