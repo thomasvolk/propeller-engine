@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.7.0] - 2026-08-20
+
+### Changes
+
+- **Breaking:** Unified the IPC wire format so every message, including the tick-position
+  query, uses a `"command"` discriminant instead of mixing `"command"` and `"type"` tags;
+  the `get_position` message is now sent as `get-position`.
+- Removed the `IpcMessage` enum; `get-position` is now a variant of the single `Command` enum
+  alongside every other request, and the daemon dispatch logic collapses to one parse path.
+- Removed the now-unreachable `unknown_type` error code — a request still using the old
+  `"type"` tag is now reported as `missing_command`.
+- Updated the architecture guideline to mandate `"command"` (not `"type"`) as the required
+  discriminant for all IPC messages.
+- Updated the README and JSON socket interface documentation to describe the `get-position`
+  command and remove references to the retired `"type"` tag.
+
+---
+
 ## [0.6.0] - 2026-07-16
 
 ### Changes
