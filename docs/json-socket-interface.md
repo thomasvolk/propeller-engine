@@ -252,10 +252,16 @@ tick order within the loop. Every channel with at least one pitch-bend event is 
 | --------------- | ----------------- | ------------------------------------------------------------ |
 | `tick`          | integer, ≥ 0      | Current playback position within the loop, in ticks          |
 | `loop_duration` | integer or `null` | Total loop length in ticks; `null` when no project is loaded |
+| `loop_count`    | integer, ≥ 0       | Number of loops completed since playback started             |
 
 `tick` freezes while the engine is paused, and resets to 0 on loop restart, on `stop`/`clock-stop`,
 and on an incoming MIDI Start (0xFA) while in sync mode. On `clock-resume` or an incoming MIDI
 Continue (0xFB), `tick` resumes from its frozen value rather than resetting.
+
+`loop_count` starts at 0 and increments by one each time a loop finishes. It is unaffected by
+pause and resume (via `clock-pause`/`clock-resume`, an incoming MIDI Stop 0xFC, or an incoming
+MIDI Continue 0xFB), and resets to 0 on `stop`/`clock-stop` or an incoming MIDI Start (0xFA) while
+in sync mode — the same events that reset `tick`.
 
 ## Overlapping notes
 
@@ -383,7 +389,7 @@ printf '{"command":"get-position"}\n' | nc -U /tmp/propeller.sock
 ```
 
 ```json
-{"tick":960,"loop_duration":1920}
+{"tick":960,"loop_duration":1920,"loop_count":3}
 ```
 
 Divide `tick` by `loop_duration` for fractional progress through the loop. The CLI wraps this in

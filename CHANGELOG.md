@@ -1,12 +1,16 @@
 # Changelog
 
-## [Unreleased]
+## [0.8.0] - 2026-08-20
 
 ### Changes
 
 - **Breaking:** Removed the redundant `"type": "position"` discriminant from the `get-position`
   response; the response is now just `{"tick": ..., "loop_duration": ...}`. The CLI client no
   longer validates a response `type` tag before parsing `tick`/`loop_duration`.
+- Added a loop counter to the engine, exposed as a new `loop_count` field on the `get-position`
+  response. It starts at 0 and increments by one each time a loop completes; it is unaffected by
+  pause/resume, and resets to 0 on `stop`/`clock-stop` or an incoming MIDI Start (0xFA) in sync
+  mode, mirroring `tick`'s own reset points.
 
 ---
 

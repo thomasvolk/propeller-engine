@@ -1022,10 +1022,7 @@ fn ep9_error_when_daemon_returns_error() {
 fn ep3_loop_position_single_shot_with_project() {
     let dir = tempfile::TempDir::new().unwrap();
     let sock = dir.path().join("test.sock");
-    spawn_cli_mock(
-        &sock,
-        r#"{"tick":1234,"loop_duration":480}"#,
-    );
+    spawn_cli_mock(&sock, r#"{"tick":1234,"loop_duration":480}"#);
 
     let output = Command::new(propeller_bin())
         .args(["loop", "position"])
@@ -1055,10 +1052,7 @@ fn ep3_loop_position_single_shot_with_project() {
 fn ep3_loop_position_single_shot_no_project() {
     let dir = tempfile::TempDir::new().unwrap();
     let sock = dir.path().join("test.sock");
-    spawn_cli_mock(
-        &sock,
-        r#"{"tick":0,"loop_duration":null}"#,
-    );
+    spawn_cli_mock(&sock, r#"{"tick":0,"loop_duration":null}"#);
 
     let output = Command::new(propeller_bin())
         .args(["loop", "position"])
@@ -1105,10 +1099,7 @@ fn ep3_loop_position_single_shot_daemon_not_running() {
 fn ep3_loop_position_interval_ms_without_poll_is_noop() {
     let dir = tempfile::TempDir::new().unwrap();
     let sock = dir.path().join("test.sock");
-    spawn_cli_mock(
-        &sock,
-        r#"{"tick":10,"loop_duration":100}"#,
-    );
+    spawn_cli_mock(&sock, r#"{"tick":10,"loop_duration":100}"#);
 
     let output = Command::new(propeller_bin())
         .args(["loop", "position", "--interval-ms", "100"])

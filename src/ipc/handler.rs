@@ -163,7 +163,8 @@ fn handle_get_position(engine: &Arc<LoopEngine>) -> Value {
     let tick = engine.current_tick();
     let raw_dur = engine.loop_duration_ticks();
     let loop_duration = if raw_dur == 0 { None } else { Some(raw_dur) };
-    json!({"tick": tick, "loop_duration": loop_duration})
+    let loop_count = engine.loop_count();
+    json!({"tick": tick, "loop_duration": loop_duration, "loop_count": loop_count})
 }
 
 fn build_domain_project(header: WireHeader, tracks: Vec<WireTrack>) -> Project {
@@ -1711,6 +1712,7 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
         assert_eq!(v["tick"], 0);
         assert!(v["loop_duration"].is_null());
+        assert_eq!(v["loop_count"], 0);
     }
 
     // EP-2 AC-1/AC-5: get_position while playing returns tick and matching loop_duration
@@ -1793,6 +1795,10 @@ mod tests {
             "AC-1: tick must be > 0 after ticks have advanced"
         );
         assert_eq!(v["loop_duration"], 960);
+        assert!(
+            v["loop_count"].as_u64().unwrap() >= 1,
+            "expected loop_count >= 1 after the first pass completed"
+        );
         engine.stop();
     }
 

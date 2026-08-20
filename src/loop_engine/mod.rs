@@ -39,6 +39,7 @@ pub struct LoopEngine {
     state: Arc<Mutex<EngineState>>,
     current_tick: Arc<AtomicU64>,
     loop_duration_ticks: Arc<AtomicU64>,
+    loop_count: Arc<AtomicU64>,
 }
 
 impl LoopEngine {
@@ -50,6 +51,8 @@ impl LoopEngine {
         let current_tick_clone = Arc::clone(&current_tick);
         let loop_duration_ticks = Arc::new(AtomicU64::new(0));
         let loop_duration_ticks_clone = Arc::clone(&loop_duration_ticks);
+        let loop_count = Arc::new(AtomicU64::new(0));
+        let loop_count_clone = Arc::clone(&loop_count);
 
         std::thread::spawn(move || {
             run_player_loop(
@@ -59,6 +62,7 @@ impl LoopEngine {
                 state_clone,
                 current_tick_clone,
                 loop_duration_ticks_clone,
+                loop_count_clone,
             );
         });
 
@@ -67,6 +71,7 @@ impl LoopEngine {
             state,
             current_tick,
             loop_duration_ticks,
+            loop_count,
         }
     }
 
@@ -119,6 +124,10 @@ impl LoopEngine {
 
     pub fn loop_duration_ticks(&self) -> u64 {
         self.loop_duration_ticks.load(Ordering::Relaxed)
+    }
+
+    pub fn loop_count(&self) -> u64 {
+        self.loop_count.load(Ordering::Relaxed)
     }
 
     pub fn sync_start(&self) {
@@ -689,6 +698,182 @@ mod tests {
             after >= t,
             "expected current_tick() ({after}) >= T ({t}) after SyncContinue"
         );
+    }
+
+    #[test]
+    fn new_engine_loop_count_is_zero() {
+        let (engine, _) = make_engine_no_project();
+        assert_eq!(engine.loop_count(), 0);
+    }
+
+    #[test]
+    fn loop_count_increments_at_loop_boundary() {
+        let store = make_store_with_delayed_note();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
+        let engine = LoopEngine::new(store, Box::new(output));
+        engine.start();
+
+        assert!(
+            wait_for_nonzero_tick(&engine, 300),
+            "precondition failed: expected an event to have fired"
+        );
+        assert_eq!(engine.loop_count(), 0, "no loop has completed yet");
+
+        // Sample across 2+ loop boundaries (loop ≈ 400ms) waiting for the first increment.
+        let deadline = Instant::now() + Duration::from_millis(900);
+        let mut saw_one = false;
+        while Instant::now() < deadline {
+            if engine.loop_count() >= 1 {
+                saw_one = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        engine.stop();
+        assert!(
+            saw_one,
+            "expected loop_count() >= 1 to be observed after a loop boundary"
+        );
+    }
+
+    #[test]
+    fn loop_count_zero_after_stop() {
+        let store = make_store_with_delayed_note();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
+        let engine = LoopEngine::new(store, Box::new(output));
+        engine.start();
+
+        let deadline = Instant::now() + Duration::from_millis(900);
+        while Instant::now() < deadline && engine.loop_count() == 0 {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(
+            engine.loop_count() >= 1,
+            "precondition failed: expected at least one loop to have completed"
+        );
+
+        engine.stop();
+        wait_for_state(&engine, EngineState::Stopped, 500);
+        assert_eq!(
+            engine.loop_count(),
+            0,
+            "expected loop_count() == 0 after stop()"
+        );
+    }
+
+    #[test]
+    fn loop_count_zero_after_clock_stop_from_paused() {
+        // Mirrors current_tick_zero_after_stop_from_paused: the Stop/ClockStop branch
+        // handled directly inside handle_paused() must also reset loop_count.
+        let store = make_store_with_delayed_note();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
+        let engine = LoopEngine::new(store, Box::new(output));
+        engine.clock_start();
+
+        let deadline = Instant::now() + Duration::from_millis(900);
+        while Instant::now() < deadline && engine.loop_count() == 0 {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(
+            engine.loop_count() >= 1,
+            "precondition failed: expected at least one loop to have completed"
+        );
+
+        engine.clock_pause();
+        wait_for_state(&engine, EngineState::Paused, 500);
+
+        engine.clock_stop();
+        wait_for_state(&engine, EngineState::Stopped, 500);
+
+        assert_eq!(
+            engine.loop_count(),
+            0,
+            "expected loop_count() == 0 after stopping from Paused"
+        );
+    }
+
+    #[test]
+    fn loop_count_unaffected_by_pause_and_resume() {
+        let store = make_store_with_delayed_note();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
+        let engine = LoopEngine::new(store, Box::new(output));
+        engine.clock_start();
+
+        let deadline = Instant::now() + Duration::from_millis(900);
+        while Instant::now() < deadline && engine.loop_count() == 0 {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let before = engine.loop_count();
+        assert!(
+            before >= 1,
+            "precondition failed: expected a completed loop"
+        );
+
+        engine.clock_pause();
+        wait_for_state(&engine, EngineState::Paused, 500);
+        assert_eq!(
+            engine.loop_count(),
+            before,
+            "expected loop_count() unchanged immediately after pause"
+        );
+
+        engine.clock_resume();
+        wait_for_state(&engine, EngineState::Running, 500);
+        assert_eq!(
+            engine.loop_count(),
+            before,
+            "expected loop_count() unchanged immediately after resume"
+        );
+
+        engine.clock_stop();
+        wait_for_state(&engine, EngineState::Stopped, 500);
+    }
+
+    #[test]
+    fn loop_count_resets_on_sync_start_mid_loop() {
+        // An incoming external MIDI Start (0xFA) resets current_tick to 0 unconditionally,
+        // even mid-loop while Running; the loop counter follows the same reset since it
+        // has the identical tick-zeroing effect as a stop.
+        let store = make_store_with_delayed_note();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
+        let engine = LoopEngine::new(store, Box::new(output));
+        engine.sync_start();
+        wait_for_state(&engine, EngineState::Running, 500);
+
+        let deadline = Instant::now() + Duration::from_millis(900);
+        while Instant::now() < deadline && engine.loop_count() == 0 {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(
+            engine.loop_count() >= 1,
+            "precondition failed: expected at least one loop to have completed"
+        );
+
+        engine.sync_start();
+        std::thread::sleep(Duration::from_millis(10));
+
+        assert_eq!(
+            engine.loop_count(),
+            0,
+            "expected loop_count() == 0 immediately after a mid-loop SyncStart restart"
+        );
+        engine.sync_stop();
+        wait_for_state(&engine, EngineState::Paused, 500);
     }
 
     #[test]
@@ -1297,6 +1482,7 @@ mod tests {
         let output: Box<dyn MidiOutput> = Box::new(MockMidiOutput::new());
         let current_tick = Arc::new(AtomicU64::new(0));
         let loop_duration_ticks = Arc::new(AtomicU64::new(0));
+        let loop_count = Arc::new(AtomicU64::new(0));
 
         let handle = std::thread::spawn(move || {
             run_player_loop(
@@ -1306,6 +1492,7 @@ mod tests {
                 state_clone,
                 current_tick,
                 loop_duration_ticks,
+                loop_count,
             );
         });
 

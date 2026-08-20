@@ -135,6 +135,7 @@ struct PlayerLoop {
     pending_sync_bpm: Option<u32>,
     current_tick: Arc<AtomicU64>,
     loop_duration_ticks: Arc<AtomicU64>,
+    loop_count: Arc<AtomicU64>,
 }
 
 impl PlayerLoop {
@@ -145,6 +146,7 @@ impl PlayerLoop {
         shared_state: Arc<Mutex<EngineState>>,
         current_tick: Arc<AtomicU64>,
         loop_duration_ticks: Arc<AtomicU64>,
+        loop_count: Arc<AtomicU64>,
     ) -> Self {
         PlayerLoop {
             receiver,
@@ -166,6 +168,7 @@ impl PlayerLoop {
             pending_sync_bpm: None,
             current_tick,
             loop_duration_ticks,
+            loop_count,
         }
     }
 
@@ -193,6 +196,7 @@ impl PlayerLoop {
 
     fn do_stop(&mut self) {
         self.current_tick.store(0, Ordering::Relaxed);
+        self.loop_count.store(0, Ordering::Relaxed);
         self.flush_notes();
         self.reset_pitch_bend_channels();
         self.carry_over.clear();
@@ -208,6 +212,7 @@ impl PlayerLoop {
 
     fn do_clock_stop(&mut self) {
         self.current_tick.store(0, Ordering::Relaxed);
+        self.loop_count.store(0, Ordering::Relaxed);
         self.flush_notes();
         self.reset_pitch_bend_channels();
         self.carry_over.clear();
@@ -221,6 +226,7 @@ impl PlayerLoop {
 
     fn do_sync_restart(&mut self) {
         self.current_tick.store(0, Ordering::Relaxed);
+        self.loop_count.store(0, Ordering::Relaxed);
         self.flush_notes();
         self.carry_over.clear();
         self.next_carry_over.clear();
@@ -582,6 +588,7 @@ impl PlayerLoop {
 
         self.loop_elapsed_ticks = 0;
         self.current_tick.store(0, Ordering::Relaxed);
+        self.loop_count.fetch_add(1, Ordering::Relaxed);
     }
 
     // Returns false when the player thread should exit.
@@ -725,6 +732,7 @@ impl PlayerLoop {
             }
             Ok(LoopCommand::ClockStop | LoopCommand::Stop) => {
                 self.current_tick.store(0, Ordering::Relaxed);
+                self.loop_count.store(0, Ordering::Relaxed);
                 self.pause_context = None;
                 if let Err(e) = self.output.clock_stop() {
                     eprintln!("MIDI clock_stop failed: {e}");
@@ -771,6 +779,7 @@ pub fn run_player_loop(
     shared_state: Arc<Mutex<EngineState>>,
     current_tick: Arc<AtomicU64>,
     loop_duration_ticks: Arc<AtomicU64>,
+    loop_count: Arc<AtomicU64>,
 ) {
     PlayerLoop::new(
         receiver,
@@ -779,6 +788,7 @@ pub fn run_player_loop(
         shared_state,
         current_tick,
         loop_duration_ticks,
+        loop_count,
     )
     .run();
 }
@@ -814,6 +824,7 @@ mod tests {
         let shared_state = Arc::new(Mutex::new(EngineState::Stopped));
         let current_tick = Arc::new(AtomicU64::new(0));
         let loop_duration_ticks = Arc::new(AtomicU64::new(0));
+        let loop_count = Arc::new(AtomicU64::new(0));
         let player = PlayerLoop::new(
             rx,
             store,
@@ -821,6 +832,7 @@ mod tests {
             shared_state,
             current_tick,
             loop_duration_ticks,
+            loop_count,
         );
         (player, tx, recorded)
     }
@@ -1462,6 +1474,7 @@ mod tests {
             Arc::new(Mutex::new(EngineState::Stopped)),
             Arc::new(AtomicU64::new(0)),
             Arc::new(AtomicU64::new(0)),
+            Arc::new(AtomicU64::new(0)),
         );
         player.loop_duration = 960;
         drop(tx);
@@ -1550,6 +1563,7 @@ mod tests {
             Arc::clone(&store),
             Box::new(CapturingMidiOutput::new(recorded)),
             Arc::new(Mutex::new(EngineState::Stopped)),
+            Arc::new(AtomicU64::new(0)),
             Arc::new(AtomicU64::new(0)),
             Arc::new(AtomicU64::new(0)),
         );
