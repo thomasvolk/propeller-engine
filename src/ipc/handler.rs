@@ -163,7 +163,7 @@ fn handle_get_position(engine: &Arc<LoopEngine>) -> Value {
     let tick = engine.current_tick();
     let raw_dur = engine.loop_duration_ticks();
     let loop_duration = if raw_dur == 0 { None } else { Some(raw_dur) };
-    json!({"type": "position", "tick": tick, "loop_duration": loop_duration})
+    json!({"tick": tick, "loop_duration": loop_duration})
 }
 
 fn build_domain_project(header: WireHeader, tracks: Vec<WireTrack>) -> Project {
@@ -1709,7 +1709,6 @@ mod tests {
     async fn get_position_no_project_returns_zero_tick_null_duration() {
         let response = send_command_get_response(r#"{"command":"get-position"}"#).await;
         let v: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
-        assert_eq!(v["type"], "position");
         assert_eq!(v["tick"], 0);
         assert!(v["loop_duration"].is_null());
     }
@@ -1789,7 +1788,6 @@ mod tests {
         client.read_to_string(&mut resp).await.unwrap();
 
         let v: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
-        assert_eq!(v["type"], "position");
         assert!(
             v["tick"].as_u64().unwrap() > 0,
             "AC-1: tick must be > 0 after ticks have advanced"

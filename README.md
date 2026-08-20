@@ -390,7 +390,7 @@ Returns the current tick position:
 Example response:
 
 ```json
-{"type": "position", "tick": 1234, "loop_duration": 4800}
+{"tick": 1234, "loop_duration": 4800}
 ```
 
 `tick` is the current playback position within the loop, in ticks. `loop_duration` is `null` when no project is loaded. `tick` freezes while the engine is paused and resets to 0 on loop restart, stop, or an incoming MIDI Start (0xFA) in sync mode.

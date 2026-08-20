@@ -1024,7 +1024,7 @@ fn ep3_loop_position_single_shot_with_project() {
     let sock = dir.path().join("test.sock");
     spawn_cli_mock(
         &sock,
-        r#"{"type":"position","tick":1234,"loop_duration":480}"#,
+        r#"{"tick":1234,"loop_duration":480}"#,
     );
 
     let output = Command::new(propeller_bin())
@@ -1057,7 +1057,7 @@ fn ep3_loop_position_single_shot_no_project() {
     let sock = dir.path().join("test.sock");
     spawn_cli_mock(
         &sock,
-        r#"{"type":"position","tick":0,"loop_duration":null}"#,
+        r#"{"tick":0,"loop_duration":null}"#,
     );
 
     let output = Command::new(propeller_bin())
@@ -1107,7 +1107,7 @@ fn ep3_loop_position_interval_ms_without_poll_is_noop() {
     let sock = dir.path().join("test.sock");
     spawn_cli_mock(
         &sock,
-        r#"{"type":"position","tick":10,"loop_duration":100}"#,
+        r#"{"tick":10,"loop_duration":100}"#,
     );
 
     let output = Command::new(propeller_bin())

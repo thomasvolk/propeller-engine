@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Changes
+
+- **Breaking:** Removed the redundant `"type": "position"` discriminant from the `get-position`
+  response; the response is now just `{"tick": ..., "loop_duration": ...}`. The CLI client no
+  longer validates a response `type` tag before parsing `tick`/`loop_duration`.
+
+---
+
 ## [0.7.0] - 2026-08-20
 
 ### Changes

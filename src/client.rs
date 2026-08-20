@@ -81,12 +81,6 @@ pub(crate) async fn query_position(sock_path: &Path) -> Result<(u64, Option<u64>
     let v: Value = serde_json::from_str(line.trim())
         .map_err(|e| ClientError::Input(format!("invalid response JSON: {e}")))?;
 
-    if v.get("type").and_then(|t| t.as_str()) != Some("position") {
-        return Err(ClientError::Input(
-            "unexpected response type for get_position".to_string(),
-        ));
-    }
-
     let tick = v
         .get("tick")
         .and_then(|t| t.as_u64())
@@ -196,7 +190,7 @@ mod tests {
             assert_eq!(line.trim(), r#"{"command":"get-position"}"#);
             let mut stream = reader.into_inner();
             stream
-                .write_all(b"{\"type\":\"position\",\"tick\":42,\"loop_duration\":480}\n")
+                .write_all(b"{\"tick\":42,\"loop_duration\":480}\n")
                 .await
                 .unwrap();
         });
@@ -220,7 +214,7 @@ mod tests {
             reader.read_line(&mut line).await.unwrap();
             let mut stream = reader.into_inner();
             stream
-                .write_all(b"{\"type\":\"position\",\"tick\":0,\"loop_duration\":null}\n")
+                .write_all(b"{\"tick\":0,\"loop_duration\":null}\n")
                 .await
                 .unwrap();
         });

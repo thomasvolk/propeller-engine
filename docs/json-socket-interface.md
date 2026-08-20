@@ -250,7 +250,6 @@ tick order within the loop. Every channel with at least one pitch-bend event is 
 
 | Field           | Type / Values     | Description                                                  |
 | --------------- | ----------------- | ------------------------------------------------------------ |
-| `type`          | `"position"`      | Message discriminant                                         |
 | `tick`          | integer, ≥ 0      | Current playback position within the loop, in ticks          |
 | `loop_duration` | integer or `null` | Total loop length in ticks; `null` when no project is loaded |
 
@@ -384,7 +383,7 @@ printf '{"command":"get-position"}\n' | nc -U /tmp/propeller.sock
 ```
 
 ```json
-{"type":"position","tick":960,"loop_duration":1920}
+{"tick":960,"loop_duration":1920}
 ```
 
 Divide `tick` by `loop_duration` for fractional progress through the loop. The CLI wraps this in
