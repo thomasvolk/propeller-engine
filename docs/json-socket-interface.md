@@ -174,15 +174,13 @@ Returns the current (active) and pending (staged-but-uncommitted) project, in th
 
 Shuts down the daemon cleanly. Equivalent to `propeller stop`.
 
-### get_position
+### get-position
 
 ```json
-{"type": "get_position"}
+{"command": "get-position"}
 ```
 
-Returns the current tick position. Unlike every other message in this reference, `get_position`
-is tagged with `"type"` instead of `"command"` — the daemon checks for a `"type"` field first and
-routes accordingly, so both forms coexist on the same socket. See the Response reference below.
+Returns the current tick position. See the Response reference below.
 
 ## Field reference
 
@@ -318,7 +316,6 @@ The NoteOn is emitted at tick 1440 of the current loop. The NoteOff is emitted a
 | `no_project`                   | `clock-start` sent with no active project                       | Load a project with `create-project` first                                                                                  |
 | `sync_mode_active`             | `loop-start`, `loop-stop`, or `set-bpm` sent while in sync mode | Use the external MIDI device to control transport and tempo                                                                 |
 | `sync_requires_port`           | `set-mode` to `sync` without `--sync` at daemon startup         | Restart the daemon with `PROPELLER_SYNC_PORT=<port> propeller start --sync`                                                 |
-| `unknown_type`                 | The `"type"` value is not recognised                            | Only `"get_position"` is a valid `"type"` value                                                                             |
 
 ## Examples
 
@@ -380,10 +377,10 @@ printf '{"command":"project"}\n' | nc -U /tmp/propeller.sock
 
 ### Poll the current tick position
 
-Read the playback position for a step-highlight UI. Note the `"type"` field, not `"command"`:
+Read the playback position for a step-highlight UI:
 
 ```sh
-printf '{"type":"get_position"}\n' | nc -U /tmp/propeller.sock
+printf '{"command":"get-position"}\n' | nc -U /tmp/propeller.sock
 ```
 
 ```json

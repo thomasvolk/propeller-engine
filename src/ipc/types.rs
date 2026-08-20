@@ -3,7 +3,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::midi_clock::SyncClockState;
@@ -35,16 +35,7 @@ pub enum Command {
     Status,
     Project,
     Stop,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum IpcMessage {
     GetPosition,
-    Position {
-        tick: u64,
-        loop_duration: Option<u64>,
-    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -231,36 +222,11 @@ mod tests {
         assert_eq!(t.notes[0], [0, 480, 60, 80]);
     }
 
-    // EP-2: GetPosition deserialises from the "type"-tagged wire format
+    // EP-2: GetPosition deserialises from the "command"-tagged wire format
     #[test]
     fn deserialize_get_position() {
-        let msg: IpcMessage = serde_json::from_str(r#"{"type":"get_position"}"#).unwrap();
-        assert!(matches!(msg, IpcMessage::GetPosition));
-    }
-
-    // EP-2: Position with a loop_duration serialises tick and loop_duration as integers
-    #[test]
-    fn serialize_position_with_loop_duration() {
-        let msg = IpcMessage::Position {
-            tick: 42,
-            loop_duration: Some(4800),
-        };
-        let json = serde_json::to_string(&msg).unwrap();
-        assert_eq!(
-            json,
-            r#"{"type":"position","tick":42,"loop_duration":4800}"#
-        );
-    }
-
-    // EP-2: Position with no active project serialises loop_duration as null (F-5)
-    #[test]
-    fn serialize_position_no_project() {
-        let msg = IpcMessage::Position {
-            tick: 0,
-            loop_duration: None,
-        };
-        let json = serde_json::to_string(&msg).unwrap();
-        assert_eq!(json, r#"{"type":"position","tick":0,"loop_duration":null}"#);
+        let cmd: Command = serde_json::from_str(r#"{"command":"get-position"}"#).unwrap();
+        assert!(matches!(cmd, Command::GetPosition));
     }
 
     // T-3: WireTrack deserialises "pitch-bends" and defaults to empty when absent (F-1, F-9)

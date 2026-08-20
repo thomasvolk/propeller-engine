@@ -379,12 +379,12 @@ Example response with both an active and a staged project:
 
 `"current"` and `"pending"` are each omitted entirely when no project is active or staged, rather than appearing as `null`. `propeller project get` wraps this command and strips the `"status"` field before printing.
 
-#### get_position
+#### get-position
 
-Returns the current tick position. Note this message uses a `"type"` field instead of `"command"`:
+Returns the current tick position:
 
 ```json
-{"type": "get_position"}
+{"command": "get-position"}
 ```
 
 Example response:
@@ -424,7 +424,7 @@ On error:
 - **Continuous loop playback** — repeats the project endlessly with no timing gap between repetitions.
 - **Bar-boundary updates** — pending project changes take effect at the next bar boundary; the current bar always plays to completion.
 - **Runtime JSON interface** — load projects, control playback, adjust BPM and mode, and query status over the socket without restarting the engine.
-- **Position query** — `propeller loop position` (with an optional `--poll`) or the `get_position` socket message report the current tick position for driving visual feedback such as step highlighting.
+- **Position query** — `propeller loop position` (with an optional `--poll`) or the `get-position` socket command report the current tick position for driving visual feedback such as step highlighting.
 - **Project state query** — `propeller project get` or the `project` socket command report the active and staged project as complete JSON, without needing to track separately what was last loaded.
 - **Operating modes** — `standalone`, `clock`, and `sync` modes are supported. `standalone` and `clock` are switchable at runtime via `set-mode`; `sync` requires `--sync` at daemon startup.
 

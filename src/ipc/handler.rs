@@ -13,8 +13,7 @@ use crate::loop_engine::{EngineState, LoopEngine};
 use crate::midi_clock::SyncClockState;
 
 use super::types::{
-    Command, EngineMode, EngineSettings, IpcMessage, WireHeader, WireTrack, error_response,
-    ok_response,
+    Command, EngineMode, EngineSettings, WireHeader, WireTrack, error_response, ok_response,
 };
 
 pub async fn connection_handler(
@@ -73,14 +72,6 @@ async fn dispatch(
         Err(_) => return error_response("parse_error", "malformed JSON"),
         Ok(v) => v,
     };
-
-    if raw.get("type").is_some() {
-        let msg: Result<IpcMessage, _> = serde_json::from_str(line);
-        return match msg {
-            Ok(IpcMessage::GetPosition) => handle_get_position(engine),
-            _ => error_response("unknown_type", "unrecognised type value"),
-        };
-    }
 
     if raw.get("command").is_none() {
         return error_response(
@@ -164,6 +155,7 @@ async fn dispatch(
         Command::Status => handle_status(store, engine, settings),
         Command::Project => handle_get_project(store),
         Command::Stop => ok_response(),
+        Command::GetPosition => handle_get_position(engine),
     }
 }
 
@@ -1715,7 +1707,7 @@ mod tests {
     // EP-2 AC-3: get_position with no project loaded returns tick 0, loop_duration null
     #[tokio::test]
     async fn get_position_no_project_returns_zero_tick_null_duration() {
-        let response = send_command_get_response(r#"{"type":"get_position"}"#).await;
+        let response = send_command_get_response(r#"{"command":"get-position"}"#).await;
         let v: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
         assert_eq!(v["type"], "position");
         assert_eq!(v["tick"], 0);
@@ -1789,7 +1781,7 @@ mod tests {
             connection_handler(server, s, e, settings, shutdown_tx).await;
         });
 
-        let cmd = r#"{"type":"get_position"}"#.to_string() + "\n";
+        let cmd = r#"{"command":"get-position"}"#.to_string() + "\n";
         let mut client = client;
         use tokio::io::AsyncWriteExt;
         client.write_all(cmd.as_bytes()).await.unwrap();
@@ -1840,7 +1832,7 @@ mod tests {
             tokio::spawn(async move {
                 connection_handler(server, s, e, se, st).await;
             });
-            let cmd = r#"{"type":"get_position"}"#.to_string() + "\n";
+            let cmd = r#"{"command":"get-position"}"#.to_string() + "\n";
             let mut client = client;
             use tokio::io::AsyncWriteExt;
             client.write_all(cmd.as_bytes()).await.unwrap();
@@ -1914,7 +1906,7 @@ mod tests {
             tokio::spawn(async move {
                 connection_handler(server, s, e, se, st).await;
             });
-            let cmd = r#"{"type":"get_position"}"#.to_string() + "\n";
+            let cmd = r#"{"command":"get-position"}"#.to_string() + "\n";
             let mut client = client;
             use tokio::io::AsyncWriteExt;
             client.write_all(cmd.as_bytes()).await.unwrap();

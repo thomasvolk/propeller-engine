@@ -68,7 +68,7 @@ pub(crate) async fn query_position(sock_path: &Path) -> Result<(u64, Option<u64>
         .map_err(ClientError::Connect)?;
     let mut reader = BufReader::new(stream);
     reader
-        .write_all(b"{\"type\":\"get_position\"}\n")
+        .write_all(b"{\"command\":\"get-position\"}\n")
         .await
         .map_err(|e| ClientError::Input(e.to_string()))?;
 
@@ -78,18 +78,22 @@ pub(crate) async fn query_position(sock_path: &Path) -> Result<(u64, Option<u64>
         .await
         .map_err(|e| ClientError::Input(e.to_string()))?;
 
-    let msg: crate::ipc::IpcMessage = serde_json::from_str(line.trim())
+    let v: Value = serde_json::from_str(line.trim())
         .map_err(|e| ClientError::Input(format!("invalid response JSON: {e}")))?;
 
-    match msg {
-        crate::ipc::IpcMessage::Position {
-            tick,
-            loop_duration,
-        } => Ok((tick, loop_duration)),
-        _ => Err(ClientError::Input(
+    if v.get("type").and_then(|t| t.as_str()) != Some("position") {
+        return Err(ClientError::Input(
             "unexpected response type for get_position".to_string(),
-        )),
+        ));
     }
+
+    let tick = v
+        .get("tick")
+        .and_then(|t| t.as_u64())
+        .ok_or_else(|| ClientError::Input("missing tick in response".to_string()))?;
+    let loop_duration = v.get("loop_duration").and_then(|d| d.as_u64());
+
+    Ok((tick, loop_duration))
 }
 
 pub(crate) fn read_project_input(filename: Option<PathBuf>) -> Result<Value, ClientError> {
@@ -189,7 +193,7 @@ mod tests {
             let mut reader = BufReader::new(stream);
             let mut line = String::new();
             reader.read_line(&mut line).await.unwrap();
-            assert_eq!(line.trim(), r#"{"type":"get_position"}"#);
+            assert_eq!(line.trim(), r#"{"command":"get-position"}"#);
             let mut stream = reader.into_inner();
             stream
                 .write_all(b"{\"type\":\"position\",\"tick\":42,\"loop_duration\":480}\n")

@@ -39,11 +39,11 @@ Use the `PROPELLER_SOCK` env var in tests to give each test process a unique soc
 Messages are newline-delimited JSON:
 
 ```
-{"type":"stop"}\n
+{"command":"stop"}\n
 ```
 
-- Every message must have a `"type"` discriminant field
-- Deserialise into a Rust enum tagged with `#[serde(tag = "type")]` via `serde_json`
+- Every message must have a `"command"` discriminant field
+- Deserialise into a Rust enum tagged with `#[serde(tag = "command")]` via `serde_json`
 - Extend the enum with new variants for future message types; do not change the wire format
 
 ---
