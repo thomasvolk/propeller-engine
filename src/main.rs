@@ -280,6 +280,7 @@ fn cmd_daemon_run(clock: bool, sync: bool) {
     rt.block_on(daemon::run(
         sock_path,
         midi_out,
+        midi_port_name,
         initial_mode,
         sync_port_name,
     ));

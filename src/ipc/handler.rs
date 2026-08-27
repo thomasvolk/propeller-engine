@@ -375,7 +375,15 @@ fn handle_status(
         resp["loop_duration"] = json!(p.header.loop_duration);
     }
 
+    // Omit entirely when using the fallback virtual port (no configured name).
+    if let Some(ref name) = settings_guard.midi_port_name {
+        resp["midi_port_name"] = json!(name);
+    }
+
     if settings_guard.mode == EngineMode::Sync {
+        if let Some(ref name) = settings_guard.sync_port_name {
+            resp["sync_port_name"] = json!(name);
+        }
         if let Some(ref arc) = settings_guard.sync_clock_state {
             let sync_state = arc.lock().unwrap().clone();
             let label = match sync_state {
@@ -1130,6 +1138,92 @@ mod tests {
             v.get("sync_clock_state").is_none(),
             "sync_clock_state must not appear in standalone mode"
         );
+    }
+
+    #[tokio::test]
+    async fn status_includes_midi_port_name_when_configured() {
+        let (store, engine, settings, shutdown_tx) = make_shared_state();
+        settings.lock().unwrap().midi_port_name = Some("IAC Driver Bus 1".to_string());
+
+        let (client, server) = UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            connection_handler(server, store, engine, settings, shutdown_tx).await;
+        });
+
+        let cmd = r#"{"command":"status"}"#.to_string() + "\n";
+        let mut client = client;
+        use tokio::io::AsyncWriteExt;
+        client.write_all(cmd.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        client.read_to_string(&mut resp).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
+        assert_eq!(v["midi_port_name"], "IAC Driver Bus 1");
+    }
+
+    #[tokio::test]
+    async fn status_excludes_midi_port_name_when_using_virtual_port() {
+        let response = send_command_get_response(r#"{"command":"status"}"#).await;
+        let v: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+        assert!(
+            v.get("midi_port_name").is_none(),
+            "midi_port_name must not appear when no port name is configured"
+        );
+    }
+
+    #[tokio::test]
+    async fn status_in_sync_mode_includes_sync_port_name() {
+        let (store, engine, settings, shutdown_tx) = make_shared_state();
+        {
+            let mut s = settings.lock().unwrap();
+            s.mode = EngineMode::Sync;
+            s.sync_port_name = Some("Clock In".to_string());
+        }
+
+        let (client, server) = UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            connection_handler(server, store, engine, settings, shutdown_tx).await;
+        });
+
+        let cmd = r#"{"command":"status"}"#.to_string() + "\n";
+        let mut client = client;
+        use tokio::io::AsyncWriteExt;
+        client.write_all(cmd.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        client.read_to_string(&mut resp).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
+        assert_eq!(v["sync_port_name"], "Clock In");
+    }
+
+    #[tokio::test]
+    async fn status_in_standalone_mode_excludes_sync_port_name() {
+        let response = send_command_get_response(r#"{"command":"status"}"#).await;
+        let v: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+        assert!(
+            v.get("sync_port_name").is_none(),
+            "sync_port_name must not appear in standalone mode"
+        );
+    }
+
+    #[tokio::test]
+    async fn status_in_sync_mode_without_receiver_excludes_sync_port_name() {
+        // SetMode to sync via IPC does not start a clock receiver, so sync_port_name
+        // stays unset even though mode is sync (mirrors sync_clock_state's behaviour).
+        let (store, engine, settings, shutdown_tx) = make_shared_state();
+        settings.lock().unwrap().mode = EngineMode::Sync;
+
+        let (client, server) = UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            connection_handler(server, store, engine, settings, shutdown_tx).await;
+        });
+
+        let cmd = r#"{"command":"status"}"#.to_string() + "\n";
+        let mut client = client;
+        use tokio::io::AsyncWriteExt;
+        client.write_all(cmd.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        client.read_to_string(&mut resp).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
+        assert!(v.get("sync_port_name").is_none());
     }
 
     #[tokio::test]

@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.8.1] - 2026-08-27
+
+### Changes
+
+- Added `midi_port_name` to the `status` response, reporting the name of the configured MIDI
+  output port; the field is omitted when the daemon falls back to its default virtual port.
+- Added `sync_port_name` to the `status` response, reporting the name of the MIDI input port
+  used for clock sync; present whenever the engine is in sync mode with an active clock
+  receiver, mirroring the existing `sync_clock_state` field's scope.
+- Updated the README and JSON socket interface documentation with the new status fields, and
+  fixed a stray `time_signature` field in a README example that didn't correspond to any real
+  response data.
+
+---
+
 ## [0.8.0] - 2026-08-20
 
 ### Changes

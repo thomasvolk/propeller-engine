@@ -228,15 +228,17 @@ tick order within the loop. Every channel with at least one pitch-bend event is 
 
 ### Status response fields
 
-| Field              | Type / Values                       | Description                                                        |
-| ------------------ | ----------------------------------- | ------------------------------------------------------------------ |
-| `status`           | `"ok"` or `"error"`                 | Whether the command succeeded                                      |
-| `mode`             | `"standalone"`, `"clock"`, `"sync"` | Current operating mode                                             |
-| `bpm`              | integer                             | Active BPM (from project if loaded, otherwise from engine setting) |
-| `loop_duration`    | integer or absent                   | Loop length in ticks; absent when no project is loaded             |
-| `clock_state`      | `"started"`, `"stopped"`            | Whether the loop is currently playing                              |
-| `project_present`  | boolean                             | Whether a project is currently loaded                              |
-| `sync_clock_state` | `"waiting"`, `"tracking"`, `"lost"` | Sync mode only: state of the incoming external clock signal        |
+| Field              | Type / Values                       | Description                                                                 |
+| ------------------ | ----------------------------------- | --------------------------------------------------------------------------- |
+| `status`           | `"ok"` or `"error"`                 | Whether the command succeeded                                               |
+| `mode`             | `"standalone"`, `"clock"`, `"sync"` | Current operating mode                                                      |
+| `bpm`              | integer                             | Active BPM (from project if loaded, otherwise from engine setting)          |
+| `loop_duration`    | integer or absent                   | Loop length in ticks; absent when no project is loaded                      |
+| `clock_state`      | `"started"`, `"stopped"`            | Whether the loop is currently playing                                       |
+| `project_present`  | boolean                             | Whether a project is currently loaded                                       |
+| `midi_port_name`   | string or absent                    | Name of the configured MIDI output port; absent when using the virtual port |
+| `sync_port_name`   | string or absent                    | Sync mode only: name of the MIDI input port used for clock sync             |
+| `sync_clock_state` | `"waiting"`, `"tracking"`, `"lost"` | Sync mode only: state of the incoming external clock signal                 |
 
 ### Project response fields
 

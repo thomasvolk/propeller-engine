@@ -16,6 +16,7 @@ use crate::midi_clock::MidiClockReceiver;
 pub async fn run(
     sock_path: PathBuf,
     midi_output: Box<dyn MidiOutput>,
+    midi_port_name: Option<String>,
     initial_mode: EngineMode,
     sync_port_name: Option<String>,
 ) {
@@ -33,13 +34,19 @@ pub async fn run(
     let engine = Arc::new(LoopEngine::new(Arc::clone(&store), midi_output));
     let engine_for_shutdown = Arc::clone(&engine);
     let settings = Arc::new(Mutex::new(EngineSettings::new()));
-    settings.lock().unwrap().mode = initial_mode;
+    {
+        let mut settings_guard = settings.lock().unwrap();
+        settings_guard.mode = initial_mode;
+        settings_guard.midi_port_name = midi_port_name;
+    }
 
     // If --sync was passed, start the MIDI clock receiver and store its state in settings.
     let _clock_receiver: Option<MidiClockReceiver> = if let Some(ref port_name) = sync_port_name {
         match MidiClockReceiver::new(port_name, Arc::clone(&engine)) {
             Ok(receiver) => {
-                settings.lock().unwrap().sync_clock_state = Some(receiver.state_arc());
+                let mut settings_guard = settings.lock().unwrap();
+                settings_guard.sync_clock_state = Some(receiver.state_arc());
+                settings_guard.sync_port_name = Some(port_name.clone());
                 Some(receiver)
             }
             Err(e) => {
