@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.8.2] - 2026-08-30
+
+### Changes
+
+- Fixed MIDI output being silently dropped by Ableton Live 12 (and other CoreMIDI hosts that
+  rely on packet timestamps to schedule events): outgoing MIDI messages were sent with a zero
+  timestamp, so Live would show input activity (Track In blinking, MIDI Map learning) but never
+  actually schedule the notes onto a track. Enabled midir's `coremidi_send_timestamped` feature
+  so every sent message now carries a real host timestamp.
+- Added a regression test guarding against this feature being disabled again in the future.
+
+---
+
 ## [0.8.1] - 2026-08-27
 
 ### Changes
