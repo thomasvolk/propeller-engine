@@ -42,6 +42,9 @@ impl std::fmt::Display for MidiPortError {
     }
 }
 
+// midir only stamps outgoing CoreMIDI packets with a real host time when the
+// `coremidi_send_timestamped` feature is enabled (see Cargo.toml); otherwise it sends
+// timestamp 0, which Ableton Live silently drops (Track In blinks but nothing is scheduled).
 pub struct MidiPortOutput(midir::MidiOutputConnection);
 
 impl MidiOutput for MidiPortOutput {
@@ -285,6 +288,22 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&s).unwrap();
         assert_eq!(v["index"], 0);
         assert_eq!(v["name"], "Surge XT");
+    }
+
+    // Guards against regressing to zero-timestamp CoreMIDI sends: midir's send() only calls
+    // AudioGetCurrentHostTime() when this feature is on, otherwise every packet goes out with
+    // timestamp 0 and Ableton Live never schedules it onto a track (Track In still blinks).
+    #[test]
+    fn midir_dependency_enables_coremidi_timestamped_sends() {
+        let cargo_toml = include_str!("../Cargo.toml");
+        let midir_line = cargo_toml
+            .lines()
+            .find(|line| line.trim_start().starts_with("midir"))
+            .expect("midir dependency not found in Cargo.toml");
+        assert!(
+            midir_line.contains("coremidi_send_timestamped"),
+            "midir must enable the coremidi_send_timestamped feature; found: {midir_line:?}"
+        );
     }
 
     #[test]
