@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.9.0] - 2026-08-31
+
+### Changes
+
+- Added sync-mode clock forwarding: while following an external MIDI clock, propeller now
+  relays it (Start, Stop, Continue, and 24-ppqn Timing Clock) straight back out to its own
+  output port, so downstream devices chained off that port also stay in sync. Forwarding is
+  written directly from the MIDI input callback thread for the lowest possible latency,
+  independent of the player loop's own timing.
+- If the external clock is lost, propeller now sends an explicit MIDI Stop out the output
+  port so downstream devices pause too, instead of leaving them running with a stale clock.
+- Added `--no-clock-forward` to `propeller start`: an opt-out flag that disables sync-mode
+  clock forwarding (including the clock-loss Stop) while leaving propeller's own sync
+  tracking and playback unaffected. Forwarding remains on by default whenever `--sync` is
+  used; the flag has no effect without `--sync`.
+- Documented the new behavior and flag in the README's sync-mode usage section and feature
+  list.
+
+---
+
 ## [0.8.2] - 2026-08-30
 
 ### Changes
