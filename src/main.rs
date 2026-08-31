@@ -15,6 +15,7 @@ mod startup_guard;
 use clap::{Parser, Subcommand};
 use ipc::EngineMode;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[derive(Parser)]
@@ -34,6 +35,10 @@ enum Commands {
         /// Start in sync mode (reads PROPELLER_SYNC_PORT env var for the MIDI input port name)
         #[arg(long)]
         sync: bool,
+        /// Disable sync-mode clock forwarding to the output port (forwarding is on by
+        /// default whenever --sync is active; this flag has no effect without --sync)
+        #[arg(long)]
+        no_clock_forward: bool,
     },
     /// Stop the running daemon
     Stop,
@@ -60,6 +65,8 @@ enum Commands {
         clock: bool,
         #[arg(long)]
         sync: bool,
+        #[arg(long)]
+        no_clock_forward: bool,
     },
 }
 
@@ -105,7 +112,11 @@ enum MidiCommand {
 fn main() {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Start { clock, sync } => cmd_start(clock, sync),
+        Commands::Start {
+            clock,
+            sync,
+            no_clock_forward,
+        } => cmd_start(clock, sync, no_clock_forward),
         Commands::Stop => cmd_stop(),
         Commands::Status => cmd_status(),
         Commands::Project { command } => match command {
@@ -121,11 +132,15 @@ fn main() {
         Commands::Midi { command } => match command {
             MidiCommand::Ports => cmd_midi_ports(),
         },
-        Commands::DaemonRun { clock, sync } => cmd_daemon_run(clock, sync),
+        Commands::DaemonRun {
+            clock,
+            sync,
+            no_clock_forward,
+        } => cmd_daemon_run(clock, sync, no_clock_forward),
     }
 }
 
-fn cmd_start(clock: bool, sync: bool) {
+fn cmd_start(clock: bool, sync: bool, no_clock_forward: bool) {
     let sock_path = socket_path::resolve();
 
     match startup_guard::check(&sock_path) {
@@ -195,6 +210,9 @@ fn cmd_start(clock: bool, sync: bool) {
     if sync {
         cmd.arg("--sync");
     }
+    if no_clock_forward {
+        cmd.arg("--no-clock-forward");
+    }
     use std::os::unix::process::CommandExt;
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -232,7 +250,7 @@ fn cmd_start(clock: bool, sync: bool) {
     }
 }
 
-fn cmd_daemon_run(clock: bool, sync: bool) {
+fn cmd_daemon_run(clock: bool, sync: bool, no_clock_forward: bool) {
     let sock_path = socket_path::resolve();
 
     let midi_port_name: Option<String> = std::env::var("PROPELLER_MIDI_PORT").ok();
@@ -276,13 +294,17 @@ fn cmd_daemon_run(clock: bool, sync: bool) {
         EngineMode::Standalone
     };
 
+    let midi_output = Arc::new(Mutex::new(midi_out));
+    let clock_forward_enabled = !no_clock_forward;
+
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     rt.block_on(daemon::run(
         sock_path,
-        midi_out,
+        midi_output,
         midi_port_name,
         initial_mode,
         sync_port_name,
+        clock_forward_enabled,
     ));
 }
 
@@ -482,6 +504,74 @@ mod tests {
                 command: LoopCommand::Position { interval_ms, .. },
             } => assert_eq!(interval_ms, 100),
             _ => panic!("expected Loop Position"),
+        }
+    }
+
+    // Clock forwarding defaults to on with --sync; --no-clock-forward opts out.
+    #[test]
+    fn start_parses_with_clock_forwarding_on_by_default() {
+        let cli = Cli::try_parse_from(["propeller", "start", "--sync"]).unwrap();
+        match cli.command {
+            Commands::Start {
+                sync,
+                no_clock_forward,
+                ..
+            } => {
+                assert!(sync);
+                assert!(!no_clock_forward);
+            }
+            _ => panic!("expected Start"),
+        }
+    }
+
+    #[test]
+    fn start_parses_no_clock_forward_flag() {
+        let cli =
+            Cli::try_parse_from(["propeller", "start", "--sync", "--no-clock-forward"]).unwrap();
+        match cli.command {
+            Commands::Start {
+                sync,
+                no_clock_forward,
+                ..
+            } => {
+                assert!(sync);
+                assert!(no_clock_forward);
+            }
+            _ => panic!("expected Start"),
+        }
+    }
+
+    // no-clock-forward is accepted without --sync too (silent no-op at runtime).
+    #[test]
+    fn start_parses_no_clock_forward_without_sync() {
+        let cli = Cli::try_parse_from(["propeller", "start", "--no-clock-forward"]).unwrap();
+        match cli.command {
+            Commands::Start {
+                sync,
+                no_clock_forward,
+                ..
+            } => {
+                assert!(!sync);
+                assert!(no_clock_forward);
+            }
+            _ => panic!("expected Start"),
+        }
+    }
+
+    #[test]
+    fn daemon_run_parses_no_clock_forward_flag() {
+        let cli = Cli::try_parse_from(["propeller", "daemon-run", "--sync", "--no-clock-forward"])
+            .unwrap();
+        match cli.command {
+            Commands::DaemonRun {
+                sync,
+                no_clock_forward,
+                ..
+            } => {
+                assert!(sync);
+                assert!(no_clock_forward);
+            }
+            _ => panic!("expected DaemonRun"),
         }
     }
 }

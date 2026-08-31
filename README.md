@@ -68,6 +68,19 @@ PROPELLER_SYNC_PORT="IAC Driver Bus 1" propeller start --sync
 
 `--sync` requires `PROPELLER_SYNC_PORT` to be set. If the variable is absent or names an unknown port the daemon exits with an error before opening any port.
 
+In sync mode, propeller also relays the incoming external clock (MIDI Start, Stop, Continue,
+and 24-ppqn Timing Clock) straight back out to its own output port, so any downstream gear
+chained off that port stays in sync too. This forwarding is on by default; disable it with
+`--no-clock-forward`:
+
+```sh
+PROPELLER_SYNC_PORT="IAC Driver Bus 1" propeller start --sync --no-clock-forward
+```
+
+`--no-clock-forward` has no effect unless `--sync` is also given. If the external clock is
+lost, propeller sends an explicit MIDI Stop out the output port so downstream devices pause
+too — unless forwarding has been disabled, in which case nothing is sent.
+
 ### Stopping the daemon
 
 ```sh
@@ -427,6 +440,7 @@ On error:
 - **Position query** — `propeller loop position` (with an optional `--poll`) or the `get-position` socket command report the current tick position for driving visual feedback such as step highlighting.
 - **Project state query** — `propeller project get` or the `project` socket command report the active and staged project as complete JSON, without needing to track separately what was last loaded.
 - **Operating modes** — `standalone`, `clock`, and `sync` modes are supported. `standalone` and `clock` are switchable at runtime via `set-mode`; `sync` requires `--sync` at daemon startup.
+- **Sync-mode clock forwarding** — while following an external MIDI clock, propeller relays it (Start, Stop, Continue, and Timing Clock) back out to its own output port so downstream devices chained off that port also stay in sync; on by default in sync mode, disable with `--no-clock-forward`.
 
 ## Changelog
 

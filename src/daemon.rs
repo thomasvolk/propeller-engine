@@ -10,15 +10,19 @@ use tracing::info;
 
 use crate::domain::ProjectStore;
 use crate::ipc::{EngineMode, EngineSettings, run_ipc_server};
-use crate::loop_engine::{LoopEngine, midi::MidiOutput};
+use crate::loop_engine::{
+    LoopEngine,
+    midi::{MidiOutput, SharedMidiOutput},
+};
 use crate::midi_clock::MidiClockReceiver;
 
 pub async fn run(
     sock_path: PathBuf,
-    midi_output: Box<dyn MidiOutput>,
+    midi_output: Arc<Mutex<Box<dyn MidiOutput>>>,
     midi_port_name: Option<String>,
     initial_mode: EngineMode,
     sync_port_name: Option<String>,
+    clock_forward_enabled: bool,
 ) {
     let listener = match UnixListener::bind(&sock_path) {
         Ok(l) => l,
@@ -31,7 +35,10 @@ pub async fn run(
     info!("daemon started, listening on {sock_path:?}");
 
     let store = Arc::new(RwLock::new(ProjectStore::new()));
-    let engine = Arc::new(LoopEngine::new(Arc::clone(&store), midi_output));
+    let engine = Arc::new(LoopEngine::new(
+        Arc::clone(&store),
+        Box::new(SharedMidiOutput(Arc::clone(&midi_output))),
+    ));
     let engine_for_shutdown = Arc::clone(&engine);
     let settings = Arc::new(Mutex::new(EngineSettings::new()));
     {
@@ -42,7 +49,12 @@ pub async fn run(
 
     // If --sync was passed, start the MIDI clock receiver and store its state in settings.
     let _clock_receiver: Option<MidiClockReceiver> = if let Some(ref port_name) = sync_port_name {
-        match MidiClockReceiver::new(port_name, Arc::clone(&engine)) {
+        match MidiClockReceiver::new(
+            port_name,
+            Arc::clone(&engine),
+            Arc::clone(&midi_output),
+            clock_forward_enabled,
+        ) {
             Ok(receiver) => {
                 let mut settings_guard = settings.lock().unwrap();
                 settings_guard.sync_clock_state = Some(receiver.state_arc());

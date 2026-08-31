@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Thomas Volk
 
-#[cfg(test)]
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug)]
@@ -30,6 +29,45 @@ pub trait MidiOutput: Send + 'static {
     fn clock_start(&mut self) -> Result<(), MidiSendError>;
     fn clock_continue(&mut self) -> Result<(), MidiSendError>;
     fn clock_stop(&mut self) -> Result<(), MidiSendError>;
+}
+
+// Lets a single MidiOutput connection be driven from more than one thread — the player
+// loop and the sync clock-forwarding path both need to write to the same underlying
+// output port.
+pub struct SharedMidiOutput(pub Arc<Mutex<Box<dyn MidiOutput>>>);
+
+impl MidiOutput for SharedMidiOutput {
+    fn note_on(&mut self, channel: u8, pitch: u8, velocity: u8) -> Result<(), MidiSendError> {
+        self.0.lock().unwrap().note_on(channel, pitch, velocity)
+    }
+
+    fn note_off(&mut self, channel: u8, pitch: u8) -> Result<(), MidiSendError> {
+        self.0.lock().unwrap().note_off(channel, pitch)
+    }
+
+    fn program_change(&mut self, channel: u8, program: u8) -> Result<(), MidiSendError> {
+        self.0.lock().unwrap().program_change(channel, program)
+    }
+
+    fn pitch_bend(&mut self, channel: u8, value: u16) -> Result<(), MidiSendError> {
+        self.0.lock().unwrap().pitch_bend(channel, value)
+    }
+
+    fn clock_tick(&mut self) -> Result<(), MidiSendError> {
+        self.0.lock().unwrap().clock_tick()
+    }
+
+    fn clock_start(&mut self) -> Result<(), MidiSendError> {
+        self.0.lock().unwrap().clock_start()
+    }
+
+    fn clock_continue(&mut self) -> Result<(), MidiSendError> {
+        self.0.lock().unwrap().clock_continue()
+    }
+
+    fn clock_stop(&mut self) -> Result<(), MidiSendError> {
+        self.0.lock().unwrap().clock_stop()
+    }
 }
 
 #[cfg(test)]

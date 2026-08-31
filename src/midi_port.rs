@@ -171,9 +171,13 @@ pub fn open_port(name: &str) -> Result<MidiPortOutput, MidiPortError> {
 }
 
 pub fn open_virtual() -> Result<MidiPortOutput, MidiPortError> {
+    open_virtual_named("propeller")
+}
+
+pub fn open_virtual_named(name: &str) -> Result<MidiPortOutput, MidiPortError> {
     let output = midir::MidiOutput::new("propeller").map_err(MidiPortError::InitFailed)?;
     let conn = output
-        .create_virtual("propeller")
+        .create_virtual(name)
         .map_err(MidiPortError::ConnectionFailed)?;
     Ok(MidiPortOutput(conn))
 }
