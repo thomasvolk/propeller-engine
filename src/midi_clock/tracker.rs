@@ -22,7 +22,15 @@ impl PulseTracker {
         }
     }
 
-    pub fn bpm(&self) -> Option<u32> {
+    // Continuous, unrounded tempo estimate averaged over the last up to 24 pulse
+    // intervals. Deliberately returns f64 rather than a truncated/rounded integer BPM:
+    // this value drives the loop scheduler's tick rate directly (see player.rs), and
+    // rounding it to a whole BPM before scheduling was found to leave a small but
+    // systematic bias (propeller's own clock running persistently a hair slower than
+    // the real external tempo), which compounds into audible drift over a long sync
+    // session. The 24-pulse moving average already smooths out ordinary MIDI clock
+    // jitter, so no additional debouncing is needed here.
+    pub fn bpm(&self) -> Option<f64> {
         if self.history.len() < 2 {
             return None;
         }
@@ -34,14 +42,13 @@ impl PulseTracker {
             .map(|(a, b)| b.duration_since(*a).as_micros())
             .sum();
         let count = (n - 1) as u128;
-        let avg_micros = total_micros / count;
-        if avg_micros == 0 {
+        let avg_micros = total_micros as f64 / count as f64;
+        if avg_micros <= 0.0 {
             return None;
         }
         // MIDI clock: 24 pulses per quarter note
         // BPM = 60_000_000 / (avg_interval_micros * 24)
-        let bpm = 60_000_000_u128 / (avg_micros * 24);
-        Some(bpm as u32)
+        Some(60_000_000.0 / (avg_micros * 24.0))
     }
 
     pub fn timeout_duration(&self) -> Option<Duration> {
@@ -86,9 +93,28 @@ mod tests {
             tracker.update(base + interval * i);
         }
         let bpm = tracker.bpm().expect("should have BPM after 25 pulses");
-        assert!(
-            (bpm as i32 - 120).abs() <= 1,
-            "expected ~120 BPM, got {bpm}"
+        assert!((bpm - 120.0).abs() <= 1.0, "expected ~120 BPM, got {bpm}");
+    }
+
+    #[test]
+    fn bpm_reflects_precise_non_integer_tempo() {
+        // A real-world external clock is essentially never exactly a whole BPM; the
+        // tracked value must preserve that instead of snapping to the nearest integer.
+        let mut tracker = PulseTracker::new();
+        let base = Instant::now();
+        // 119.5 BPM, 24 PPQN → interval = 60_000_000 / (119.5 * 24) μs
+        let interval_micros: f64 = 60_000_000.0 / (119.5 * 24.0);
+        let mut t = base;
+        for _ in 0..25 {
+            tracker.update(t);
+            t += Duration::from_micros(interval_micros.round() as u64);
+        }
+        let bpm = tracker.bpm().expect("should have BPM after 25 pulses");
+        assert!((bpm - 119.5).abs() <= 0.1, "expected ~119.5 BPM, got {bpm}");
+        assert_ne!(
+            bpm.round(),
+            bpm,
+            "test setup should produce a genuinely non-integer reading"
         );
     }
 
@@ -116,13 +142,8 @@ mod tests {
             .expect("should have timeout after 2 pulses");
         // 3.5 × 20_833 μs = 72_916 μs ≈ 72.9 ms
         let expected = Duration::from_micros(72_916);
-        let diff = if timeout > expected {
-            timeout - expected
-        } else {
-            expected - timeout
-        };
         assert!(
-            diff < Duration::from_millis(2),
+            timeout.abs_diff(expected) < Duration::from_millis(2),
             "expected ~72.9 ms, got {timeout:?}"
         );
     }

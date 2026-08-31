@@ -86,7 +86,7 @@ fn sleep_until_with_poll(
     deadline: Instant,
     receiver: &mpsc::Receiver<LoopCommand>,
     scheduler: &Scheduler,
-    pending_sync_bpm: &mut Option<u32>,
+    pending_sync_bpm: &mut Option<f64>,
 ) -> SleepResult {
     loop {
         let now = Instant::now();
@@ -132,7 +132,7 @@ struct PlayerLoop {
     carry_over: Vec<(u64, LoopEvent)>,
     next_carry_over: Vec<(u64, LoopEvent)>,
     loop_elapsed_ticks: u64,
-    pending_sync_bpm: Option<u32>,
+    pending_sync_bpm: Option<f64>,
     current_tick: Arc<AtomicU64>,
     loop_duration_ticks: Arc<AtomicU64>,
     loop_count: Arc<AtomicU64>,
@@ -562,10 +562,25 @@ impl PlayerLoop {
         self.loop_duration_ticks.store(loop_dur, Ordering::Relaxed);
 
         if let Some(sync_bpm) = self.pending_sync_bpm.take() {
-            if sync_bpm != self.scheduler.bpm() {
-                self.scheduler.update_bpm(sync_bpm);
-                self.anchor = Instant::now();
-            }
+            // Only the tempo changes here, not the phase: `anchor` was just recomputed
+            // above via `deadline_for_tick`, which stays exact relative to the external
+            // clock. Rebasing it to `Instant::now()` on every BPM update (as the
+            // standalone/clock-mode branch below intentionally does) would push the
+            // loop's schedule later by whatever processing time elapsed since that
+            // anchor was computed, and in sync mode this fires on essentially every
+            // loop pass, accumulating into audible drift over a long session.
+            //
+            // update_bpm_precise (unlike update_bpm) takes the tracked tempo as-is,
+            // without first rounding to a whole BPM: rounding here left a small but
+            // systematic rate bias that, combined with never touching the anchor,
+            // otherwise still drifts at the same rate as before this fix. Applying it
+            // unconditionally on every loop pass (rather than gating on it having
+            // "changed") is deliberate too — the tracked tempo is a continuous
+            // measurement that only ever holds a stale, previously rounded value
+            // between updates; comparing it for equality against the scheduler's
+            // current rate would just reintroduce coarse, rare, larger corrections
+            // that are perceptible as tempo wobble instead of being unnoticeable.
+            self.scheduler.update_bpm_precise(sync_bpm);
         } else {
             let store_r = self.store.read().unwrap();
             if let Some(project) = store_r.active() {

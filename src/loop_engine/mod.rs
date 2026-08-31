@@ -31,7 +31,7 @@ pub(crate) enum LoopCommand {
     SyncStart,
     SyncContinue,
     SyncStop,
-    SyncBpmUpdate(u32),
+    SyncBpmUpdate(f64),
 }
 
 pub struct LoopEngine {
@@ -142,7 +142,7 @@ impl LoopEngine {
         let _ = self.sender.send(LoopCommand::SyncStop);
     }
 
-    pub fn sync_bpm_update(&self, bpm: u32) {
+    pub fn sync_bpm_update(&self, bpm: f64) {
         let _ = self.sender.send(LoopCommand::SyncBpmUpdate(bpm));
     }
 }
@@ -2119,7 +2119,7 @@ mod tests {
         wait_for_state(&engine, EngineState::Running, 500);
         std::thread::sleep(Duration::from_millis(100));
 
-        engine.sync_bpm_update(150);
+        engine.sync_bpm_update(150.0);
 
         std::thread::sleep(Duration::from_millis(200));
         assert_eq!(

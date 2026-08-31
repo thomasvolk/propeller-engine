@@ -147,7 +147,6 @@ fn run_receiver(
     forwarding_enabled: bool,
 ) {
     let mut pulse_tracker = PulseTracker::new();
-    let mut last_bpm: Option<u32> = None;
 
     loop {
         let timeout = pulse_tracker
@@ -165,15 +164,11 @@ fn run_receiver(
                 }
 
                 if let Some(bpm) = pulse_tracker.bpm() {
-                    if last_bpm != Some(bpm) {
-                        last_bpm = Some(bpm);
-                        engine.sync_bpm_update(bpm);
-                    }
+                    engine.sync_bpm_update(bpm);
                 }
             }
             Ok(ClockMessage::Start) => {
                 pulse_tracker.reset();
-                last_bpm = None;
                 *state.lock().unwrap() = SyncClockState::Tracking;
                 engine.sync_start();
             }
@@ -210,7 +205,9 @@ fn run_receiver(
 mod tests {
     use super::*;
     use crate::domain::{Header, Note, Project, ProjectStore, Track};
-    use crate::loop_engine::midi::{CapturingMidiOutput, MidiEvent, MockMidiOutput};
+    use crate::loop_engine::midi::{
+        CapturingMidiOutput, MidiEvent, MockMidiOutput, SharedMidiOutput,
+    };
     use crate::loop_engine::{EngineState, LoopEngine};
     use std::sync::{Arc, RwLock};
     use std::time::Duration;
@@ -710,6 +707,449 @@ mod tests {
             assert!(
                 latency < Duration::from_millis(1),
                 "{label} forwarding latency was {latency:?}, expected <1ms"
+            );
+        }
+    }
+
+    // Empirical regression check for the sync-mode drift/wobble bug: runs a real daemon
+    // stack (LoopEngine + MidiClockReceiver) against a synthetic external clock device
+    // over real CoreMIDI virtual ports for an extended, real-time session, and measures
+    // whether propeller's actual NoteOn timing on its output port stays phase-locked to
+    // the clock device's own precise send schedule — the thing a human would perceive as
+    // "does the downbeat keep landing on time." Parametrized over clock-forwarding, since
+    // that's a config axis the reported regression had not been isolated against.
+    // Ignored by default (needs a real MIDI subsystem and ~2.5 minutes per variant); run
+    // with `cargo test -- --ignored sync_mode_note_timing`.
+    fn run_sync_note_timing_session(forwarding_enabled: bool, port_prefix: &str) {
+        use crate::midi_port;
+        use midir::os::unix::VirtualOutput;
+
+        // Deliberately non-integer BPM: a real external clock's true tempo essentially
+        // never lands on a whole number, which is exactly the case that exposed the
+        // truncation bias this fix addresses.
+        const BPM: f64 = 119.7;
+        const PULSES_PER_QUARTER: f64 = 24.0;
+        const SESSION_SECS: f64 = 150.0;
+
+        let pulse_interval_secs = 60.0 / (BPM * PULSES_PER_QUARTER);
+        let beat_interval_secs = pulse_interval_secs * PULSES_PER_QUARTER;
+
+        let clockdev_port_name = format!("{port_prefix}-clockdev");
+        let output_port_name = format!("{port_prefix}-out");
+
+        // Synthetic clock-giving device: a virtual MIDI source we drive by hand with a
+        // precise, anchor-based send schedule (never cumulative sleeps), so any drift
+        // observed downstream is attributable to propeller, not to this test's own timer.
+        let seq_client = midir::MidiOutput::new(&format!("{port_prefix}-seq")).unwrap();
+        let mut seq_conn = seq_client.create_virtual(&clockdev_port_name).unwrap();
+
+        // Propeller's real output port, and a listener on it capturing every NoteOn with
+        // its arrival Instant.
+        let output_port = midi_port::open_virtual_named(&output_port_name).unwrap();
+        let output: Arc<Mutex<Box<dyn MidiOutput>>> = Arc::new(Mutex::new(Box::new(output_port)));
+
+        let captured: Arc<Mutex<Vec<Instant>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured_clone = Arc::clone(&captured);
+        let listen_client = midir::MidiInput::new(&format!("{port_prefix}-listener")).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        let listen_ports = listen_client.ports();
+        let listen_port = listen_ports
+            .iter()
+            .find(|p| listen_client.port_name(p).unwrap_or_default() == output_port_name)
+            .expect("propeller output virtual port not found");
+        let _listen_conn = listen_client
+            .connect(
+                listen_port,
+                &format!("{port_prefix}-listen-in"),
+                move |_stamp, data, _| {
+                    // NoteOn, channel 1, velocity > 0.
+                    if data.len() == 3 && data[0] == 0x90 && data[2] > 0 {
+                        captured_clone.lock().unwrap().push(Instant::now());
+                    }
+                },
+                (),
+            )
+            .unwrap();
+
+        // One note per loop, loop_duration = one quarter note: this maximises how often
+        // the sync-tempo-update code path (applied once per loop pass) runs relative to
+        // session length, i.e. the worst case for the bug under test.
+        let store = Arc::new(RwLock::new(ProjectStore::new()));
+        {
+            let project = Project {
+                header: Header {
+                    bpm: BPM.round() as u32,
+                    loop_duration: 480,
+                },
+                tracks: vec![Track {
+                    name: "t".to_string(),
+                    channel: 1,
+                    instrument: 0,
+                    notes: vec![Note {
+                        start_tick: 0,
+                        duration: 240,
+                        pitch: 60,
+                        velocity: 80,
+                    }],
+                    pitch_bends: vec![],
+                }],
+            };
+            store.write().unwrap().set_pending(project).unwrap();
+            store.write().unwrap().commit_pending();
+        }
+        let engine = Arc::new(LoopEngine::new(
+            store,
+            Box::new(SharedMidiOutput(Arc::clone(&output))),
+        ));
+
+        std::thread::sleep(Duration::from_millis(50));
+        let receiver = MidiClockReceiver::new(
+            &clockdev_port_name,
+            Arc::clone(&engine),
+            Arc::clone(&output),
+            forwarding_enabled,
+        )
+        .expect("failed to start clock receiver on virtual sync port");
+        std::thread::sleep(Duration::from_millis(50));
+
+        // Drive the synthetic clock: Start, then steady 24-ppqn pulses on a precise
+        // anchor-based schedule for SESSION_SECS.
+        let session_start = Instant::now();
+        seq_conn.send(&[0xFA]).unwrap();
+        let mut pulse_index: u64 = 0;
+        loop {
+            let elapsed = session_start.elapsed().as_secs_f64();
+            if elapsed >= SESSION_SECS {
+                break;
+            }
+            let target =
+                session_start + Duration::from_secs_f64(pulse_index as f64 * pulse_interval_secs);
+            let now = Instant::now();
+            if target > now {
+                std::thread::sleep(target - now);
+            }
+            seq_conn.send(&[0xF8]).unwrap();
+            pulse_index += 1;
+        }
+        // Let the last loop pass fully complete and its NoteOn be captured.
+        std::thread::sleep(Duration::from_millis(500));
+        engine.sync_stop();
+
+        let notes = captured.lock().unwrap().clone();
+        assert!(
+            notes.len() > 20,
+            "expected a substantial number of captured NoteOns, got {}",
+            notes.len()
+        );
+
+        // Distinguish a genuine full-length session from a premature dropout (the sync
+        // clock getting spuriously declared Lost mid-session, pausing playback for good
+        // since nothing here ever resends Start/Continue) — this is a separate concern
+        // from drift/wobble, and a truncated session must not be allowed to silently pass
+        // the drift/wobble checks below on incomplete data.
+        let last_elapsed = notes
+            .last()
+            .unwrap()
+            .duration_since(session_start)
+            .as_secs_f64();
+        eprintln!(
+            "(forwarding_enabled={forwarding_enabled}) last captured note at {last_elapsed:.1}s into a {SESSION_SECS:.1}s session; engine state at end: {:?}; sync_clock_state at end: {:?}",
+            engine.state(),
+            receiver.sync_clock_state(),
+        );
+        assert!(
+            last_elapsed > SESSION_SECS * 0.9,
+            "(forwarding_enabled={forwarding_enabled}) playback stopped early: last captured note at {last_elapsed:.1}s of a {SESSION_SECS:.1}s session (engine {:?}, sync {:?}) — looks like a premature clock-loss dropout, not the deliberate end-of-test stop",
+            engine.state(),
+            receiver.sync_clock_state(),
+        );
+
+        // Offset of each captured note from where it "should" land, per the clock
+        // device's own precise, drift-free send schedule. A constant offset (fixed
+        // startup/IO latency) is expected and fine; a *growing* offset over the session
+        // is the drift bug, and a large jump between one note and the next is the wobble
+        // bug.
+        let offsets: Vec<f64> = notes
+            .iter()
+            .enumerate()
+            .map(|(k, t)| {
+                let expected =
+                    session_start + Duration::from_secs_f64(k as f64 * beat_interval_secs);
+                t.duration_since(expected).as_secs_f64()
+            })
+            .collect();
+
+        // The first several notes carry a one-off settling transient (thread/CPU
+        // scheduling warm-up, the pulse tracker's moving average filling its window)
+        // that is unrelated to steady-state drift and would otherwise swamp it in a
+        // short synthetic session; exclude them from the drift comparison rather than
+        // let that transient masquerade as (or mask) real drift.
+        let warmup = (offsets.len() / 10).max(15).min(offsets.len() / 3);
+        let steady = &offsets[warmup..];
+        assert!(
+            steady.len() >= 20,
+            "not enough post-warmup samples ({}) to assess steady-state drift",
+            steady.len()
+        );
+
+        let median = |xs: &mut [f64]| {
+            xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            xs[xs.len() / 2]
+        };
+        let window = (steady.len() / 5).max(10);
+        let mut first_window = steady[..window].to_vec();
+        let mut last_window = steady[steady.len() - window..].to_vec();
+        let first_median = median(&mut first_window);
+        let last_median = median(&mut last_window);
+        let drift_growth_ms = (last_median - first_median) * 1000.0;
+
+        let mut max_step_ms: f64 = 0.0;
+        for pair in steady.windows(2) {
+            let step_ms = (pair[1] - pair[0]).abs() * 1000.0;
+            if step_ms > max_step_ms {
+                max_step_ms = step_ms;
+            }
+        }
+
+        eprintln!(
+            "forwarding_enabled={forwarding_enabled}: captured {} notes over {:.1}s ({} excluded as warmup); post-warmup first-window offset {:.2}ms, last-window offset {:.2}ms, drift growth {:.2}ms, max step-to-step change {:.2}ms",
+            notes.len(),
+            SESSION_SECS,
+            warmup,
+            first_median * 1000.0,
+            last_median * 1000.0,
+            drift_growth_ms,
+            max_step_ms,
+        );
+
+        // Thresholds are calibrated against the original bug's magnitude (drift growing
+        // to a 1/16-1/8 note, i.e. ~100-250ms, over a session) versus the run-to-run
+        // measurement noise actually observed from this synthetic harness (single digits
+        // up to ~20ms) — wide enough to absorb that noise, narrow enough to still clearly
+        // fail if the original bug reappeared.
+        assert!(
+            drift_growth_ms.abs() < 50.0,
+            "(forwarding_enabled={forwarding_enabled}) note timing drifted {drift_growth_ms:.2}ms over the post-warmup session (first-window offset {:.2}ms -> last-window offset {:.2}ms); expected it to stay locked to the external clock",
+            first_median * 1000.0,
+            last_median * 1000.0,
+        );
+        assert!(
+            max_step_ms < 30.0,
+            "(forwarding_enabled={forwarding_enabled}) note timing jumped {max_step_ms:.2}ms between two consecutive notes; expected smooth, inaudible rate tracking with no discrete steps"
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn sync_mode_note_timing_stays_locked_with_clock_forwarding_enabled() {
+        run_sync_note_timing_session(true, "propeller-drift-test-fwd-on");
+    }
+
+    #[test]
+    #[ignore]
+    fn sync_mode_note_timing_stays_locked_with_clock_forwarding_disabled() {
+        run_sync_note_timing_session(false, "propeller-drift-test-fwd-off");
+    }
+
+    // One-off manual diagnostic against a real external clock device (not a portable
+    // regression test — depends on specific hardware being connected and running).
+    // Point PROPELLER_TEST_REAL_SYNC_PORT at the device's MIDI output port name and run
+    // with `cargo test -- --ignored --nocapture sync_mode_note_timing_against_real_device`.
+    // Unlike the synthetic tests above, this doesn't drive the clock itself — it listens
+    // passively on the same input port propeller uses, records every raw realtime byte
+    // (Start/Stop/Pulse) with its arrival time as ground truth, and derives each beat's
+    // "true" timestamp directly from those observed pulses (not a nominal/assumed
+    // schedule), since a real device's actual timing and jitter aren't known in advance.
+    // Requires the device to be actively sending clock, and to send (or be made to send,
+    // e.g. by stopping and restarting its transport) a MIDI Start during the run.
+    #[test]
+    #[ignore]
+    fn sync_mode_note_timing_against_real_device() {
+        let port_name = std::env::var("PROPELLER_TEST_REAL_SYNC_PORT")
+            .expect("set PROPELLER_TEST_REAL_SYNC_PORT to the clock device's MIDI port name");
+        const SESSION_SECS: f64 = 150.0;
+        const PULSES_PER_BEAT: u32 = 24;
+
+        // Raw ground-truth listener: every realtime status byte with its arrival Instant.
+        let raw: Arc<Mutex<Vec<(Instant, u8)>>> = Arc::new(Mutex::new(Vec::new()));
+        let raw_clone = Arc::clone(&raw);
+        let raw_client = midir::MidiInput::new("propeller-real-test-raw").unwrap();
+        let raw_ports = raw_client.ports();
+        let raw_port = raw_ports
+            .iter()
+            .find(|p| raw_client.port_name(p).as_deref() == Ok(port_name.as_str()))
+            .unwrap_or_else(|| panic!("MIDI input port {port_name:?} not found"));
+        let _raw_conn = raw_client
+            .connect(
+                raw_port,
+                "propeller-real-test-raw-in",
+                move |_stamp, data, _| {
+                    if let [byte] = data {
+                        if matches!(byte, 0xF8 | 0xFA | 0xFB | 0xFC) {
+                            raw_clone.lock().unwrap().push((Instant::now(), *byte));
+                        }
+                    }
+                },
+                (),
+            )
+            .unwrap();
+
+        // Propeller's real output port, and a listener on it capturing every NoteOn.
+        let output_port = crate::midi_port::open_virtual_named("propeller-real-test-out").unwrap();
+        let output: Arc<Mutex<Box<dyn MidiOutput>>> = Arc::new(Mutex::new(Box::new(output_port)));
+        let captured: Arc<Mutex<Vec<Instant>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured_clone = Arc::clone(&captured);
+        let listen_client = midir::MidiInput::new("propeller-real-test-listener").unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        let listen_ports = listen_client.ports();
+        let listen_port = listen_ports
+            .iter()
+            .find(|p| listen_client.port_name(p).unwrap_or_default() == "propeller-real-test-out")
+            .expect("propeller output virtual port not found");
+        let _listen_conn = listen_client
+            .connect(
+                listen_port,
+                "propeller-real-test-listen-in",
+                move |_stamp, data, _| {
+                    if data.len() == 3 && data[0] == 0x90 && data[2] > 0 {
+                        captured_clone.lock().unwrap().push(Instant::now());
+                    }
+                },
+                (),
+            )
+            .unwrap();
+
+        // One note per loop, loop_duration = one quarter note, as with the synthetic
+        // tests: maximises how often the sync-tempo-update path runs relative to session
+        // length.
+        let store = Arc::new(RwLock::new(ProjectStore::new()));
+        {
+            let project = Project {
+                header: Header {
+                    bpm: 120,
+                    loop_duration: 480,
+                },
+                tracks: vec![Track {
+                    name: "t".to_string(),
+                    channel: 1,
+                    instrument: 0,
+                    notes: vec![Note {
+                        start_tick: 0,
+                        duration: 240,
+                        pitch: 60,
+                        velocity: 80,
+                    }],
+                    pitch_bends: vec![],
+                }],
+            };
+            store.write().unwrap().set_pending(project).unwrap();
+            store.write().unwrap().commit_pending();
+        }
+        let engine = Arc::new(LoopEngine::new(
+            store,
+            Box::new(SharedMidiOutput(Arc::clone(&output))),
+        ));
+
+        std::thread::sleep(Duration::from_millis(50));
+        let receiver =
+            MidiClockReceiver::new(&port_name, Arc::clone(&engine), Arc::clone(&output), true)
+                .expect("failed to start clock receiver on the real sync port");
+
+        eprintln!(
+            "listening on {port_name:?} for {SESSION_SECS:.0}s — stop and restart the device's transport now so it sends a fresh MIDI Start"
+        );
+        let session_start = Instant::now();
+        while session_start.elapsed().as_secs_f64() < SESSION_SECS {
+            std::thread::sleep(Duration::from_secs(5));
+            eprintln!(
+                "  {:.0}s elapsed; engine {:?}; sync {:?}; {} notes, {} raw clock bytes captured so far",
+                session_start.elapsed().as_secs_f64(),
+                engine.state(),
+                receiver.sync_clock_state(),
+                captured.lock().unwrap().len(),
+                raw.lock().unwrap().len(),
+            );
+        }
+        engine.sync_stop();
+
+        // Derive beat-boundary ground truth from the raw log: index pulses since the most
+        // recent Start, and take the timestamp of every 24th pulse as that beat's true time.
+        let raw_log = raw.lock().unwrap().clone();
+        let mut beat_times: Vec<Instant> = Vec::new();
+        let mut pulses_since_start: Option<u32> = None;
+        for (t, byte) in &raw_log {
+            match *byte {
+                0xFA | 0xFB => pulses_since_start = Some(0),
+                0xF8 => {
+                    if let Some(n) = pulses_since_start.as_mut() {
+                        if *n % PULSES_PER_BEAT == 0 {
+                            beat_times.push(*t);
+                        }
+                        *n += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let notes = captured.lock().unwrap().clone();
+        eprintln!(
+            "captured {} NoteOns and derived {} beat boundaries from {} raw clock bytes over {SESSION_SECS:.0}s",
+            notes.len(),
+            beat_times.len(),
+            raw_log.len(),
+        );
+        assert!(
+            !beat_times.is_empty(),
+            "no beat boundaries derived — did the device send a MIDI Start during the run?"
+        );
+        assert!(
+            !notes.is_empty(),
+            "no NoteOns captured — engine state {:?}, sync state {:?}",
+            engine.state(),
+            receiver.sync_clock_state(),
+        );
+
+        let n = notes.len().min(beat_times.len());
+        let offsets: Vec<f64> = (0..n)
+            .map(|k| notes[k].duration_since(beat_times[k]).as_secs_f64())
+            .collect();
+
+        for (k, offset) in offsets.iter().enumerate() {
+            eprintln!("  note {k}: offset {:.2}ms", offset * 1000.0);
+        }
+
+        let warmup = (offsets.len() / 10)
+            .max(5)
+            .min(offsets.len().saturating_sub(10));
+        let steady = &offsets[warmup..];
+        if steady.len() >= 10 {
+            let median = |xs: &mut [f64]| {
+                xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                xs[xs.len() / 2]
+            };
+            let window = (steady.len() / 5).max(5);
+            let mut first_window = steady[..window].to_vec();
+            let mut last_window = steady[steady.len() - window..].to_vec();
+            let first_median = median(&mut first_window);
+            let last_median = median(&mut last_window);
+            let mut max_step_ms: f64 = 0.0;
+            for pair in steady.windows(2) {
+                max_step_ms = max_step_ms.max((pair[1] - pair[0]).abs() * 1000.0);
+            }
+            eprintln!(
+                "post-warmup ({} excluded): first-window offset {:.2}ms, last-window offset {:.2}ms, drift growth {:.2}ms, max step-to-step change {:.2}ms",
+                warmup,
+                first_median * 1000.0,
+                last_median * 1000.0,
+                (last_median - first_median) * 1000.0,
+                max_step_ms,
+            );
+        } else {
+            eprintln!(
+                "only {} post-warmup samples ({} total notes matched to beats) — not enough for a first/last comparison; see the per-note offsets above",
+                steady.len(),
+                offsets.len(),
             );
         }
     }
