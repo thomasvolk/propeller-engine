@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.9.1] - 2026-08-31
+
+### Changes
+
+- Fixed sync-mode timing drift: over a long session, propeller's loop would progressively
+  fall later relative to the external clock's own beat, eventually reaching a 1/16-1/8 note
+  of lateness. The tracked external tempo was floored to a whole-number BPM before driving
+  playback, leaving a small but systematic rate bias that compounded over time; propeller now
+  drives the loop scheduler from the continuous, unrounded tempo estimate instead.
+- Fixed an accompanying audible tempo wobble: the loop's timing anchor was rebased to the
+  current time on every tracked tempo update, which on its own caused a forward-only phase
+  jump each time. The anchor is no longer touched on a tempo update in sync mode — only the
+  playback rate changes, keeping phase continuous.
+- Reworked the loop scheduler to use floating-point tempo and tick-rate math internally, so
+  scheduling stays exact relative to the tracked tempo across arbitrarily many ticks and
+  loops instead of compounding rounding error.
+- Added automated regression coverage for sync-mode timing: long-session tests (both with and
+  without `--no-clock-forward`) drive a synthetic external clock over real virtual MIDI ports
+  and assert the loop's note timing stays phase-locked with no drift growth and no discrete
+  rate jumps.
+
+---
+
 ## [0.9.0] - 2026-08-31
 
 ### Changes
