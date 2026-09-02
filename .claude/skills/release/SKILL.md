@@ -1,28 +1,31 @@
 ---
 name: release
-description: "Bumps the project version in Cargo.toml and updates CHANGELOG.md in the project root with a synthesized summary of commits from the current branch relative to main. Requires a semver version string as the argument."
+description: "Bumps the project version in Cargo.toml and updates CHANGELOG.md in the project root with a synthesized summary of commits from the current branch relative to main. Takes an explicit semver version as the argument, or auto-increments the patch segment (e.g. 0.2.1 -> 0.2.2) when no argument is given."
 ---
 
 # release
 
 You bump the project version and record the changes introduced by the current branch.
 
-`$ARGUMENTS` is the new version string (e.g. `0.2.0`). It is mandatory. If it is empty or
-missing, stop immediately and tell the user: "Usage: /release <version>  — e.g. /release 0.2.0"
+`$ARGUMENTS` is the new version string (e.g. `0.2.0`). It is optional — if it is empty or
+missing, auto-increment instead (see step 1).
 
 ## Steps
 
-### 1. Validate the argument
+### 1. Determine the new version
 
-- `$ARGUMENTS` must be a non-empty string matching the pattern `MAJOR.MINOR.PATCH` (each
-  segment one or more digits). Allow an optional leading `v` (strip it before writing).
-- If the pattern does not match, stop and report: "Version must follow semver: MAJOR.MINOR.PATCH"
+Run `cat Cargo.toml` to read the current `version = "..."` under `[package]`.
 
-### 2. Read current state
+- If `$ARGUMENTS` is non-empty: it must match the pattern `MAJOR.MINOR.PATCH` (each segment
+  one or more digits). Allow an optional leading `v` (strip it before writing). If the
+  pattern does not match, stop and report: "Version must follow semver: MAJOR.MINOR.PATCH"
+- If `$ARGUMENTS` is empty or missing: auto-increment the current version's patch segment
+  (the third number) by 1 — e.g. `0.2.1` → `0.2.2`. Do not touch the major or minor segments.
+
+### 2. Read remaining current state
 
 Run these in parallel:
 
-- `cat Cargo.toml` — to read the current version
 - `git log main..HEAD --oneline` — to list commits on this branch
 - Check whether `CHANGELOG.md` exists at the project root and, if so, read it
 
@@ -93,12 +96,14 @@ project has a `rustfmt.toml` that covers it; the step is harmless either way).
 
 ### 7. Report
 
-Print a concise summary:
+Print a concise summary, noting when the version was auto-incremented:
 
 ```
-Version bumped: <old> → <new>
+Version bumped: <old> → <new> (auto-incremented patch)
 Changelog: CHANGELOG.md updated
 README: CHANGELOG.md linked (or already present)
 ```
+
+Omit the "(auto-incremented patch)" suffix when `$ARGUMENTS` gave the version explicitly.
 
 Do not create a git commit. Leave staging and committing to the user.
