@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.9.3] - 2026-09-02
+
+### Changes
+
+- Fixed a false clock-loss disconnect in sync mode: the clock-loss timeout window was
+  derived from only the single most recent inter-pulse gap, so one anomalously short
+  gap from ordinary USB-MIDI driver batching could shrink the window enough that the
+  very next, perfectly on-time pulse was mistaken for the external clock stopping —
+  observed after several minutes of continuous playback against real hardware (e.g. an
+  Arturia BeatStep Pro at 129 BPM) even though the device never stopped sending clock.
+  The timeout is now derived from an averaged recent interval instead, matching the
+  smoothing already used for the tracked tempo.
+- Added a regression test reproducing the anomalous-short-gap scenario without needing
+  a real multi-minute session.
+
+---
+
 ## [0.9.2] - 2026-09-02
 
 ### Changes
