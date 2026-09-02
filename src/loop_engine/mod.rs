@@ -31,6 +31,7 @@ pub(crate) enum LoopCommand {
     SyncStart,
     SyncContinue,
     SyncStop,
+    SyncStopReset,
     SyncBpmUpdate(f64),
 }
 
@@ -138,8 +139,18 @@ impl LoopEngine {
         let _ = self.sender.send(LoopCommand::SyncContinue);
     }
 
+    // MIDI Stop (0xFC), clock-loss timeout: pause, retain Song Position per the
+    // MIDI 1.0 spec. Use sync_stop_reset() for an explicit MIDI Stop byte, which
+    // resets Song Position to the start point instead.
     pub fn sync_stop(&self) {
         let _ = self.sender.send(LoopCommand::SyncStop);
+    }
+
+    // Explicit MIDI Stop (0xFC) byte: pause and reset Song Position to the start
+    // point (tick 0). Unlike sync_stop(), this does not retain position — a
+    // following Continue (0xFB) resumes from 0, behaving like a fresh Start.
+    pub fn sync_stop_reset(&self) {
+        let _ = self.sender.send(LoopCommand::SyncStopReset);
     }
 
     pub fn sync_bpm_update(&self, bpm: f64) {
@@ -986,6 +997,123 @@ mod tests {
             }),
             "pitch-60 NoteOn (tick 0) must not repeat after Continue — \
              playback restarted from the beginning instead of resuming from tick {frozen}"
+        );
+    }
+
+    #[test]
+    fn sync_stop_reset_zeroes_current_tick_and_stays_paused() {
+        // An explicit MIDI Stop (0xFC) must reset Song Position to the start point,
+        // unlike sync_stop() (used for clock-loss), which retains it. See
+        // current_tick_frozen_after_sync_stop for the contrasting retain-position case.
+        let store = make_store_with_delayed_note();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
+        let engine = LoopEngine::new(store, Box::new(output));
+        engine.sync_start();
+
+        assert!(
+            wait_for_nonzero_tick(&engine, 300),
+            "precondition failed: expected an event to have fired"
+        );
+
+        engine.sync_stop_reset();
+        wait_for_state(&engine, EngineState::Paused, 500);
+
+        assert_eq!(engine.state(), EngineState::Paused);
+        assert_eq!(
+            engine.current_tick(),
+            0,
+            "explicit Stop must reset Song Position to 0, not retain the frozen tick"
+        );
+    }
+
+    #[test]
+    fn sync_stop_reset_then_continue_resumes_from_zero_not_from_paused_position() {
+        // Mirror of sync_stop_then_continue_resumes_from_paused_position_not_from_zero,
+        // but for the explicit-Stop-reset path: Continue after sync_stop_reset() must
+        // restart from tick 0 (replaying the pitch-60 NoteOn), behaving like a fresh
+        // Start rather than resuming wherever Stop found it.
+        let store = Arc::new(RwLock::new(ProjectStore::new()));
+        let project = Project {
+            header: Header {
+                bpm: 300,
+                loop_duration: 1_000_000,
+            },
+            tracks: vec![Track {
+                name: "t".to_string(),
+                channel: 1,
+                instrument: 0,
+                notes: vec![
+                    Note {
+                        start_tick: 0,
+                        duration: 10,
+                        pitch: 60,
+                        velocity: 80,
+                    },
+                    Note {
+                        start_tick: 900,
+                        duration: 10,
+                        pitch: 62,
+                        velocity: 80,
+                    },
+                ],
+                pitch_bends: vec![],
+            }],
+        };
+        store.write().unwrap().set_pending(project).unwrap();
+        store.write().unwrap().commit_pending();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
+        let engine = LoopEngine::new(store, Box::new(output));
+        engine.sync_start();
+        wait_for_state(&engine, EngineState::Running, 500);
+
+        assert!(
+            wait_for_nonzero_tick(&engine, 300),
+            "precondition failed: expected an event to have fired"
+        );
+
+        engine.sync_stop_reset();
+        wait_for_state(&engine, EngineState::Paused, 500);
+
+        assert_eq!(
+            engine.current_tick(),
+            0,
+            "explicit Stop must reset Song Position to 0"
+        );
+
+        let events_before_continue = captured.lock().unwrap().len();
+
+        engine.sync_continue();
+        wait_for_state(&engine, EngineState::Running, 500);
+
+        // Wait for the pitch-60 NoteOn (tick 0) to fire again after Continue.
+        let deadline = Instant::now() + Duration::from_millis(300);
+        let mut saw_first_note_again = false;
+        while Instant::now() < deadline {
+            let events = captured.lock().unwrap();
+            let after_continue = &events[events_before_continue..];
+            if after_continue.contains(&midi::MidiEvent::NoteOn {
+                channel: 1,
+                pitch: 60,
+                velocity: 80,
+            }) {
+                saw_first_note_again = true;
+                break;
+            }
+            drop(events);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        engine.sync_stop();
+
+        assert!(
+            saw_first_note_again,
+            "expected the pitch-60 NoteOn (tick 0) to fire again after Continue, \
+             proving playback resumed from 0 rather than from the paused position"
         );
     }
 
@@ -2110,6 +2238,60 @@ mod tests {
             .iter()
             .any(|e| matches!(e, midi::MidiEvent::ClockStop));
         assert!(!has_clock_stop, "sync_stop must not emit ClockStop (0xFC)");
+    }
+
+    #[test]
+    fn sync_stop_reset_transitions_to_paused_and_flushes_notes() {
+        let store = Arc::new(RwLock::new(ProjectStore::new()));
+        let project = Project {
+            header: Header {
+                bpm: 60,
+                loop_duration: 1920,
+            },
+            tracks: vec![Track {
+                name: "t".to_string(),
+                channel: 1,
+                instrument: 0,
+                notes: vec![Note {
+                    start_tick: 0,
+                    duration: 1920,
+                    pitch: 60,
+                    velocity: 80,
+                }],
+                pitch_bends: vec![],
+            }],
+        };
+        store.write().unwrap().set_pending(project).unwrap();
+        store.write().unwrap().commit_pending();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
+        let engine = LoopEngine::new(store, Box::new(output));
+
+        engine.sync_start();
+        std::thread::sleep(Duration::from_millis(50)); // let NoteOn emit
+        engine.sync_stop_reset();
+        wait_for_state(&engine, EngineState::Paused, 500);
+
+        let events = captured.lock().unwrap().clone();
+        assert_eq!(engine.state(), EngineState::Paused);
+        assert_eq!(
+            engine.current_tick(),
+            0,
+            "sync_stop_reset must reset Song Position to 0"
+        );
+        let has_note_off = events
+            .iter()
+            .any(|e| matches!(e, midi::MidiEvent::NoteOff { .. }));
+        assert!(has_note_off, "expected NoteOff on sync_stop_reset");
+        let has_clock_stop = events
+            .iter()
+            .any(|e| matches!(e, midi::MidiEvent::ClockStop));
+        assert!(
+            !has_clock_stop,
+            "sync_stop_reset must not emit ClockStop (0xFC) — it pauses, not stops"
+        );
     }
 
     #[test]

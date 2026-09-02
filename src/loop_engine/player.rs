@@ -58,6 +58,7 @@ enum SleepResult {
     ClockPause,
     ClockStop,
     SyncStop,
+    SyncStopReset,
     SyncStart,
     SyncContinue,
     Disconnected,
@@ -101,6 +102,7 @@ fn sleep_until_with_poll(
                 Ok(LoopCommand::ClockStop) => return SleepResult::ClockStop,
                 Ok(LoopCommand::ClockPause) => return SleepResult::ClockPause,
                 Ok(LoopCommand::SyncStop) => return SleepResult::SyncStop,
+                Ok(LoopCommand::SyncStopReset) => return SleepResult::SyncStopReset,
                 Ok(LoopCommand::SyncStart) => return SleepResult::SyncStart,
                 Ok(LoopCommand::SyncContinue) => return SleepResult::SyncContinue,
                 Ok(LoopCommand::SyncBpmUpdate(bpm)) => *pending_sync_bpm = Some(bpm),
@@ -244,6 +246,30 @@ impl PlayerLoop {
         self.set_state(EngineState::Paused);
     }
 
+    // Explicit MIDI Stop (0xFC): pause and reset Song Position to the start point
+    // (tick 0), unlike do_pause's spec-compliant retain-position pause. Rebuilds
+    // the event list fresh from 0 and stashes it as the pause context so that a
+    // later Continue resumes from 0 — via the same anchor-recompute path
+    // handle_running already uses for a frozen-position resume — behaving like a
+    // fresh Start.
+    fn do_sync_stop_reset(&mut self) {
+        self.current_tick.store(0, Ordering::Relaxed);
+        self.loop_count.store(0, Ordering::Relaxed);
+        self.loop_elapsed_ticks = 0;
+        self.flush_notes();
+        self.reset_pitch_bend_channels();
+        self.carry_over.clear();
+        self.next_carry_over.clear();
+        self.pause_context = match self.build_loop_events() {
+            BuildResult::Events(events) => Some(PauseContext {
+                remaining_events: events,
+                loop_duration: self.loop_duration,
+            }),
+            BuildResult::NoData | BuildResult::Disconnected => None,
+        };
+        self.set_state(EngineState::Paused);
+    }
+
     fn do_sync_continue(&mut self) {
         // current_tick is intentionally not written here: the counter resumes
         // incrementing from its frozen value on Continue (F-10).
@@ -290,6 +316,10 @@ impl PlayerLoop {
                 self.do_pause(remaining.to_vec());
                 Some(LoopOutcome::Paused)
             }
+            SleepResult::SyncStopReset => {
+                self.do_sync_stop_reset();
+                Some(LoopOutcome::Paused)
+            }
             SleepResult::Disconnected => Some(LoopOutcome::Disconnected),
         }
     }
@@ -321,6 +351,10 @@ impl PlayerLoop {
             // here. Only Start (0xFA) explicitly resets position to 0.
             LoopCommand::ClockPause | LoopCommand::SyncStop => {
                 self.do_pause(remaining.to_vec());
+                Some(LoopOutcome::Paused)
+            }
+            LoopCommand::SyncStopReset => {
+                self.do_sync_stop_reset();
                 Some(LoopOutcome::Paused)
             }
             LoopCommand::SyncBpmUpdate(bpm) => {
@@ -660,6 +694,7 @@ impl PlayerLoop {
                 LoopCommand::Stop
                 | LoopCommand::ClockStop
                 | LoopCommand::SyncStop
+                | LoopCommand::SyncStopReset
                 | LoopCommand::ClockPause
                 | LoopCommand::ClockResume,
             ) => {}
@@ -688,7 +723,7 @@ impl PlayerLoop {
         }
 
         match self.receiver.try_recv() {
-            Ok(LoopCommand::Stop | LoopCommand::SyncStop) => {
+            Ok(LoopCommand::Stop | LoopCommand::SyncStop | LoopCommand::SyncStopReset) => {
                 self.set_state(EngineState::Stopped);
             }
             Ok(_) => {}
@@ -758,9 +793,14 @@ impl PlayerLoop {
             Ok(LoopCommand::SyncBpmUpdate(bpm)) => {
                 self.pending_sync_bpm = Some(bpm);
             }
+            // A further explicit MIDI Stop (0xFC) while already paused re-resets Song
+            // Position to the start point, same as the first one.
+            Ok(LoopCommand::SyncStopReset) => {
+                self.do_sync_stop_reset();
+            }
             // Start/ClockStart/ClockPause: standalone and clock-master commands do not apply
-            // to a paused sync session. SyncStop: a redundant Stop (e.g. duplicate 0xFC, or a
-            // clock-loss timeout while already paused) must not disturb the frozen position.
+            // to a paused sync session. SyncStop: a clock-loss timeout while already paused
+            // must not disturb the frozen position.
             Ok(
                 LoopCommand::Start
                 | LoopCommand::ClockStart
