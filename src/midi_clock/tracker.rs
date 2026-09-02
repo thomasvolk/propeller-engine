@@ -51,14 +51,25 @@ impl PulseTracker {
         Some(60_000_000.0 / (avg_micros * 24.0))
     }
 
+    // Margin is 3.5x the *average* of recent intervals, not the single most recent
+    // one: real USB-MIDI hardware delivers pulses in slightly uneven bursts (driver/OS
+    // batching), so one anomalously short gap must not collapse the timeout window and
+    // falsely declare the clock lost on the very next, perfectly on-time pulse. This
+    // mirrors bpm()'s own averaging, which already tolerates the same jitter.
     pub fn timeout_duration(&self) -> Option<Duration> {
         if self.history.len() < 2 {
             return None;
         }
-        let last = self.history.back().unwrap();
-        let prev = self.history.iter().rev().nth(1).unwrap();
-        let last_interval = last.duration_since(*prev);
-        Some(last_interval.mul_f64(3.5))
+        let n = self.history.len();
+        let total_micros: u128 = self
+            .history
+            .iter()
+            .zip(self.history.iter().skip(1))
+            .map(|(a, b)| b.duration_since(*a).as_micros())
+            .sum();
+        let count = (n - 1) as u128;
+        let avg_micros = (total_micros / count) as u64;
+        Some(Duration::from_micros(avg_micros).mul_f64(3.5))
     }
 
     pub fn reset(&mut self) {
@@ -145,6 +156,39 @@ mod tests {
         assert!(
             timeout.abs_diff(expected) < Duration::from_millis(2),
             "expected ~72.9 ms, got {timeout:?}"
+        );
+    }
+
+    #[test]
+    fn timeout_duration_survives_one_anomalously_short_interval() {
+        // Regression test: real USB-MIDI hardware occasionally delivers two pulses
+        // back-to-back (near-zero gap) due to driver/OS batching, even though the
+        // clock itself is perfectly steady. A single such short interval must not
+        // collapse the timeout window enough to falsely flag the very next,
+        // normally-spaced pulse as a clock loss.
+        let mut tracker = PulseTracker::new();
+        let base = Instant::now();
+        // 129 BPM, 24 PPQN → interval = 60_000_000 / (129 * 24) μs ≈ 19_380 μs
+        let interval = Duration::from_micros(19_380);
+        let mut t = base;
+        for _ in 0..10 {
+            tracker.update(t);
+            t += interval;
+        }
+        // One anomalously short gap (as if two pulses were coalesced by the driver).
+        t += Duration::from_micros(200);
+        tracker.update(t);
+
+        let timeout = tracker
+            .timeout_duration()
+            .expect("should have timeout after several pulses");
+        // The very next pulse arrives at the normal spacing — it must comfortably
+        // fit within the computed timeout window.
+        assert!(
+            timeout >= interval,
+            "timeout window ({timeout:?}) collapsed below a normal inter-pulse \
+             interval ({interval:?}) after a single short gap — a perfectly \
+             on-time next pulse would be falsely declared a clock loss"
         );
     }
 
