@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.9.2] - 2026-09-02
+
+### Changes
+
+- Changed MIDI Stop (0xFC) in sync mode to reset Song Position to the start point (tick 0)
+  and pause there, instead of retaining the position it was at. A following Continue (0xFB)
+  now resumes from 0, behaving like a fresh Start.
+- Kept clock-loss (the external clock disappearing without an explicit Stop byte) on the
+  previous behavior: pause and retain Song Position, so a device that comes back can still
+  resume where it left off.
+- Added regression tests covering the reset-on-explicit-Stop behavior and confirming
+  clock-loss timeouts remain unaffected.
+
+---
+
 ## [0.9.1] - 2026-08-31
 
 ### Changes
