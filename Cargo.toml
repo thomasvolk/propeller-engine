@@ -13,6 +13,10 @@ description = "A live-coding MIDI loop engine that runs as a background daemon"
 name = "propeller"
 path = "src/main.rs"
 
+[[bin]]
+name = "propeller-clock"
+path = "src/bin/propeller_clock/main.rs"
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 midir = { version = "0.10", features = ["coremidi_send_timestamped"] }

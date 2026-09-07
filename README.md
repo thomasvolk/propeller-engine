@@ -6,6 +6,10 @@ Live-coding performances need a process that is always on, accepts commands in r
 drives MIDI loops with precise timing, and never misses a beat when the project is updated
 mid-performance. propeller-engine is that process.
 
+The repository also builds `propeller-clock`, a standalone MIDI clock daemon for exercising
+propeller's sync mode without a DAW or external hardware — see [propeller-clock](#propeller-clock)
+below.
+
 ## Quick example
 
 ```sh
@@ -30,13 +34,13 @@ A ready-to-use starter project lives in `examples/myproject.json`.
 Prerequisites: a [Rust toolchain](https://rustup.rs) (stable, edition 2024).
 
 1. Clone the repository and enter the project directory.
-2. Build the release binary:
+2. Build the release binaries (`propeller` and `propeller-clock`):
 
    ```sh
    cargo build --release
    ```
 
-3. Add the binary to your PATH, or run it directly:
+3. Add the binaries to your PATH, or run them directly:
 
    ```sh
    export PATH="$PWD/target/release:$PATH"
@@ -422,6 +426,73 @@ On error:
 {"status": "error", "code": "bpm_out_of_range", "message": "BPM must be between 20 and 300"}
 ```
 
+## propeller-clock
+
+`propeller-clock` is a standalone MIDI clock daemon bundled with this repository, for driving
+propeller's sync mode in tests without a DAW or external hardware sequencer. It emits a MIDI
+clock signal with full transport semantics — Start, Stop, Continue, and 24-ppqn Timing Clock —
+and is controlled the same way as `propeller`: short-lived CLI commands talking to a background
+daemon over a Unix socket.
+
+Building `cargo build --release` (see Installation above) produces both `propeller` and
+`propeller-clock` in `target/release/`.
+
+### Quick example
+
+```sh
+# Start the daemon — creates its own virtual "propeller-clock" MIDI port
+propeller-clock start
+
+# Check status
+propeller-clock status
+
+# Change tempo live, without interrupting playback
+propeller-clock bpm 140
+
+# Pause and resume, retaining position
+propeller-clock pause
+propeller-clock resume
+
+# Stop the clock and terminate the daemon
+propeller-clock stop
+```
+
+### Commands
+
+- `start` — launches the daemon in the background if it isn't already running, then starts the
+  clock: sends MIDI Start and begins emitting 24-ppqn Timing Clock pulses.
+- `pause` — sends MIDI Stop and halts pulses; the daemon process stays alive and the tick
+  position is retained for `resume`.
+- `resume` — sends MIDI Continue and resumes pulses from the retained position.
+- `stop` — sends MIDI Stop, resets the tick position to zero, and terminates the daemon.
+- `status` — reports the daemon's running state (`stopped`, `running`, or `paused`), current
+  BPM, MIDI port name, and current tick count.
+- `bpm <bpm>` — sets the tempo (whole number, 20–300).
+
+Any command other than `start` fails with a non-zero exit code if no daemon is currently
+running — it never starts one implicitly.
+
+### Selecting a MIDI output port
+
+By default `propeller-clock` opens a virtual MIDI port named `propeller-clock`. To send clock
+pulses to an existing MIDI port instead, set `PROPELLER_CLOCK_PORT`:
+
+```sh
+PROPELLER_CLOCK_PORT="IAC Driver Bus 1" propeller-clock start
+```
+
+If the named port doesn't exist, `start` prints the available port names and exits with a
+non-zero code rather than falling back to a virtual port.
+
+### Configuring the socket path
+
+Set `PROPELLER_CLOCK_SOCK` to override the default socket location
+(`/tmp/propeller-clock.sock`):
+
+```sh
+PROPELLER_CLOCK_SOCK=/run/user/1000/propeller-clock.sock propeller-clock start
+```
+
 ## Features
 
 - **CLI convenience commands** — `propeller project create/modify/get` and `propeller loop start/stop` wrap common socket operations; file or stdin input, no manual JSON construction required.
@@ -441,6 +512,7 @@ On error:
 - **Project state query** — `propeller project get` or the `project` socket command report the active and staged project as complete JSON, without needing to track separately what was last loaded.
 - **Operating modes** — `standalone`, `clock`, and `sync` modes are supported. `standalone` and `clock` are switchable at runtime via `set-mode`; `sync` requires `--sync` at daemon startup.
 - **Sync-mode clock forwarding** — while following an external MIDI clock, propeller relays it (Start, Stop, Continue, and Timing Clock) back out to its own output port so downstream devices chained off that port also stay in sync; on by default in sync mode, disable with `--no-clock-forward`.
+- **propeller-clock** — a bundled standalone MIDI clock daemon (`start`/`pause`/`resume`/`stop`/`status`/`bpm`) for driving propeller's sync mode in tests without a DAW or external hardware. See [propeller-clock](#propeller-clock) above.
 
 ## Changelog
 
