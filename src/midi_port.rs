@@ -148,6 +148,21 @@ pub fn list_ports() -> Vec<MidiPortInfo> {
         .collect()
 }
 
+// Sync mode connects via MidiInput (see midi_clock::MidiClockReceiver::new), so its
+// pre-flight validation must check input port names, not output port names — a virtual
+// source such as propeller-clock's port only shows up in the input list.
+pub fn list_input_port_names() -> Vec<String> {
+    let input = match midir::MidiInput::new("propeller-list-in") {
+        Ok(i) => i,
+        Err(_) => return Vec::new(),
+    };
+    let ports = input.ports();
+    ports
+        .iter()
+        .filter_map(|p| input.port_name(p).ok())
+        .collect()
+}
+
 pub fn open_port(name: &str) -> Result<MidiPortOutput, MidiPortError> {
     let output = midir::MidiOutput::new("propeller").map_err(MidiPortError::InitFailed)?;
     let ports = output.ports();

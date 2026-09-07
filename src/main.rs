@@ -180,8 +180,7 @@ fn cmd_start(clock: bool, sync: bool, no_clock_forward: bool) {
                 std::process::exit(1);
             }
             Ok(ref name) => {
-                let ports = midi_port::list_ports();
-                let names: Vec<String> = ports.iter().map(|p| p.name.clone()).collect();
+                let names = midi_port::list_input_port_names();
                 if midi_port::find_port_by_name(&names, name).is_none() {
                     eprintln!(
                         "propeller: sync MIDI port {:?} not found; available ports: [{}]",
