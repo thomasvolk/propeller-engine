@@ -1,0 +1,28 @@
+[package]
+name = "propeller"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["midi", "music", "live-coding", "sequencer", "daemon"]
+categories = ["multimedia::audio", "command-line-utilities"]
+description = "A live-coding MIDI loop engine that runs as a background daemon"
+
+[[bin]]
+name = "propeller"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true }
+midir = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
+propeller-common = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

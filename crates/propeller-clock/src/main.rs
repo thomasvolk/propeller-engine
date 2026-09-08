@@ -8,11 +8,11 @@ mod ipc;
 mod midi;
 mod scheduler;
 mod socket_path;
-mod startup_guard;
 
 use clap::{Parser, Subcommand};
 use engine::ClockEngine;
 use ipc::ClockSettings;
+use propeller_common::startup_guard;
 use std::sync::Arc;
 
 const DEFAULT_VIRTUAL_PORT_NAME: &str = "propeller-clock";

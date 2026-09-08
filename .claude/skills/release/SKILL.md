@@ -14,7 +14,9 @@ missing, auto-increment instead (see step 1).
 
 ### 1. Determine the new version
 
-Run `cat Cargo.toml` to read the current `version = "..."` under `[package]`.
+Run `cat Cargo.toml` to read the current `version = "..."` under `[workspace.package]`
+(this is a Cargo workspace — member crates inherit the version via `version.workspace = true`,
+so it only needs updating in one place).
 
 - If `$ARGUMENTS` is non-empty: it must match the pattern `MAJOR.MINOR.PATCH` (each segment
   one or more digits). Allow an optional leading `v` (strip it before writing). If the
@@ -31,11 +33,14 @@ Run these in parallel:
 
 ### 3. Update Cargo.toml
 
-In `Cargo.toml`, replace the `version = "..."` line inside `[package]` with
-`version = "<new-version>"`. Do not touch any other line.
+In `Cargo.toml`, replace the `version = "..."` line inside `[workspace.package]` with
+`version = "<new-version>"`. Also update the `propeller-common` entry under
+`[workspace.dependencies]` — it pins its own `version = "..."` requirement (a path dependency
+still needs a matching version for `cargo publish` to work); set it to the same
+`<new-version>` so it never drifts from `[workspace.package]`. Do not touch any other line.
 
-After editing, run `cargo check --quiet` to confirm the file is still valid. If it fails,
-restore the original version and report the error.
+After editing, run `cargo check --workspace --quiet` to confirm the workspace is still valid.
+If it fails, restore the original versions and report the error.
 
 ### 4. Update CHANGELOG.md
 
