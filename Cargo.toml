@@ -19,4 +19,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 tempfile = "3"
+ratatui = "0.29"
+crossterm = "0.28"
 propeller-common = { path = "crates/propeller-common", version = "0.9.3" }

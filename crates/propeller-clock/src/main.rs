@@ -8,6 +8,7 @@ mod ipc;
 mod midi;
 mod scheduler;
 mod socket_path;
+mod tui;
 
 use clap::{Parser, Subcommand};
 use engine::ClockEngine;
@@ -41,6 +42,8 @@ enum Commands {
     Status,
     /// Set the tempo in beats per minute (20-300)
     Bpm { bpm: u32 },
+    /// Open an interactive terminal UI (launches the daemon in the background if needed)
+    Console,
     #[command(hide = true)]
     DaemonRun,
 }
@@ -54,6 +57,7 @@ fn main() {
         Commands::Stop => cmd_stop(),
         Commands::Status => cmd_status(),
         Commands::Bpm { bpm } => cmd_bpm(bpm),
+        Commands::Console => cmd_console(),
         Commands::DaemonRun => cmd_daemon_run(),
     }
 }
@@ -75,9 +79,9 @@ fn handle_client_error(e: client::ClientError) -> ! {
     }
 }
 
-fn cmd_start() {
-    let sock_path = socket_path::resolve();
-
+// Ensures the daemon process is running (spawning it in the background if needed),
+// without affecting the clock's start/stop state.
+fn ensure_daemon_running(sock_path: &std::path::Path) {
     // Validate PROPELLER_CLOCK_PORT before spawning so errors are visible in the terminal.
     if let Ok(name) = std::env::var("PROPELLER_CLOCK_PORT") {
         let names = midi::list_port_names();
@@ -91,19 +95,34 @@ fn cmd_start() {
         }
     }
 
-    match startup_guard::check(&sock_path) {
+    match startup_guard::check(sock_path) {
         startup_guard::StartupOutcome::AlreadyRunning => {}
         startup_guard::StartupOutcome::StaleCleared => {
             eprintln!("propeller-clock: removed stale socket, starting fresh");
-            spawn_daemon(&sock_path);
+            spawn_daemon(sock_path);
         }
         startup_guard::StartupOutcome::Started => {
-            spawn_daemon(&sock_path);
+            spawn_daemon(sock_path);
         }
     }
+}
+
+fn cmd_start() {
+    let sock_path = socket_path::resolve();
+    ensure_daemon_running(&sock_path);
 
     if let Err(e) = client::send_command(&sock_path, serde_json::json!({"command": "start"})) {
         handle_client_error(e);
+    }
+}
+
+fn cmd_console() {
+    let sock_path = socket_path::resolve();
+    ensure_daemon_running(&sock_path);
+
+    if let Err(e) = tui::run(&sock_path) {
+        eprintln!("propeller-clock: TUI error: {e}");
+        std::process::exit(1);
     }
 }
 
@@ -279,5 +298,11 @@ mod tests {
     fn daemon_run_is_hidden_but_parses() {
         let cli = Cli::try_parse_from(["propeller-clock", "daemon-run"]).unwrap();
         assert!(matches!(cli.command, Commands::DaemonRun));
+    }
+
+    #[test]
+    fn console_parses() {
+        let cli = Cli::try_parse_from(["propeller-clock", "console"]).unwrap();
+        assert!(matches!(cli.command, Commands::Console));
     }
 }
