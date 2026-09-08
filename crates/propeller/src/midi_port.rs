@@ -314,11 +314,11 @@ mod tests {
     // timestamp 0 and Ableton Live never schedules it onto a track (Track In still blinks).
     #[test]
     fn midir_dependency_enables_coremidi_timestamped_sends() {
-        let cargo_toml = include_str!("../Cargo.toml");
-        let midir_line = cargo_toml
+        let workspace_cargo_toml = include_str!("../../../Cargo.toml");
+        let midir_line = workspace_cargo_toml
             .lines()
             .find(|line| line.trim_start().starts_with("midir"))
-            .expect("midir dependency not found in Cargo.toml");
+            .expect("midir dependency not found in workspace Cargo.toml");
         assert!(
             midir_line.contains("coremidi_send_timestamped"),
             "midir must enable the coremidi_send_timestamped feature; found: {midir_line:?}"

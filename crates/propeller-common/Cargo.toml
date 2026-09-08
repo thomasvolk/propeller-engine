@@ -1,0 +1,13 @@
+[package]
+name = "propeller-common"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Internal shared code for the propeller and propeller-clock daemons"
+
+[dependencies]
+
+[dev-dependencies]
+tempfile = { workspace = true }

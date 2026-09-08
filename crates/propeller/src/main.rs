@@ -10,10 +10,10 @@ mod loop_engine;
 mod midi_clock;
 mod midi_port;
 mod socket_path;
-mod startup_guard;
 
 use clap::{Parser, Subcommand};
 use ipc::EngineMode;
+use propeller_common::startup_guard;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

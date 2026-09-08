@@ -1,23 +1,15 @@
-[package]
-name = "propeller"
+[workspace]
+resolver = "2"
+members = ["crates/propeller", "crates/propeller-clock", "crates/propeller-common"]
+
+[workspace.package]
 version = "0.9.3"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/thomasvolk/propeller-engine"
 homepage = "https://github.com/thomasvolk/propeller-engine"
-keywords = ["midi", "music", "live-coding", "sequencer", "daemon"]
-categories = ["multimedia::audio", "command-line-utilities"]
-description = "A live-coding MIDI loop engine that runs as a background daemon"
 
-[[bin]]
-name = "propeller"
-path = "src/main.rs"
-
-[[bin]]
-name = "propeller-clock"
-path = "src/bin/propeller_clock/main.rs"
-
-[dependencies]
+[workspace.dependencies]
 clap = { version = "4", features = ["derive"] }
 midir = { version = "0.10", features = ["coremidi_send_timestamped"] }
 tokio = { version = "1", features = ["full"] }
@@ -26,6 +18,5 @@ serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
-
-[dev-dependencies]
 tempfile = "3"
+propeller-common = { path = "crates/propeller-common", version = "0.9.3" }

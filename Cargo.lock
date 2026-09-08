@@ -535,6 +535,7 @@ version = "0.9.3"
 dependencies = [
  "clap",
  "midir",
+ "propeller-common",
  "serde",
  "serde_json",
  "tempfile",
@@ -542,6 +543,27 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "propeller-clock"
+version = "0.9.3"
+dependencies = [
+ "clap",
+ "midir",
+ "propeller-common",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "propeller-common"
+version = "0.9.3"
+dependencies = [
+ "tempfile",
 ]
 
 [[package]]
