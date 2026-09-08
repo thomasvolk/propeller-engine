@@ -453,6 +453,9 @@ propeller-clock bpm 140
 propeller-clock pause
 propeller-clock resume
 
+# Open the interactive terminal UI
+propeller-clock console
+
 # Stop the clock and terminate the daemon
 propeller-clock stop
 ```
@@ -468,9 +471,31 @@ propeller-clock stop
 - `status` — reports the daemon's running state (`stopped`, `running`, or `paused`), current
   BPM, MIDI port name, and current tick count.
 - `bpm <bpm>` — sets the tempo (whole number, 20–300).
+- `console` — opens an interactive terminal UI (see below). Like `start`, it launches the
+  daemon in the background if it isn't already running.
 
-Any command other than `start` fails with a non-zero exit code if no daemon is currently
-running — it never starts one implicitly.
+Any command other than `start` and `console` fails with a non-zero exit code if no daemon is
+currently running — they are the only two that start one implicitly.
+
+### Interactive console
+
+```sh
+propeller-clock console
+```
+
+Opens a terminal UI showing live status (state, BPM, port, tick) in the center of the frame,
+refreshed automatically. A help line at the bottom lists the available keys:
+
+- `↑` / `k` — increase BPM by 1
+- `↓` / `j` — decrease BPM by 1
+- `s` — start
+- `p` — pause
+- `r` — resume
+- `x` — stop (also exits the console, since this terminates the daemon)
+- `q` / `Esc` — quit the console, leaving the daemon running
+
+An action that's invalid for the current state (e.g. `resume` while already running) shows the
+daemon's error message inline until the next valid action.
 
 ### Selecting a MIDI output port
 
@@ -513,7 +538,7 @@ PROPELLER_CLOCK_SOCK=/run/user/1000/propeller-clock.sock propeller-clock start
 - **Operating modes** — `standalone`, `clock`, and `sync` modes are supported. `standalone` and `clock` are switchable at runtime via `set-mode`; `sync` requires `--sync` at daemon startup.
 - **Sync-mode clock forwarding** — while following an external MIDI clock, propeller relays it (Start, Stop, Continue, Song Position Pointer, and Timing Clock) back out to its own output port so downstream devices chained off that port also stay in sync; on by default in sync mode, disable with `--no-clock-forward`.
 - **Song Position Pointer** — in sync mode, an incoming Song Position Pointer (0xF2) relocates playback per MIDI 1.0: applied immediately while paused, or queued while stopped and applied on the next MIDI Continue.
-- **propeller-clock** — a bundled standalone MIDI clock daemon (`start`/`pause`/`resume`/`stop`/`status`/`bpm`) for driving propeller's sync mode in tests without a DAW or external hardware. See [propeller-clock](#propeller-clock) above.
+- **propeller-clock** — a bundled standalone MIDI clock daemon (`start`/`pause`/`resume`/`stop`/`status`/`bpm`/`console`) for driving propeller's sync mode in tests without a DAW or external hardware. See [propeller-clock](#propeller-clock) above.
 
 ## Changelog
 
