@@ -42,6 +42,8 @@ enum Commands {
     Status,
     /// Set the tempo in beats per minute (20-300)
     Bpm { bpm: u32 },
+    /// Set the song position pointer (0-16383 MIDI beats) while stopped
+    Seek { position: u16 },
     /// Open an interactive terminal UI (launches the daemon in the background if needed)
     Console,
     #[command(hide = true)]
@@ -57,6 +59,7 @@ fn main() {
         Commands::Stop => cmd_stop(),
         Commands::Status => cmd_status(),
         Commands::Bpm { bpm } => cmd_bpm(bpm),
+        Commands::Seek { position } => cmd_seek(position),
         Commands::Console => cmd_console(),
         Commands::DaemonRun => cmd_daemon_run(),
     }
@@ -191,9 +194,14 @@ fn cmd_daemon_run() {
         },
     };
 
-    let engine = Arc::new(ClockEngine::new(output, 120.0));
+    let spp_enabled = std::env::var("PROPELLER_CLOCK_SPP")
+        .map(|v| !matches!(v.to_ascii_lowercase().as_str(), "0" | "false" | "off"))
+        .unwrap_or(true);
+
+    let engine = Arc::new(ClockEngine::new(output, 120.0, spp_enabled));
     let settings = Arc::new(ClockSettings {
         port_name: effective_port_name,
+        spp_enabled,
     });
 
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
@@ -243,6 +251,16 @@ fn cmd_bpm(bpm: u32) {
     }
 }
 
+fn cmd_seek(position: u16) {
+    let sock_path = socket_path::resolve();
+    if let Err(e) = client::send_command(
+        &sock_path,
+        serde_json::json!({"command": "seek", "position": position}),
+    ) {
+        handle_client_error(e);
+    }
+}
+
 fn cmd_status() {
     let sock_path = socket_path::resolve();
     match client::send_command(&sock_path, serde_json::json!({"command": "status"})) {
@@ -259,6 +277,9 @@ fn cmd_status() {
             }
             if let Some(tick) = v.get("tick") {
                 println!("  tick: {tick}");
+            }
+            if let Some(position) = v.get("position") {
+                println!("  position: {position}");
             }
         }
         Err(client::ClientError::Connect(_)) => {
@@ -291,6 +312,21 @@ mod tests {
     #[test]
     fn bpm_requires_value() {
         let result = Cli::try_parse_from(["propeller-clock", "bpm"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn seek_parses_value() {
+        let cli = Cli::try_parse_from(["propeller-clock", "seek", "240"]).unwrap();
+        match cli.command {
+            Commands::Seek { position } => assert_eq!(position, 240),
+            _ => panic!("expected Seek"),
+        }
+    }
+
+    #[test]
+    fn seek_requires_value() {
+        let result = Cli::try_parse_from(["propeller-clock", "seek"]);
         assert!(result.is_err());
     }
 

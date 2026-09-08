@@ -8,6 +8,9 @@ pub trait ClockOutput: Send {
     fn clock_start(&mut self) -> Result<(), String>;
     fn clock_continue(&mut self) -> Result<(), String>;
     fn clock_stop(&mut self) -> Result<(), String>;
+    // Song Position Pointer (0xF2): a 14-bit count of MIDI beats (1 beat = a sixteenth
+    // note = 6 clock pulses) since the start of the song.
+    fn song_position(&mut self, position: u16) -> Result<(), String>;
 }
 
 #[derive(Debug)]
@@ -58,6 +61,19 @@ impl ClockOutput for MidiClockOutput {
     fn clock_stop(&mut self) -> Result<(), String> {
         self.0.send(&[0xFC]).map_err(|e| e.to_string())
     }
+    fn song_position(&mut self, position: u16) -> Result<(), String> {
+        self.0
+            .send(&song_position_bytes(position))
+            .map_err(|e| e.to_string())
+    }
+}
+
+fn song_position_bytes(position: u16) -> [u8; 3] {
+    [
+        0xF2,
+        (position & 0x7F) as u8,
+        ((position >> 7) & 0x7F) as u8,
+    ]
 }
 
 pub fn find_port_by_name(names: &[String], target: &str) -> Option<usize> {
@@ -113,6 +129,7 @@ pub enum ClockEvent {
     Start,
     Continue,
     Stop,
+    SongPosition(u16),
 }
 
 #[cfg(test)]
@@ -142,6 +159,13 @@ impl ClockOutput for CapturingClockOutput {
     }
     fn clock_stop(&mut self) -> Result<(), String> {
         self.0.lock().unwrap().push(ClockEvent::Stop);
+        Ok(())
+    }
+    fn song_position(&mut self, position: u16) -> Result<(), String> {
+        self.0
+            .lock()
+            .unwrap()
+            .push(ClockEvent::SongPosition(position));
         Ok(())
     }
 }
@@ -196,6 +220,31 @@ mod tests {
                 ClockEvent::Tick,
                 ClockEvent::Stop,
             ]
+        );
+    }
+
+    #[test]
+    fn song_position_bytes_zero() {
+        assert_eq!(song_position_bytes(0), [0xF2, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn song_position_bytes_max() {
+        assert_eq!(song_position_bytes(16383), [0xF2, 0x7F, 0x7F]);
+    }
+
+    #[test]
+    fn song_position_bytes_mid_value() {
+        assert_eq!(song_position_bytes(120), [0xF2, 0x78, 0x00]);
+    }
+
+    #[test]
+    fn capturing_output_records_song_position() {
+        let (mut output, events) = CapturingClockOutput::new();
+        output.song_position(120).unwrap();
+        assert_eq!(
+            events.lock().unwrap().clone(),
+            vec![ClockEvent::SongPosition(120)]
         );
     }
 }

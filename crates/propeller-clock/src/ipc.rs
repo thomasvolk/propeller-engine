@@ -21,12 +21,15 @@ pub enum Command {
     Stop,
     Status,
     Bpm { bpm: u32 },
+    Seek { position: u32 },
 }
 
 pub struct ClockSettings {
     /// Name of the MIDI port in use: either the created virtual "propeller-clock" port,
     /// or the external port named by PROPELLER_CLOCK_PORT.
     pub port_name: String,
+    /// Whether `seek` sends a Song Position Pointer (0xF2), per PROPELLER_CLOCK_SPP.
+    pub spp_enabled: bool,
 }
 
 fn ok_response() -> Value {
@@ -96,12 +99,27 @@ fn dispatch(line: &str, engine: &Arc<ClockEngine>, settings: &ClockSettings) -> 
             engine.set_bpm(bpm as f64);
             ok_response()
         }
+        Command::Seek { position } => {
+            if position > 16383 {
+                return error_response(
+                    "position_out_of_range",
+                    "position must be between 0 and 16383",
+                );
+            }
+            if engine.state() != ClockState::Stopped {
+                return error_response("invalid_state", "seek requires the clock to be stopped");
+            }
+            engine.seek(position as u16);
+            ok_response()
+        }
         Command::Status => json!({
             "status": "ok",
             "state": state_str(engine.state()),
             "bpm": engine.bpm(),
             "port": settings.port_name,
             "tick": engine.pulse_count(),
+            "position": engine.position(),
+            "spp_enabled": settings.spp_enabled,
         }),
     }
 }
@@ -173,16 +191,18 @@ pub async fn run_ipc_server(
 mod tests {
     use super::*;
     use crate::midi::CapturingClockOutput;
+    use std::time::Duration;
     use tokio::io::AsyncReadExt;
 
     fn make_engine() -> Arc<ClockEngine> {
         let (output, _) = CapturingClockOutput::new();
-        Arc::new(ClockEngine::new(Box::new(output), 120.0))
+        Arc::new(ClockEngine::new(Box::new(output), 120.0, true))
     }
 
     fn make_settings() -> Arc<ClockSettings> {
         Arc::new(ClockSettings {
             port_name: "propeller-clock".to_string(),
+            spp_enabled: true,
         })
     }
 
@@ -192,7 +212,13 @@ mod tests {
     }
 
     async fn send_and_get_response(command_json: &str) -> String {
-        let engine = make_engine();
+        send_and_get_response_with_engine(make_engine(), command_json).await
+    }
+
+    async fn send_and_get_response_with_engine(
+        engine: Arc<ClockEngine>,
+        command_json: &str,
+    ) -> String {
         let settings = make_settings();
         let shutdown_tx = make_shutdown();
         let (client, server) = UnixStream::pair().unwrap();
@@ -221,6 +247,15 @@ mod tests {
         match cmd {
             Command::Bpm { bpm } => assert_eq!(bpm, 140),
             _ => panic!("expected Bpm"),
+        }
+    }
+
+    #[test]
+    fn deserialize_seek() {
+        let cmd: Command = serde_json::from_str(r#"{"command":"seek","position":240}"#).unwrap();
+        match cmd {
+            Command::Seek { position } => assert_eq!(position, 240),
+            _ => panic!("expected Seek"),
         }
     }
 
@@ -275,6 +310,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn seek_while_stopped_updates_position_and_returns_ok() {
+        let engine = make_engine();
+        let settings = make_settings();
+        let shutdown_tx = make_shutdown();
+        let (client, server) = UnixStream::pair().unwrap();
+        let engine_clone = Arc::clone(&engine);
+
+        tokio::spawn(async move {
+            connection_handler(server, engine_clone, settings, shutdown_tx).await;
+        });
+
+        let cmd = r#"{"command":"seek","position":240}"#.to_string() + "\n";
+        let mut client = client;
+        client.write_all(cmd.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        client.read_to_string(&mut resp).await.unwrap();
+
+        let v: Value = serde_json::from_str(resp.trim()).unwrap();
+        assert_eq!(v["status"], "ok");
+        assert_eq!(engine.position(), 240);
+    }
+
+    #[tokio::test]
+    async fn seek_while_running_returns_invalid_state() {
+        let engine = make_engine();
+        engine.start();
+        let deadline = std::time::Instant::now() + Duration::from_millis(500);
+        while engine.state() != ClockState::Running && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+
+        let response = send_and_get_response_with_engine(
+            Arc::clone(&engine),
+            r#"{"command":"seek","position":240}"#,
+        )
+        .await;
+        let v: Value = serde_json::from_str(response.trim()).unwrap();
+        assert_eq!(v["status"], "error");
+        assert_eq!(v["code"], "invalid_state");
+        engine.stop();
+    }
+
+    #[tokio::test]
+    async fn seek_out_of_range_returns_error() {
+        let response = send_and_get_response(r#"{"command":"seek","position":16384}"#).await;
+        let v: Value = serde_json::from_str(response.trim()).unwrap();
+        assert_eq!(v["status"], "error");
+        assert_eq!(v["code"], "position_out_of_range");
+    }
+
+    #[tokio::test]
     async fn bpm_out_of_range_low() {
         let response = send_and_get_response(r#"{"command":"bpm","bpm":19}"#).await;
         let v: Value = serde_json::from_str(response.trim()).unwrap();
@@ -320,6 +406,7 @@ mod tests {
         assert_eq!(v["bpm"], 120.0);
         assert_eq!(v["port"], "propeller-clock");
         assert_eq!(v["tick"], 0);
+        assert_eq!(v["position"], 0);
     }
 
     #[tokio::test]

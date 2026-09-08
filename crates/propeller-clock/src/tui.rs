@@ -32,6 +32,8 @@ struct Status {
     bpm: f64,
     port: String,
     tick: u64,
+    position: u64,
+    spp_enabled: bool,
 }
 
 fn fetch_status(sock_path: &Path) -> Result<Status, ClientError> {
@@ -49,6 +51,11 @@ fn fetch_status(sock_path: &Path) -> Result<Status, ClientError> {
             .unwrap_or("?")
             .to_string(),
         tick: v.get("tick").and_then(|t| t.as_u64()).unwrap_or(0),
+        position: v.get("position").and_then(|p| p.as_u64()).unwrap_or(0),
+        spp_enabled: v
+            .get("spp_enabled")
+            .and_then(|s| s.as_bool())
+            .unwrap_or(false),
     })
 }
 
@@ -183,7 +190,7 @@ fn draw(f: &mut Frame, status: Option<&Status>, error_message: Option<&str>) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(0),
-            Constraint::Length(4),
+            Constraint::Length(6),
             Constraint::Length(1),
             Constraint::Min(0),
             Constraint::Length(1),
@@ -196,6 +203,11 @@ fn draw(f: &mut Frame, status: Option<&Status>, error_message: Option<&str>) {
             Line::from(format!("bpm:   {}", s.bpm)),
             Line::from(format!("port:  {}", s.port)),
             Line::from(format!("tick:  {}", s.tick)),
+            Line::from(format!("pos:   {}", s.position)),
+            Line::from(format!(
+                "spp:   {}",
+                if s.spp_enabled { "on" } else { "off" }
+            )),
         ],
         None => vec![Line::from("connecting...")],
     };
