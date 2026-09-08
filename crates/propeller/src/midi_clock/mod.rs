@@ -182,15 +182,16 @@ fn run_receiver(
             }
             Ok(ClockMessage::Stop) => {
                 *state.lock().unwrap() = SyncClockState::Waiting;
-                engine.sync_stop_reset();
+                // Explicit Stop (0xFC) pauses and retains Song Position, same as a
+                // clock-loss timeout — a device that comes back (or sends Continue)
+                // resumes where it left off. This is a deliberate departure from the
+                // MIDI 1.0 spec convention that Stop implies reset to Song Position 0.
+                engine.sync_stop();
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 let current = state.lock().unwrap().clone();
                 if current != SyncClockState::Lost {
                     *state.lock().unwrap() = SyncClockState::Lost;
-                    // Clock loss is not an explicit Stop byte: pause and retain Song
-                    // Position (sync_stop), not sync_stop_reset — a device that comes
-                    // back should be able to resume where it left off.
                     engine.sync_stop();
                     // Nothing was received to relay, so send an explicit Stop of our own —
                     // downstream devices chained off the output port should pause too.
@@ -389,8 +390,9 @@ mod tests {
 
     #[test]
     fn stop_message_pauses_engine_and_sets_sync_waiting() {
-        // MIDI Stop (0xFC) pauses the engine and resets Song Position to the start
-        // point (tick 0) — it does not hard-stop it. The receiver's own
+        // MIDI Stop (0xFC) pauses the engine and retains Song Position — it does not
+        // hard-stop it, and does not reset position (see current_tick_frozen_after_sync_stop
+        // in loop_engine::mod for the position-retention assertion). The receiver's own
         // SyncClockState still reports Waiting, since it is tracking clock activity,
         // not playback position.
         let engine = make_engine_with_project();
@@ -409,11 +411,6 @@ mod tests {
 
         assert_eq!(engine.state(), EngineState::Paused);
         assert_eq!(receiver.sync_clock_state(), SyncClockState::Waiting);
-        assert_eq!(
-            engine.current_tick(),
-            0,
-            "explicit MIDI Stop must reset Song Position to the start point"
-        );
     }
 
     #[test]
