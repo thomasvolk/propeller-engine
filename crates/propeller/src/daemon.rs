@@ -58,6 +58,7 @@ pub async fn run(
             Ok(receiver) => {
                 let mut settings_guard = settings.lock().unwrap();
                 settings_guard.sync_clock_state = Some(receiver.state_arc());
+                settings_guard.sync_bpm = Some(receiver.bpm_arc());
                 settings_guard.sync_port_name = Some(port_name.clone());
                 Some(receiver)
             }

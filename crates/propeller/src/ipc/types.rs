@@ -85,6 +85,10 @@ pub struct EngineSettings {
     pub bpm: u32,
     /// Present only when the daemon was started with --sync; used by Status and SetMode handlers.
     pub sync_clock_state: Option<Arc<Mutex<SyncClockState>>>,
+    /// Live tempo tracked from the external MIDI clock; present only when the daemon was
+    /// started with --sync. The inner `Option` is `None` until enough pulses have arrived
+    /// to produce an estimate, and is cleared again on Start/Stop/clock-loss.
+    pub sync_bpm: Option<Arc<Mutex<Option<f64>>>>,
     /// Name of the configured MIDI output port; None when using the fallback virtual port.
     pub midi_port_name: Option<String>,
     /// Name of the MIDI input port used for clock sync; present only when the sync receiver started.
@@ -97,6 +101,7 @@ impl EngineSettings {
             mode: EngineMode::Standalone,
             bpm: 120,
             sync_clock_state: None,
+            sync_bpm: None,
             midi_port_name: None,
             sync_port_name: None,
         }

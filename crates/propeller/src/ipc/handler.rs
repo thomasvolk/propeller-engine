@@ -360,15 +360,28 @@ fn handle_status(
         EngineState::Stopped => "stopped",
     };
 
-    let bpm = active.map(|p| p.header.bpm).unwrap_or(settings_guard.bpm);
-
     let mut resp = json!({
         "status": "ok",
         "mode": settings_guard.mode.as_str(),
-        "bpm": bpm,
         "clock_state": clock_state,
         "project_present": active.is_some(),
     });
+
+    // In sync mode, bpm reflects the tempo actually tracked from the external clock rather
+    // than the project's stored value, and is omitted entirely until a live estimate exists
+    // (no clock yet, clock lost, or not enough pulses seen since the last Start/Stop).
+    if settings_guard.mode == EngineMode::Sync {
+        let live_bpm = settings_guard
+            .sync_bpm
+            .as_ref()
+            .and_then(|arc| *arc.lock().unwrap());
+        if let Some(live_bpm) = live_bpm {
+            resp["bpm"] = json!(live_bpm.round() as u32);
+        }
+    } else {
+        let bpm = active.map(|p| p.header.bpm).unwrap_or(settings_guard.bpm);
+        resp["bpm"] = json!(bpm);
+    }
 
     // F-13: include loop_duration when a project is active; omit entirely when no project.
     if let Some(p) = active {
@@ -1224,6 +1237,86 @@ mod tests {
         client.read_to_string(&mut resp).await.unwrap();
         let v: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
         assert!(v.get("sync_port_name").is_none());
+    }
+
+    #[tokio::test]
+    async fn status_in_sync_mode_reports_live_tracked_bpm_rounded() {
+        // No active project, so the old fallback would be settings.bpm (120, the default).
+        // The tracked tempo (145.6, rounded to 146) differs from that to prove status
+        // reports the live external tempo, not the project/settings fallback value.
+        let (store, engine, settings, shutdown_tx) = make_shared_state();
+        let sync_bpm = Arc::new(Mutex::new(Some(145.6)));
+        {
+            let mut s = settings.lock().unwrap();
+            s.mode = EngineMode::Sync;
+            s.sync_bpm = Some(Arc::clone(&sync_bpm));
+        }
+
+        let (client, server) = UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            connection_handler(server, store, engine, settings, shutdown_tx).await;
+        });
+
+        let cmd = r#"{"command":"status"}"#.to_string() + "\n";
+        let mut client = client;
+        use tokio::io::AsyncWriteExt;
+        client.write_all(cmd.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        client.read_to_string(&mut resp).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
+        assert_eq!(v["bpm"], 146);
+    }
+
+    #[tokio::test]
+    async fn status_in_sync_mode_omits_bpm_before_tempo_is_tracked() {
+        // sync_bpm is present (receiver started) but still None: waiting for the clock,
+        // clock lost, or not enough pulses seen yet since the last Start/Stop.
+        let (store, engine, settings, shutdown_tx) = make_shared_state();
+        let sync_bpm = Arc::new(Mutex::new(None));
+        {
+            let mut s = settings.lock().unwrap();
+            s.mode = EngineMode::Sync;
+            s.sync_bpm = Some(Arc::clone(&sync_bpm));
+        }
+
+        let (client, server) = UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            connection_handler(server, store, engine, settings, shutdown_tx).await;
+        });
+
+        let cmd = r#"{"command":"status"}"#.to_string() + "\n";
+        let mut client = client;
+        use tokio::io::AsyncWriteExt;
+        client.write_all(cmd.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        client.read_to_string(&mut resp).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
+        assert!(
+            v.get("bpm").is_none(),
+            "bpm must be omitted while no live tempo has been tracked yet"
+        );
+    }
+
+    #[tokio::test]
+    async fn status_in_sync_mode_without_receiver_omits_bpm() {
+        // SetMode to sync via IPC does not start a clock receiver, so sync_bpm stays
+        // unset even though mode is sync (mirrors sync_clock_state's behaviour).
+        let (store, engine, settings, shutdown_tx) = make_shared_state();
+        settings.lock().unwrap().mode = EngineMode::Sync;
+
+        let (client, server) = UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            connection_handler(server, store, engine, settings, shutdown_tx).await;
+        });
+
+        let cmd = r#"{"command":"status"}"#.to_string() + "\n";
+        let mut client = client;
+        use tokio::io::AsyncWriteExt;
+        client.write_all(cmd.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        client.read_to_string(&mut resp).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
+        assert!(v.get("bpm").is_none());
     }
 
     #[tokio::test]

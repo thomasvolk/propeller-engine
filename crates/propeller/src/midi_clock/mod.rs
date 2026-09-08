@@ -30,6 +30,7 @@ pub enum SyncClockState {
 
 pub struct MidiClockReceiver {
     state: Arc<Mutex<SyncClockState>>,
+    bpm: Arc<Mutex<Option<f64>>>,
     _midi_conn: Option<Box<dyn std::any::Any + Send>>,
 }
 
@@ -80,11 +81,21 @@ impl MidiClockReceiver {
 
         let state = Arc::new(Mutex::new(SyncClockState::Waiting));
         let state_clone = Arc::clone(&state);
+        let bpm = Arc::new(Mutex::new(None));
+        let bpm_clone = Arc::clone(&bpm);
         std::thread::spawn(move || {
-            run_receiver(rx, engine, state_clone, forward_output, forwarding_enabled);
+            run_receiver(
+                rx,
+                engine,
+                state_clone,
+                bpm_clone,
+                forward_output,
+                forwarding_enabled,
+            );
         });
         Ok(MidiClockReceiver {
             state,
+            bpm,
             _midi_conn: Some(Box::new(conn)),
         })
     }
@@ -99,11 +110,21 @@ impl MidiClockReceiver {
     ) -> Self {
         let state = Arc::new(Mutex::new(SyncClockState::Waiting));
         let state_clone = Arc::clone(&state);
+        let bpm = Arc::new(Mutex::new(None));
+        let bpm_clone = Arc::clone(&bpm);
         std::thread::spawn(move || {
-            run_receiver(rx, engine, state_clone, forward_output, forwarding_enabled);
+            run_receiver(
+                rx,
+                engine,
+                state_clone,
+                bpm_clone,
+                forward_output,
+                forwarding_enabled,
+            );
         });
         MidiClockReceiver {
             state,
+            bpm,
             _midi_conn: None,
         }
     }
@@ -115,6 +136,11 @@ impl MidiClockReceiver {
 
     pub fn state_arc(&self) -> Arc<Mutex<SyncClockState>> {
         Arc::clone(&self.state)
+    }
+
+    /// Live tempo tracked from the external clock; `None` until an estimate exists.
+    pub fn bpm_arc(&self) -> Arc<Mutex<Option<f64>>> {
+        Arc::clone(&self.bpm)
     }
 }
 
@@ -152,6 +178,7 @@ fn run_receiver(
     rx: mpsc::Receiver<ClockMessage>,
     engine: Arc<LoopEngine>,
     state: Arc<Mutex<SyncClockState>>,
+    bpm: Arc<Mutex<Option<f64>>>,
     forward_output: Arc<Mutex<Box<dyn MidiOutput>>>,
     forwarding_enabled: bool,
 ) {
@@ -172,13 +199,15 @@ fn run_receiver(
                     *state.lock().unwrap() = SyncClockState::Tracking;
                 }
 
-                if let Some(bpm) = pulse_tracker.bpm() {
-                    engine.sync_bpm_update(bpm);
+                if let Some(tracked_bpm) = pulse_tracker.bpm() {
+                    *bpm.lock().unwrap() = Some(tracked_bpm);
+                    engine.sync_bpm_update(tracked_bpm);
                 }
             }
             Ok(ClockMessage::Start) => {
                 pulse_tracker.reset();
                 *state.lock().unwrap() = SyncClockState::Tracking;
+                *bpm.lock().unwrap() = None;
                 engine.sync_start();
             }
             Ok(ClockMessage::Continue) => {
@@ -191,6 +220,7 @@ fn run_receiver(
             }
             Ok(ClockMessage::Stop) => {
                 *state.lock().unwrap() = SyncClockState::Waiting;
+                *bpm.lock().unwrap() = None;
                 // Explicit Stop (0xFC) pauses and retains Song Position, same as a
                 // clock-loss timeout — a device that comes back (or sends Continue)
                 // resumes where it left off. This is a deliberate departure from the
@@ -208,6 +238,7 @@ fn run_receiver(
                 let current = state.lock().unwrap().clone();
                 if current != SyncClockState::Lost {
                     *state.lock().unwrap() = SyncClockState::Lost;
+                    *bpm.lock().unwrap() = None;
                     engine.sync_stop();
                     // Nothing was received to relay, so send an explicit Stop of our own —
                     // downstream devices chained off the output port should pause too.

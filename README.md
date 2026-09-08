@@ -354,13 +354,13 @@ Example response (standalone or clock mode):
 
 `clock_state` is `"started"` while the loop is playing, `"stopped"` otherwise. `loop_duration` is absent when no project is loaded. `midi_port_name` is included when the daemon was started with `PROPELLER_MIDI_PORT` set to a named port; it is absent when using the default virtual port.
 
-In sync mode the response includes two additional fields:
+In sync mode, `bpm` reports the tempo actually being tracked from the external MIDI clock — rounded to the nearest whole number — instead of the project's stored value, and the response includes two additional fields:
 
 ```json
 {
   "status": "ok",
   "mode": "sync",
-  "bpm": 120,
+  "bpm": 118,
   "clock_state": "started",
   "project_present": true,
   "sync_port_name": "IAC Driver Bus 1",
@@ -368,7 +368,7 @@ In sync mode the response includes two additional fields:
 }
 ```
 
-`sync_port_name` is the MIDI input port configured via `PROPELLER_SYNC_PORT`. `sync_clock_state` values: `waiting` (no clock signal yet), `tracking` (clock pulses are flowing), `lost` (clock was present but has gone silent).
+`sync_port_name` is the MIDI input port configured via `PROPELLER_SYNC_PORT`. `sync_clock_state` values: `waiting` (no clock signal yet), `tracking` (clock pulses are flowing), `lost` (clock was present but has gone silent). `bpm` is omitted entirely whenever no live tempo estimate is currently available — while `sync_clock_state` is `waiting` or `lost`, or briefly after a MIDI Start/Continue before enough clock pulses have arrived to estimate a tempo.
 
 #### project
 
