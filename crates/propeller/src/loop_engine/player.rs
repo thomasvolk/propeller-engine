@@ -104,7 +104,14 @@ fn sleep_until_with_poll(
                 Ok(LoopCommand::SyncStart) => return SleepResult::SyncStart,
                 Ok(LoopCommand::SyncContinue) => return SleepResult::SyncContinue,
                 Ok(LoopCommand::SyncBpmUpdate(bpm)) => *pending_sync_bpm = Some(bpm),
-                Ok(LoopCommand::Start | LoopCommand::ClockStart | LoopCommand::ClockResume) => {}
+                // Song Position is only actionable while Stopped/Paused (a locate request
+                // per MIDI 1.0); one arriving mid-loop while Running is dropped.
+                Ok(
+                    LoopCommand::Start
+                    | LoopCommand::ClockStart
+                    | LoopCommand::ClockResume
+                    | LoopCommand::SyncSongPosition(_),
+                ) => {}
                 Err(mpsc::TryRecvError::Disconnected) => return SleepResult::Disconnected,
                 Err(mpsc::TryRecvError::Empty) => {}
             }
@@ -133,6 +140,11 @@ struct PlayerLoop {
     next_carry_over: Vec<(u64, LoopEvent)>,
     loop_elapsed_ticks: u64,
     pending_sync_bpm: Option<f64>,
+    // A Song Position Pointer received while Stopped, to be applied when playback next
+    // resumes via SyncContinue (per MIDI 1.0, SPP is a locate request, typically sent while
+    // stopped and followed by Continue). Discarded by an explicit Start, which always
+    // begins from position 0 regardless of any pending locate.
+    pending_song_position: Option<u64>,
     current_tick: Arc<AtomicU64>,
     loop_duration_ticks: Arc<AtomicU64>,
     loop_count: Arc<AtomicU64>,
@@ -166,6 +178,7 @@ impl PlayerLoop {
             next_carry_over: Vec::new(),
             loop_elapsed_ticks: 0,
             pending_sync_bpm: None,
+            pending_song_position: None,
             current_tick,
             loop_duration_ticks,
             loop_count,
@@ -197,6 +210,7 @@ impl PlayerLoop {
     fn do_stop(&mut self) {
         self.current_tick.store(0, Ordering::Relaxed);
         self.loop_count.store(0, Ordering::Relaxed);
+        self.pending_song_position = None;
         self.flush_notes();
         self.reset_pitch_bend_channels();
         self.carry_over.clear();
@@ -213,6 +227,7 @@ impl PlayerLoop {
     fn do_clock_stop(&mut self) {
         self.current_tick.store(0, Ordering::Relaxed);
         self.loop_count.store(0, Ordering::Relaxed);
+        self.pending_song_position = None;
         self.flush_notes();
         self.reset_pitch_bend_channels();
         self.carry_over.clear();
@@ -227,11 +242,30 @@ impl PlayerLoop {
     fn do_sync_restart(&mut self) {
         self.current_tick.store(0, Ordering::Relaxed);
         self.loop_count.store(0, Ordering::Relaxed);
+        self.pending_song_position = None;
         self.flush_notes();
         self.carry_over.clear();
         self.next_carry_over.clear();
         self.last_instruments.clear();
         self.anchor = Instant::now() + Duration::from_micros(START_LATENCY_MICROS);
+    }
+
+    // Repositions Song Position to `requested_tick`, wrapped into the current loop's length
+    // (this engine's "song" is a single repeating loop, not an absolute timeline), and
+    // rebuilds pause_context so the events from that point onward fire on the next resume.
+    // Does not change EngineState — callers decide whether to stay Paused or go Running.
+    fn locate_song_position(&mut self, requested_tick: u64) {
+        let loop_duration = self.loop_duration.max(1);
+        let tick = requested_tick % loop_duration;
+        self.loop_elapsed_ticks = tick;
+        self.current_tick.store(tick, Ordering::Relaxed);
+        if let BuildResult::Events(events) = self.build_loop_events() {
+            let filtered: Vec<_> = events.into_iter().filter(|(t, _)| *t >= tick).collect();
+            self.pause_context = Some(PauseContext {
+                remaining_events: filtered,
+                loop_duration: self.loop_duration,
+            });
+        }
     }
 
     fn do_pause(&mut self, remaining: Vec<(u64, LoopEvent)>) {
@@ -331,7 +365,12 @@ impl PlayerLoop {
                 self.pending_sync_bpm = Some(bpm);
                 None
             }
-            LoopCommand::Start | LoopCommand::ClockStart | LoopCommand::ClockResume => None,
+            // Song Position is only actionable while Stopped/Paused (a locate request per
+            // MIDI 1.0); one arriving mid-loop while Running is dropped.
+            LoopCommand::Start
+            | LoopCommand::ClockStart
+            | LoopCommand::ClockResume
+            | LoopCommand::SyncSongPosition(_) => None,
         }
     }
 
@@ -636,6 +675,9 @@ impl PlayerLoop {
                 self.set_state(EngineState::Running);
             }
             Ok(LoopCommand::SyncStart) => {
+                // An explicit Start always begins from position 0, discarding any locate
+                // request queued up by a prior Song Position Pointer.
+                self.pending_song_position = None;
                 let has_project = self.store.read().unwrap().active().is_some();
                 if has_project {
                     self.last_instruments.clear();
@@ -652,10 +694,19 @@ impl PlayerLoop {
                     self.last_instruments.clear();
                     self.init_running_from_project();
                     self.anchor = Instant::now() + Duration::from_micros(START_LATENCY_MICROS);
+                    // A Song Position Pointer received while stopped takes effect now: set
+                    // up a pause_context at that position so handle_running() resumes from
+                    // there instead of from the top, per MIDI 1.0's SPP-then-Continue idiom.
+                    if let Some(pos) = self.pending_song_position.take() {
+                        self.locate_song_position(pos);
+                    }
                     self.set_state(EngineState::Running);
                 } else {
                     self.set_state(EngineState::Waiting);
                 }
+            }
+            Ok(LoopCommand::SyncSongPosition(tick)) => {
+                self.pending_song_position = Some(tick);
             }
             Ok(LoopCommand::SyncBpmUpdate(bpm)) => {
                 self.pending_sync_bpm = Some(bpm);
@@ -749,9 +800,16 @@ impl PlayerLoop {
                 self.pause_context = None;
                 self.set_state(EngineState::Running);
             }
+            // A Song Position Pointer received while Paused is applied immediately: it
+            // moves the frozen position itself, so a following Continue/ClockResume
+            // resumes from the new location rather than where playback was paused.
+            Ok(LoopCommand::SyncSongPosition(tick)) => {
+                self.locate_song_position(tick);
+            }
             Ok(LoopCommand::ClockStop | LoopCommand::Stop) => {
                 self.current_tick.store(0, Ordering::Relaxed);
                 self.loop_count.store(0, Ordering::Relaxed);
+                self.pending_song_position = None;
                 self.pause_context = None;
                 if let Err(e) = self.output.clock_stop() {
                     eprintln!("MIDI clock_stop failed: {e}");
@@ -1651,6 +1709,204 @@ mod tests {
     }
 
     #[test]
+    fn test_locate_song_position_sets_tick_and_filters_events() {
+        let p = Project {
+            header: Header {
+                bpm: 120,
+                loop_duration: 1920,
+            },
+            tracks: vec![Track {
+                name: "t".to_string(),
+                channel: 1,
+                instrument: 0,
+                notes: vec![
+                    Note {
+                        start_tick: 0,
+                        duration: 10,
+                        pitch: 60,
+                        velocity: 80,
+                    },
+                    Note {
+                        start_tick: 480,
+                        duration: 10,
+                        pitch: 62,
+                        velocity: 80,
+                    },
+                    Note {
+                        start_tick: 960,
+                        duration: 10,
+                        pitch: 64,
+                        velocity: 80,
+                    },
+                ],
+                pitch_bends: vec![],
+            }],
+        };
+        let (mut player, _tx, _) = make_player(Some(p));
+        player.loop_duration = 1920;
+
+        player.locate_song_position(480);
+
+        assert_eq!(player.current_tick.load(Ordering::Relaxed), 480);
+        assert_eq!(player.loop_elapsed_ticks, 480);
+        let ctx = player
+            .pause_context
+            .as_ref()
+            .expect("pause_context must be set by locate_song_position");
+        let ticks: Vec<u64> = ctx.remaining_events.iter().map(|(t, _)| *t).collect();
+        assert!(
+            !ticks.contains(&0),
+            "tick 0 (pitch 60) must be filtered out"
+        );
+        assert!(ticks.contains(&480), "tick 480 (pitch 62) must be retained");
+        assert!(ticks.contains(&960), "tick 960 (pitch 64) must be retained");
+    }
+
+    #[test]
+    fn test_locate_song_position_wraps_modulo_loop_duration() {
+        let (mut player, _tx, _) = make_player(None);
+        player.loop_duration = 960;
+
+        player.locate_song_position(2500); // 2500 % 960 = 580
+
+        assert_eq!(player.current_tick.load(Ordering::Relaxed), 580);
+        assert_eq!(player.loop_elapsed_ticks, 580);
+    }
+
+    #[test]
+    fn test_handle_stopped_stores_pending_song_position() {
+        let (mut player, tx, _) = make_player(None);
+        tx.send(LoopCommand::SyncSongPosition(240)).unwrap();
+
+        let should_continue = player.handle_stopped();
+
+        assert!(should_continue);
+        assert_eq!(player.pending_song_position, Some(240));
+        assert!(matches!(player.state, EngineState::Stopped));
+    }
+
+    #[test]
+    fn test_handle_stopped_sync_start_discards_pending_song_position() {
+        let p = project_with_note(
+            960,
+            Note {
+                start_tick: 0,
+                duration: 10,
+                pitch: 60,
+                velocity: 80,
+            },
+        );
+        let (mut player, tx, _) = make_player(Some(p));
+        player.pending_song_position = Some(240);
+        tx.send(LoopCommand::SyncStart).unwrap();
+
+        player.handle_stopped();
+
+        assert_eq!(
+            player.pending_song_position, None,
+            "an explicit Start must discard any queued locate request"
+        );
+        assert!(matches!(player.state, EngineState::Running));
+    }
+
+    #[test]
+    fn test_handle_stopped_sync_continue_applies_pending_song_position() {
+        let p = Project {
+            header: Header {
+                bpm: 120,
+                loop_duration: 1920,
+            },
+            tracks: vec![Track {
+                name: "t".to_string(),
+                channel: 1,
+                instrument: 0,
+                notes: vec![
+                    Note {
+                        start_tick: 0,
+                        duration: 10,
+                        pitch: 60,
+                        velocity: 80,
+                    },
+                    Note {
+                        start_tick: 960,
+                        duration: 10,
+                        pitch: 62,
+                        velocity: 80,
+                    },
+                ],
+                pitch_bends: vec![],
+            }],
+        };
+        let (mut player, tx, _) = make_player(Some(p));
+        player.pending_song_position = Some(960);
+        tx.send(LoopCommand::SyncContinue).unwrap();
+
+        player.handle_stopped();
+
+        assert!(matches!(player.state, EngineState::Running));
+        assert_eq!(player.pending_song_position, None);
+        assert_eq!(player.current_tick.load(Ordering::Relaxed), 960);
+        let ctx = player
+            .pause_context
+            .as_ref()
+            .expect("pause_context must be set from the pending song position");
+        let ticks: Vec<u64> = ctx.remaining_events.iter().map(|(t, _)| *t).collect();
+        assert!(
+            !ticks.contains(&0),
+            "tick 0 (pitch 60) must be filtered out"
+        );
+        assert!(ticks.contains(&960), "tick 960 (pitch 62) must be retained");
+    }
+
+    #[test]
+    fn test_handle_paused_sync_song_position_relocates_and_stays_paused() {
+        let p = Project {
+            header: Header {
+                bpm: 120,
+                loop_duration: 1920,
+            },
+            tracks: vec![Track {
+                name: "t".to_string(),
+                channel: 1,
+                instrument: 0,
+                notes: vec![
+                    Note {
+                        start_tick: 0,
+                        duration: 10,
+                        pitch: 60,
+                        velocity: 80,
+                    },
+                    Note {
+                        start_tick: 960,
+                        duration: 10,
+                        pitch: 62,
+                        velocity: 80,
+                    },
+                ],
+                pitch_bends: vec![],
+            }],
+        };
+        let (mut player, tx, _) = make_player(Some(p));
+        player.loop_duration = 1920;
+        player.state = EngineState::Paused;
+        tx.send(LoopCommand::SyncSongPosition(960)).unwrap();
+
+        let should_continue = player.handle_paused();
+
+        assert!(should_continue);
+        assert!(
+            matches!(player.state, EngineState::Paused),
+            "a locate request must not itself resume playback"
+        );
+        assert_eq!(player.current_tick.load(Ordering::Relaxed), 960);
+        let ctx = player
+            .pause_context
+            .as_ref()
+            .expect("pause_context must be set");
+        assert!(ctx.remaining_events.iter().any(|(t, _)| *t == 960));
+    }
+
+    #[test]
     fn test_do_stop_clears_carry_over() {
         let (mut player, _tx, _) = make_player(None);
         player.carry_over = vec![(
@@ -1691,6 +1947,30 @@ mod tests {
             player.last_instruments.is_empty(),
             "last_instruments must be cleared by do_sync_restart"
         );
+    }
+
+    #[test]
+    fn test_do_stop_clears_pending_song_position() {
+        let (mut player, _tx, _) = make_player(None);
+        player.pending_song_position = Some(240);
+        player.do_stop();
+        assert_eq!(player.pending_song_position, None);
+    }
+
+    #[test]
+    fn test_do_clock_stop_clears_pending_song_position() {
+        let (mut player, _tx, _) = make_player(None);
+        player.pending_song_position = Some(240);
+        player.do_clock_stop();
+        assert_eq!(player.pending_song_position, None);
+    }
+
+    #[test]
+    fn test_do_sync_restart_clears_pending_song_position() {
+        let (mut player, _tx, _) = make_player(None);
+        player.pending_song_position = Some(240);
+        player.do_sync_restart();
+        assert_eq!(player.pending_song_position, None);
     }
 
     // T-15: do_stop, do_clock_stop, and do_pause each reset every channel with

@@ -73,9 +73,9 @@ PROPELLER_SYNC_PORT="IAC Driver Bus 1" propeller start --sync
 `--sync` requires `PROPELLER_SYNC_PORT` to be set. If the variable is absent or names an unknown port the daemon exits with an error before opening any port.
 
 In sync mode, propeller also relays the incoming external clock (MIDI Start, Stop, Continue,
-and 24-ppqn Timing Clock) straight back out to its own output port, so any downstream gear
-chained off that port stays in sync too. This forwarding is on by default; disable it with
-`--no-clock-forward`:
+Song Position Pointer, and 24-ppqn Timing Clock) straight back out to its own output port, so
+any downstream gear chained off that port stays in sync too. This forwarding is on by default;
+disable it with `--no-clock-forward`:
 
 ```sh
 PROPELLER_SYNC_PORT="IAC Driver Bus 1" propeller start --sync --no-clock-forward
@@ -290,7 +290,7 @@ Queues a new project definition; the change takes effect at the next bar boundar
 
 `loop-start` with no active project transitions the engine to a waiting state; playback begins automatically once a project is loaded.
 
-In sync mode both commands are rejected with a `sync_mode_active` error. Transport is controlled entirely by the external device: MIDI Start (0xFA) starts the loop from the beginning, and MIDI Stop (0xFC) pauses it, retaining the current position so a following MIDI Continue (0xFB) resumes exactly where it left off.
+In sync mode both commands are rejected with a `sync_mode_active` error. Transport is controlled entirely by the external device: MIDI Start (0xFA) starts the loop from the beginning, and MIDI Stop (0xFC) pauses it, retaining the current position so a following MIDI Continue (0xFB) resumes exactly where it left off. A Song Position Pointer (0xF2) is treated as a locate request, per MIDI 1.0: sent while paused, it relocates the retained position immediately; sent while stopped, it is queued and takes effect on the next Continue. An explicit Start always discards any pending locate and begins from position 0.
 
 #### clock-start, clock-pause, clock-resume, clock-stop
 
@@ -511,7 +511,8 @@ PROPELLER_CLOCK_SOCK=/run/user/1000/propeller-clock.sock propeller-clock start
 - **Position query** — `propeller loop position` (with an optional `--poll`) or the `get-position` socket command report the current tick position for driving visual feedback such as step highlighting.
 - **Project state query** — `propeller project get` or the `project` socket command report the active and staged project as complete JSON, without needing to track separately what was last loaded.
 - **Operating modes** — `standalone`, `clock`, and `sync` modes are supported. `standalone` and `clock` are switchable at runtime via `set-mode`; `sync` requires `--sync` at daemon startup.
-- **Sync-mode clock forwarding** — while following an external MIDI clock, propeller relays it (Start, Stop, Continue, and Timing Clock) back out to its own output port so downstream devices chained off that port also stay in sync; on by default in sync mode, disable with `--no-clock-forward`.
+- **Sync-mode clock forwarding** — while following an external MIDI clock, propeller relays it (Start, Stop, Continue, Song Position Pointer, and Timing Clock) back out to its own output port so downstream devices chained off that port also stay in sync; on by default in sync mode, disable with `--no-clock-forward`.
+- **Song Position Pointer** — in sync mode, an incoming Song Position Pointer (0xF2) relocates playback per MIDI 1.0: applied immediately while paused, or queued while stopped and applied on the next MIDI Continue.
 - **propeller-clock** — a bundled standalone MIDI clock daemon (`start`/`pause`/`resume`/`stop`/`status`/`bpm`) for driving propeller's sync mode in tests without a DAW or external hardware. See [propeller-clock](#propeller-clock) above.
 
 ## Changelog

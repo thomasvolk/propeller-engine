@@ -31,6 +31,7 @@ pub(crate) enum LoopCommand {
     SyncStart,
     SyncContinue,
     SyncStop,
+    SyncSongPosition(u64),
     SyncBpmUpdate(f64),
 }
 
@@ -148,6 +149,15 @@ impl LoopEngine {
 
     pub fn sync_bpm_update(&self, bpm: f64) {
         let _ = self.sender.send(LoopCommand::SyncBpmUpdate(bpm));
+    }
+
+    // MIDI Song Position Pointer (0xF2): `position` is the raw 14-bit MIDI beat count from
+    // the wire (1 beat = a sixteenth note), converted here to engine ticks. Per MIDI 1.0
+    // this is a locate request, not a transport command — see PlayerLoop's handling for
+    // when it takes effect.
+    pub fn sync_song_position(&self, position: u16) {
+        let ticks = position as u64 * (crate::domain::PPQN as u64 / 4);
+        let _ = self.sender.send(LoopCommand::SyncSongPosition(ticks));
     }
 }
 
@@ -362,6 +372,13 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(midi::MidiEvent::ClockStop);
+            Ok(())
+        }
+        fn song_position(&mut self, position: u16) -> Result<(), MidiSendError> {
+            self.captured
+                .lock()
+                .unwrap()
+                .push(midi::MidiEvent::SongPosition(position));
             Ok(())
         }
     }
@@ -994,6 +1011,176 @@ mod tests {
     }
 
     #[test]
+    fn sync_song_position_while_paused_relocates_frozen_tick() {
+        // MIDI Song Position Pointer (0xF2), typically sent while paused, must move the
+        // frozen Song Position itself so a following Continue resumes from the new spot.
+        let store = make_store_with_delayed_note();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
+        let engine = LoopEngine::new(store, Box::new(output));
+        engine.sync_start();
+        wait_for_state(&engine, EngineState::Running, 500);
+
+        assert!(
+            wait_for_nonzero_tick(&engine, 300),
+            "precondition failed: expected an event to have fired"
+        );
+
+        engine.sync_stop();
+        wait_for_state(&engine, EngineState::Paused, 500);
+
+        // 4 MIDI beats (sixteenth notes) * 120 ticks/beat (PPQN 480 / 4) = 480 ticks.
+        engine.sync_song_position(4);
+
+        let deadline = Instant::now() + Duration::from_millis(300);
+        let mut saw_target = false;
+        while Instant::now() < deadline {
+            if engine.current_tick() == 480 {
+                saw_target = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(
+            saw_target,
+            "expected current_tick() == 480 after SongPosition(4), got {}",
+            engine.current_tick()
+        );
+
+        // Position must stay frozen at the new location, not drift or snap back.
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(engine.current_tick(), 480);
+        assert_eq!(engine.state(), EngineState::Paused);
+    }
+
+    #[test]
+    fn sync_song_position_while_stopped_then_continue_resumes_from_that_position() {
+        // Per MIDI 1.0, Song Position Pointer is normally sent while stopped and followed
+        // by Continue: the locate request must take effect once Continue arrives, not be
+        // silently dropped just because playback was never running yet.
+        let store = Arc::new(RwLock::new(ProjectStore::new()));
+        let project = Project {
+            header: Header {
+                bpm: 300,
+                loop_duration: 1_000_000,
+            },
+            tracks: vec![Track {
+                name: "t".to_string(),
+                channel: 1,
+                instrument: 0,
+                notes: vec![
+                    Note {
+                        start_tick: 0,
+                        duration: 10,
+                        pitch: 60,
+                        velocity: 80,
+                    },
+                    Note {
+                        start_tick: 900,
+                        duration: 10,
+                        pitch: 62,
+                        velocity: 80,
+                    },
+                ],
+                pitch_bends: vec![],
+            }],
+        };
+        store.write().unwrap().set_pending(project).unwrap();
+        store.write().unwrap().commit_pending();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
+        let engine = LoopEngine::new(store, Box::new(output));
+        assert_eq!(engine.state(), EngineState::Stopped);
+
+        // 1 MIDI beat * 120 ticks/beat = tick 120, which lands between the two notes.
+        engine.sync_song_position(1);
+        std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(
+            engine.state(),
+            EngineState::Stopped,
+            "a locate request alone must not start playback"
+        );
+
+        engine.sync_continue();
+        wait_for_state(&engine, EngineState::Running, 500);
+
+        let deadline = Instant::now() + Duration::from_millis(300);
+        let mut saw_second_note = false;
+        while Instant::now() < deadline {
+            let events = captured.lock().unwrap();
+            if events.contains(&midi::MidiEvent::NoteOn {
+                channel: 1,
+                pitch: 62,
+                velocity: 80,
+            }) {
+                saw_second_note = true;
+                break;
+            }
+            drop(events);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        engine.sync_stop();
+
+        assert!(
+            saw_second_note,
+            "expected the pitch-62 NoteOn (tick 900) to fire after Continue"
+        );
+
+        let events = captured.lock().unwrap();
+        assert!(
+            !events.contains(&midi::MidiEvent::NoteOn {
+                channel: 1,
+                pitch: 60,
+                velocity: 80
+            }),
+            "pitch-60 NoteOn (tick 0) must not fire — playback should resume from the \
+             located position, not the start of the loop"
+        );
+    }
+
+    #[test]
+    fn sync_start_discards_pending_song_position() {
+        // An explicit Start (0xFA) always begins from position 0, per MIDI 1.0, even if a
+        // Song Position Pointer was queued up beforehand.
+        let store = make_test_store_with_project(); // note at tick 0
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let output = CapturingOutput {
+            captured: Arc::clone(&captured),
+        };
+        let engine = LoopEngine::new(store, Box::new(output));
+
+        engine.sync_song_position(10);
+        std::thread::sleep(Duration::from_millis(20));
+
+        engine.sync_start();
+        wait_for_state(&engine, EngineState::Running, 500);
+
+        let deadline = Instant::now() + Duration::from_millis(300);
+        let mut saw_note = false;
+        while Instant::now() < deadline {
+            if captured.lock().unwrap().contains(&midi::MidiEvent::NoteOn {
+                channel: 1,
+                pitch: 60,
+                velocity: 80,
+            }) {
+                saw_note = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        engine.sync_stop();
+
+        assert!(
+            saw_note,
+            "expected the tick-0 NoteOn to fire — Start must ignore any pending locate request"
+        );
+    }
+
+    #[test]
     fn single_note_loop_emits_note_on_then_note_off() {
         let (engine, captured) = make_engine_with_project();
         engine.start();
@@ -1567,6 +1754,9 @@ mod tests {
                 Ok(())
             }
             fn clock_stop(&mut self) -> Result<(), MidiSendError> {
+                Ok(())
+            }
+            fn song_position(&mut self, _position: u16) -> Result<(), MidiSendError> {
                 Ok(())
             }
         }

@@ -91,6 +91,12 @@ impl MidiOutput for MidiPortOutput {
     fn clock_stop(&mut self) -> Result<(), MidiSendError> {
         self.0.send(&clock_stop_bytes()).map_err(MidiSendError::new)
     }
+
+    fn song_position(&mut self, position: u16) -> Result<(), MidiSendError> {
+        self.0
+            .send(&song_position_bytes(position))
+            .map_err(MidiSendError::new)
+    }
 }
 
 pub fn find_port_by_name(names: &[String], target: &str) -> Option<usize> {
@@ -128,6 +134,13 @@ fn clock_continue_bytes() -> [u8; 1] {
 }
 fn clock_stop_bytes() -> [u8; 1] {
     [0xFC]
+}
+fn song_position_bytes(position: u16) -> [u8; 3] {
+    [
+        0xF2,
+        (position & 0x7F) as u8,
+        ((position >> 7) & 0x7F) as u8,
+    ]
 }
 
 pub fn list_ports() -> Vec<MidiPortInfo> {
@@ -295,6 +308,23 @@ mod tests {
     #[test]
     fn clock_stop_byte() {
         assert_eq!(clock_stop_bytes(), [0xFC]);
+    }
+
+    #[test]
+    fn song_position_bytes_zero() {
+        assert_eq!(song_position_bytes(0), [0xF2, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn song_position_bytes_max() {
+        // 16383 = 0b11_1111_1111_1111 -> LSB 0x7F, MSB 0x7F.
+        assert_eq!(song_position_bytes(16383), [0xF2, 0x7F, 0x7F]);
+    }
+
+    #[test]
+    fn song_position_bytes_mid_value() {
+        // 120 = 0b00_0000_1111000 -> LSB 0x78, MSB 0x00.
+        assert_eq!(song_position_bytes(120), [0xF2, 0x78, 0x00]);
     }
 
     #[test]

@@ -5,6 +5,6 @@ pub mod project;
 pub mod store;
 pub mod validation;
 
-pub use project::{Header, Note, PitchBend, Project, Track};
+pub use project::{Header, Note, PPQN, PitchBend, Project, Track};
 pub use store::ProjectStore;
 pub use validation::ValidationError;

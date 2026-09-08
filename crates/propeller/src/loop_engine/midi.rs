@@ -29,6 +29,7 @@ pub trait MidiOutput: Send + 'static {
     fn clock_start(&mut self) -> Result<(), MidiSendError>;
     fn clock_continue(&mut self) -> Result<(), MidiSendError>;
     fn clock_stop(&mut self) -> Result<(), MidiSendError>;
+    fn song_position(&mut self, position: u16) -> Result<(), MidiSendError>;
 }
 
 // Lets a single MidiOutput connection be driven from more than one thread — the player
@@ -68,6 +69,10 @@ impl MidiOutput for SharedMidiOutput {
     fn clock_stop(&mut self) -> Result<(), MidiSendError> {
         self.0.lock().unwrap().clock_stop()
     }
+
+    fn song_position(&mut self, position: u16) -> Result<(), MidiSendError> {
+        self.0.lock().unwrap().song_position(position)
+    }
 }
 
 #[cfg(test)]
@@ -94,6 +99,7 @@ pub enum MidiEvent {
     ClockStart,
     ClockContinue,
     ClockStop,
+    SongPosition(u16),
 }
 
 #[cfg(test)]
@@ -152,6 +158,11 @@ impl MidiOutput for MockMidiOutput {
 
     fn clock_stop(&mut self) -> Result<(), MidiSendError> {
         self.events.push(MidiEvent::ClockStop);
+        Ok(())
+    }
+
+    fn song_position(&mut self, position: u16) -> Result<(), MidiSendError> {
+        self.events.push(MidiEvent::SongPosition(position));
         Ok(())
     }
 }
@@ -220,6 +231,14 @@ impl MidiOutput for CapturingMidiOutput {
 
     fn clock_stop(&mut self) -> Result<(), MidiSendError> {
         self.events.lock().unwrap().push(MidiEvent::ClockStop);
+        Ok(())
+    }
+
+    fn song_position(&mut self, position: u16) -> Result<(), MidiSendError> {
+        self.events
+            .lock()
+            .unwrap()
+            .push(MidiEvent::SongPosition(position));
         Ok(())
     }
 }

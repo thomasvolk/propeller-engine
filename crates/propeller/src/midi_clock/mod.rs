@@ -16,6 +16,9 @@ pub enum ClockMessage {
     Start,
     Continue,
     Stop,
+    // Song Position Pointer (0xF2): a 14-bit count of MIDI beats (1 beat = a sixteenth
+    // note = 6 clock pulses) since the start of the song.
+    SongPosition(u16),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -115,19 +118,24 @@ impl MidiClockReceiver {
     }
 }
 
-// Classifies a raw incoming MIDI Realtime byte, without touching any output.
+// Classifies a raw incoming MIDI Realtime/Common byte(s), without touching any output.
 fn classify_clock_message(bytes: &[u8]) -> Option<ClockMessage> {
     match bytes {
         [0xF8] => Some(ClockMessage::Pulse),
         [0xFA] => Some(ClockMessage::Start),
         [0xFB] => Some(ClockMessage::Continue),
         [0xFC] => Some(ClockMessage::Stop),
+        [0xF2, lsb, msb] => {
+            let value = ((*msb as u16 & 0x7F) << 7) | (*lsb as u16 & 0x7F);
+            Some(ClockMessage::SongPosition(value))
+        }
         _ => None,
     }
 }
 
-// Classifies a raw incoming MIDI Realtime byte and, if recognized, forwards the matching
-// clock message to `output` before returning it for the engine-tracking side to consume.
+// Classifies a raw incoming MIDI Realtime/Common byte(s) and, if recognized, forwards the
+// matching clock message to `output` before returning it for the engine-tracking side to
+// consume.
 fn forward_clock_message(bytes: &[u8], output: &mut dyn MidiOutput) -> Option<ClockMessage> {
     let message = classify_clock_message(bytes)?;
     let _ = match message {
@@ -135,6 +143,7 @@ fn forward_clock_message(bytes: &[u8], output: &mut dyn MidiOutput) -> Option<Cl
         ClockMessage::Start => output.clock_start(),
         ClockMessage::Continue => output.clock_continue(),
         ClockMessage::Stop => output.clock_stop(),
+        ClockMessage::SongPosition(position) => output.song_position(position),
     };
     Some(message)
 }
@@ -187,6 +196,13 @@ fn run_receiver(
                 // resumes where it left off. This is a deliberate departure from the
                 // MIDI 1.0 spec convention that Stop implies reset to Song Position 0.
                 engine.sync_stop();
+            }
+            Ok(ClockMessage::SongPosition(position)) => {
+                // Per MIDI 1.0, Song Position Pointer is a locate request, normally sent
+                // while stopped/paused and followed by Continue — it does not itself
+                // start or stop playback. The engine applies it immediately if paused,
+                // or remembers it for the next Continue if stopped.
+                engine.sync_song_position(position);
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 let current = state.lock().unwrap().clone();
@@ -414,6 +430,30 @@ mod tests {
     }
 
     #[test]
+    fn song_position_message_does_not_change_sync_clock_state() {
+        // Song Position Pointer is a locate request (see loop_engine tests for its effect
+        // on playback position), not a clock-tracking signal — the receiver's own
+        // SyncClockState must be unaffected by it.
+        let engine = make_engine_with_project();
+        let (tx, rx) = mpsc::channel::<ClockMessage>();
+        let receiver =
+            MidiClockReceiver::new_for_test(rx, Arc::clone(&engine), mock_forward_output(), true);
+
+        tx.send(ClockMessage::Start).unwrap();
+        wait_for_engine_state(&engine, EngineState::Running, 500);
+
+        tx.send(ClockMessage::Stop).unwrap();
+        wait_for_engine_state(&engine, EngineState::Paused, 500);
+        wait_for_sync_state(&receiver, SyncClockState::Waiting, 500);
+
+        tx.send(ClockMessage::SongPosition(16)).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+
+        assert_eq!(receiver.sync_clock_state(), SyncClockState::Waiting);
+        assert_eq!(engine.state(), EngineState::Paused);
+    }
+
+    #[test]
     fn timeout_declares_clock_lost_and_pulse_resumes_tracking_without_start() {
         // Prime with very high-frequency pulses (≈30_000 BPM → 2 ms interval → 7 ms timeout)
         let engine = make_engine_with_project();
@@ -509,6 +549,10 @@ mod tests {
             forward_clock_message(&[0xFC], &mut m),
             Some(ClockMessage::Stop)
         ));
+        assert!(matches!(
+            forward_clock_message(&[0xF2, 0x00, 0x00], &mut m),
+            Some(ClockMessage::SongPosition(0))
+        ));
         assert_eq!(
             m.events,
             vec![
@@ -516,8 +560,29 @@ mod tests {
                 MidiEvent::ClockStart,
                 MidiEvent::ClockContinue,
                 MidiEvent::ClockStop,
+                MidiEvent::SongPosition(0),
             ]
         );
+    }
+
+    #[test]
+    fn classify_song_position_decodes_14_bit_value() {
+        // 16383 = 0b11_1111_1111_1111 -> LSB 0x7F, MSB 0x7F.
+        assert!(matches!(
+            classify_clock_message(&[0xF2, 0x7F, 0x7F]),
+            Some(ClockMessage::SongPosition(16383))
+        ));
+        // 120 -> LSB 0x78, MSB 0x00.
+        assert!(matches!(
+            classify_clock_message(&[0xF2, 0x78, 0x00]),
+            Some(ClockMessage::SongPosition(120))
+        ));
+    }
+
+    #[test]
+    fn classify_song_position_rejects_wrong_length() {
+        assert!(classify_clock_message(&[0xF2, 0x00]).is_none());
+        assert!(classify_clock_message(&[0xF2]).is_none());
     }
 
     #[test]
