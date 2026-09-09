@@ -67,7 +67,12 @@ fn dispatch_action(sock_path: &Path, cmd: serde_json::Value, error_message: &mut
     }
 }
 
-fn adjust_bpm(sock_path: &Path, status: &Option<Status>, delta: i64, error_message: &mut Option<String>) {
+fn adjust_bpm(
+    sock_path: &Path,
+    status: &Option<Status>,
+    delta: i64,
+    error_message: &mut Option<String>,
+) {
     let current = status
         .as_ref()
         .map(|s| s.bpm.round() as i64)
@@ -81,8 +86,8 @@ fn adjust_bpm(sock_path: &Path, status: &Option<Status>, delta: i64, error_messa
 }
 
 /// Runs the interactive TUI against the daemon at `sock_path` until the user quits
-/// (q/Esc), stops the clock (which also terminates the daemon), or the daemon
-/// disconnects. Always restores the terminal before returning, even on error.
+/// (q/Esc). Stopping the clock (`x`) and a daemon disconnect both keep the console
+/// open. Always restores the terminal before returning, even on error.
 pub fn run(sock_path: &Path) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -96,32 +101,26 @@ pub fn run(sock_path: &Path) -> io::Result<()> {
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
-    match result {
-        Ok(Some(msg)) => {
-            println!("{msg}");
-            Ok(())
-        }
-        Ok(None) => Ok(()),
-        Err(e) => Err(e),
-    }
+    result
 }
 
 fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     sock_path: &Path,
-) -> io::Result<Option<String>> {
+) -> io::Result<()> {
     let mut status = fetch_status(sock_path).ok();
     let mut error_message: Option<String> = None;
+    let mut disconnected = false;
 
     loop {
-        terminal.draw(|f| draw(f, status.as_ref(), error_message.as_deref()))?;
+        terminal.draw(|f| draw(f, status.as_ref(), error_message.as_deref(), disconnected))?;
 
         if event::poll(POLL_INTERVAL)?
             && let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
         {
             match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => return Ok(None),
+                KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                 KeyCode::Up | KeyCode::Char('k') => {
                     adjust_bpm(sock_path, &status, 1, &mut error_message);
                 }
@@ -150,30 +149,28 @@ fn event_loop(
                     );
                 }
                 KeyCode::Char('x') => {
-                    match client::send_command(sock_path, serde_json::json!({"command": "stop"}))
-                    {
-                        Ok(_) => return Ok(Some("propeller-clock: stopped".to_string())),
-                        Err(ClientError::Daemon { message }) => error_message = Some(message),
-                        Err(_) => {}
-                    }
+                    dispatch_action(
+                        sock_path,
+                        serde_json::json!({"command": "halt"}),
+                        &mut error_message,
+                    );
                 }
                 _ => {}
             }
         }
 
         match fetch_status(sock_path) {
-            Ok(s) => status = Some(s),
-            Err(ClientError::Connect(_)) => {
-                return Ok(Some(
-                    "propeller-clock: daemon is no longer running".to_string(),
-                ));
+            Ok(s) => {
+                status = Some(s);
+                disconnected = false;
             }
+            Err(ClientError::Connect(_)) => disconnected = true,
             Err(_) => {}
         }
     }
 }
 
-fn draw(f: &mut Frame, status: Option<&Status>, error_message: Option<&str>) {
+fn draw(f: &mut Frame, status: Option<&Status>, error_message: Option<&str>, disconnected: bool) {
     let area = f.area();
     let block = Block::default()
         .borders(Borders::ALL)
@@ -216,7 +213,14 @@ fn draw(f: &mut Frame, status: Option<&Status>, error_message: Option<&str>) {
         rows[1],
     );
 
-    if let Some(msg) = error_message {
+    if disconnected {
+        f.render_widget(
+            Paragraph::new("daemon disconnected \u{2014} press q to quit")
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(Color::Red)),
+            rows[2],
+        );
+    } else if let Some(msg) = error_message {
         f.render_widget(
             Paragraph::new(msg)
                 .alignment(Alignment::Center)

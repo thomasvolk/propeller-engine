@@ -498,11 +498,15 @@ A help line at the bottom lists the available keys:
 - `s` — start
 - `p` — pause
 - `r` — resume
-- `x` — stop (also exits the console, since this terminates the daemon)
-- `q` / `Esc` — quit the console, leaving the daemon running
+- `x` — stop the transport (sends MIDI Stop and resets position); the daemon keeps running and
+  the console stays open, same as `s`/`p`/`r`
+- `q` / `Esc` — the only way to close the console; leaves the daemon running
 
 An action that's invalid for the current state (e.g. `resume` while already running) shows the
-daemon's error message inline until the next valid action.
+daemon's error message inline until the next valid action. If the daemon disconnects for any
+reason (e.g. `propeller-clock stop` from another terminal, or a crash), the console shows a
+"daemon disconnected" banner instead of closing, and reconnects automatically if the daemon comes
+back; `q`/`Esc` still closes it either way.
 
 ### Selecting a MIDI output port
 

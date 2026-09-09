@@ -18,10 +18,17 @@ pub enum Command {
     Start,
     Pause,
     Resume,
+    /// Stops the transport and shuts down the daemon (see `is_stop` in `connection_handler`).
     Stop,
+    /// Stops the transport only; the daemon keeps running. Used by the console's `x` key.
+    Halt,
     Status,
-    Bpm { bpm: u32 },
-    Seek { position: u32 },
+    Bpm {
+        bpm: u32,
+    },
+    Seek {
+        position: u32,
+    },
 }
 
 pub struct ClockSettings {
@@ -89,6 +96,10 @@ fn dispatch(line: &str, engine: &Arc<ClockEngine>, settings: &ClockSettings) -> 
             ok_response()
         }
         Command::Stop => {
+            engine.stop();
+            ok_response()
+        }
+        Command::Halt => {
             engine.stop();
             ok_response()
         }
@@ -430,6 +441,42 @@ mod tests {
         let v: Value = serde_json::from_str(resp.trim()).unwrap();
         assert_eq!(v["status"], "ok");
         assert!(rx.try_recv().is_ok());
+    }
+
+    #[tokio::test]
+    async fn halt_command_does_not_signal_shutdown() {
+        let engine = make_engine();
+        engine.start();
+        let deadline = std::time::Instant::now() + Duration::from_millis(500);
+        while engine.state() != ClockState::Running && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+
+        let settings = make_settings();
+        let (tx, mut rx) = oneshot::channel::<()>();
+        let shutdown_tx = Arc::new(Mutex::new(Some(tx)));
+
+        let (client, server) = UnixStream::pair().unwrap();
+        let engine_clone = Arc::clone(&engine);
+        tokio::spawn(async move {
+            connection_handler(server, engine_clone, settings, shutdown_tx).await;
+        });
+
+        let cmd = r#"{"command":"halt"}"#.to_string() + "\n";
+        let mut client = client;
+        client.write_all(cmd.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        client.read_to_string(&mut resp).await.unwrap();
+
+        let v: Value = serde_json::from_str(resp.trim()).unwrap();
+        assert_eq!(v["status"], "ok");
+
+        let deadline = std::time::Instant::now() + Duration::from_millis(500);
+        while engine.state() != ClockState::Stopped && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        assert_eq!(engine.state(), ClockState::Stopped);
+        assert!(rx.try_recv().is_err());
     }
 
     #[tokio::test]
