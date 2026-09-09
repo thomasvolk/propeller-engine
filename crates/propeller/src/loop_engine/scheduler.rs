@@ -20,15 +20,9 @@ impl Scheduler {
         }
     }
 
-    // Truncated to whole microseconds, matching the precision of the pause/resume tick
-    // offset this feeds (see player.rs) where sub-microsecond precision is immaterial.
-    pub fn micros_per_tick(&self) -> u64 {
-        self.micros_per_tick as u64
-    }
-
     // Uses the untruncated micros-per-tick so that scheduling stays exact relative to
     // the tracked tempo across arbitrarily many ticks/loops, instead of compounding the
-    // sub-microsecond rounding error that truncating micros_per_tick() would introduce
+    // sub-microsecond rounding error that truncating to whole microseconds would introduce
     // into every deadline.
     pub fn deadline_for_tick(&self, anchor: Instant, tick: u64) -> Instant {
         anchor + Duration::from_secs_f64(tick as f64 * self.micros_per_tick / 1_000_000.0)
@@ -53,6 +47,18 @@ impl Scheduler {
         self.micros_per_tick = 60_000_000.0 / (bpm * 480.0);
     }
 
+    // Computes the anchor so that `tick`'s deadline (via deadline_for_tick) falls at exactly
+    // `now`. Used by PlayerLoop's resume path (EP-1): uses the same untruncated rate as
+    // deadline_for_tick, rather than the whole-microsecond-truncated micros_per_tick(),
+    // which was the confirmed root cause of the post-resume slowdown (T-2's finding) — that
+    // truncation understates the tick duration, so subtracting it from `now` leaves the new
+    // anchor closer to `now` than it should be, pushing the first tick's deadline into the
+    // future by `tick * (exact_rate - truncated_rate)` and producing a settling delay in
+    // place of the zero-tolerance immediacy NF-3 requires.
+    pub fn anchor_for_resume(&self, now: Instant, tick: u64) -> Instant {
+        now - Duration::from_secs_f64(tick as f64 * self.micros_per_tick / 1_000_000.0)
+    }
+
     pub fn sleep_until(&self, deadline: Instant) {
         let now = Instant::now();
         if deadline <= now {
@@ -70,18 +76,6 @@ impl Scheduler {
 mod tests {
     use super::*;
     use std::time::Duration;
-
-    #[test]
-    fn micros_per_tick_bpm_125() {
-        let s = Scheduler::new(125);
-        assert_eq!(s.micros_per_tick(), 1000);
-    }
-
-    #[test]
-    fn micros_per_tick_bpm_120() {
-        let s = Scheduler::new(120);
-        assert_eq!(s.micros_per_tick(), 1041);
-    }
 
     #[test]
     fn deadline_for_tick_zero() {
@@ -102,9 +96,6 @@ mod tests {
     fn update_bpm_changes_rate() {
         let mut s = Scheduler::new(125);
         s.update_bpm(60);
-        // 60_000_000 / (60 * 480) = 60_000_000 / 28_800 = 2083 (truncated public value;
-        // the untruncated rate is 2083.333... us/tick)
-        assert_eq!(s.micros_per_tick(), 2083);
         let start = Instant::now();
         // 480 ticks is exactly one quarter note, so at 480 ticks the untruncated rate
         // gives an exact result regardless of bpm's divisibility: 60_000_000us / 60bpm =

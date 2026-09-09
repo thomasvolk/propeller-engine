@@ -60,6 +60,10 @@ enum SleepResult {
     SyncStop,
     SyncStart,
     SyncContinue,
+    // A SyncBpmUpdate was observed on the channel mid-wait; the caller must apply
+    // pending_sync_bpm and recompute the deadline for the tick it was waiting on, then
+    // resume waiting (EP-2, D-1 Option C).
+    BpmChanged,
     Disconnected,
 }
 
@@ -103,7 +107,10 @@ fn sleep_until_with_poll(
                 Ok(LoopCommand::SyncStop) => return SleepResult::SyncStop,
                 Ok(LoopCommand::SyncStart) => return SleepResult::SyncStart,
                 Ok(LoopCommand::SyncContinue) => return SleepResult::SyncContinue,
-                Ok(LoopCommand::SyncBpmUpdate(bpm)) => *pending_sync_bpm = Some(bpm),
+                Ok(LoopCommand::SyncBpmUpdate(bpm)) => {
+                    *pending_sync_bpm = Some(bpm);
+                    return SleepResult::BpmChanged;
+                }
                 // Song Position is only actionable while Stopped/Paused (a locate request
                 // per MIDI 1.0); one arriving mid-loop while Running is dropped.
                 Ok(
@@ -327,6 +334,8 @@ impl PlayerLoop {
                 Some(LoopOutcome::Paused)
             }
             SleepResult::Disconnected => Some(LoopOutcome::Disconnected),
+            // Handled directly by play_events' retry loop before it ever reaches here.
+            SleepResult::BpmChanged => None,
         }
     }
 
@@ -416,19 +425,49 @@ impl PlayerLoop {
         }
     }
 
+    // Applies a staged sync BPM update to the scheduler, if one is pending, and reports
+    // whether it did. Only the scheduler's rate changes here — never anchor, current_tick,
+    // or loop_elapsed_ticks (F-6, AC-4) — so a caller that just recomputes a deadline from
+    // the (unchanged) anchor picks up the new rate with no other side effect.
+    fn apply_pending_sync_bpm(&mut self) -> bool {
+        if let Some(bpm) = self.pending_sync_bpm.take() {
+            self.scheduler.update_bpm_precise(bpm);
+            true
+        } else {
+            false
+        }
+    }
+
     fn play_events(&mut self, events: Vec<(u64, LoopEvent)>) -> LoopOutcome {
         let n = events.len();
         let mut i = 0;
         while i < n {
+            // Applies immediately (rather than deferring to advance_loop()) any BPM update
+            // staged by the previous iteration's mid-loop command check below, so the very
+            // next not-yet-fired event's deadline already reflects it (F-1, F-2, F-5, AC-1,
+            // AC-2).
+            self.apply_pending_sync_bpm();
             let tick = events[i].0;
-            let deadline = self.scheduler.deadline_for_tick(self.anchor, tick);
+            let mut deadline = self.scheduler.deadline_for_tick(self.anchor, tick);
 
-            let sleep_result = sleep_until_with_poll(
-                deadline,
-                &self.receiver,
-                &self.scheduler,
-                &mut self.pending_sync_bpm,
-            );
+            let sleep_result = loop {
+                let result = sleep_until_with_poll(
+                    deadline,
+                    &self.receiver,
+                    &self.scheduler,
+                    &mut self.pending_sync_bpm,
+                );
+                // A SyncBpmUpdate arrived strictly during the wait for this tick's
+                // already-computed deadline: apply it and recompute that same deadline
+                // before resuming the wait, so even the in-flight tick reflects the new
+                // tempo with no settling window (D-1 Option C; NF-2, AC-1).
+                if matches!(result, SleepResult::BpmChanged) {
+                    self.apply_pending_sync_bpm();
+                    deadline = self.scheduler.deadline_for_tick(self.anchor, tick);
+                    continue;
+                }
+                break result;
+            };
             if let Some(outcome) = self.handle_sleep_result(sleep_result, &events[i..]) {
                 return outcome;
             }
@@ -753,11 +792,18 @@ impl PlayerLoop {
         true
     }
 
+    // Computes the anchor so that `tick`'s deadline (via Scheduler::deadline_for_tick) falls
+    // at exactly `now` — i.e. the first event after resume fires immediately, at the tempo
+    // tracked before the pause (F-1, F-2, NF-1, NF-2, NF-3). Delegates to Scheduler so the
+    // untruncated tick rate stays encapsulated there, alongside deadline_for_tick.
+    fn resume_anchor(&self, now: Instant, tick: u64) -> Instant {
+        self.scheduler.anchor_for_resume(now, tick)
+    }
+
     fn handle_running(&mut self) -> bool {
         let events = if let Some(ctx) = self.pause_context.take() {
             let tick_of_next = ctx.remaining_events.first().map(|(t, _)| *t).unwrap_or(0);
-            self.anchor = Instant::now()
-                - Duration::from_micros(tick_of_next * self.scheduler.micros_per_tick());
+            self.anchor = self.resume_anchor(Instant::now(), tick_of_next);
             self.loop_duration = ctx.loop_duration;
             ctx.remaining_events
         } else {
@@ -2021,6 +2067,374 @@ mod tests {
                 .any(|e| matches!(e, MidiEvent::PitchBend { .. })),
             "do_sync_restart must not send a pitch-bend reset, got {:?}",
             events
+        );
+    }
+
+    // T-1: resume must schedule the first tick after resume at exactly `now` — zero
+    // settling window, exact tempo carry-over, zero tolerance (F-1, F-2, AC-1, NF-1, NF-2,
+    // NF-3). Uses PlayerLoop's default scheduler (bpm 120, whose exact micros-per-tick,
+    // 1041.666..., is not a whole number), driving the resume path directly via a fixed
+    // `now` rather than real-clock timing, per the spec's D-1 test verification strategy.
+    #[test]
+    fn test_resume_anchor_schedules_first_tick_with_zero_settling_delay() {
+        let (player, _tx, _) = make_player(None);
+        let now = Instant::now();
+        let tick_of_next = 960u64;
+
+        let anchor = player.resume_anchor(now, tick_of_next);
+        let deadline = player.scheduler.deadline_for_tick(anchor, tick_of_next);
+
+        assert_eq!(
+            deadline,
+            now,
+            "resume must schedule the first tick after resume at exactly `now`, with zero \
+             settling window; got a delay of {:?}",
+            deadline.saturating_duration_since(now)
+        );
+    }
+
+    // T-4: tempo must stay exact across the loop-repeat boundary that follows a resume, not
+    // just at the instant of resume (F-2, AC-2). Composes resume_anchor with the same
+    // deadline_for_tick call advance_loop() uses to roll `anchor` into the next pass, and
+    // checks the tick-to-tick gap across that boundary is exactly what the tracked tempo
+    // predicts — no drift introduced by the loop repeat that follows a resume.
+    #[test]
+    fn test_resume_then_loop_repeat_preserves_exact_tempo() {
+        let (player, _tx, _) = make_player(None);
+        let now = Instant::now();
+        let tick_of_next = 300u64;
+        let loop_duration = 480u64;
+
+        let anchor_after_resume = player.resume_anchor(now, tick_of_next);
+        let first_tick_deadline = player
+            .scheduler
+            .deadline_for_tick(anchor_after_resume, tick_of_next);
+        assert_eq!(
+            first_tick_deadline, now,
+            "first tick after resume must fire at exactly `now`"
+        );
+
+        // Mirrors advance_loop()'s anchor roll-over into the next pass.
+        let anchor_next_pass = player
+            .scheduler
+            .deadline_for_tick(anchor_after_resume, loop_duration);
+        let next_pass_first_tick_deadline = player.scheduler.deadline_for_tick(anchor_next_pass, 0);
+
+        let elapsed_ticks = loop_duration - tick_of_next;
+        let expected_gap = player
+            .scheduler
+            .deadline_for_tick(now, elapsed_ticks)
+            .duration_since(now);
+        let actual_gap = next_pass_first_tick_deadline.duration_since(first_tick_deadline);
+
+        assert_eq!(
+            actual_gap, expected_gap,
+            "tempo must stay exact across the loop-repeat boundary following a resume, with \
+             no drift (AC-2)"
+        );
+    }
+
+    // T-6: repeated pause/resume cycles within a session must not accumulate drift (F-3,
+    // AC-3) — each resume independently recomputes `anchor` from a fresh `now`, so a
+    // sequence of exact, zero-delay resumes cannot compound into slowdown.
+    #[test]
+    fn test_repeated_resumes_do_not_accumulate_drift() {
+        let (player, _tx, _) = make_player(None);
+        for tick_of_next in [100u64, 300, 50, 400, 1] {
+            let now = Instant::now();
+            let anchor = player.resume_anchor(now, tick_of_next);
+            let deadline = player.scheduler.deadline_for_tick(anchor, tick_of_next);
+            assert_eq!(
+                deadline, now,
+                "resume at tick {tick_of_next} must independently schedule its first tick at \
+                 exactly `now`, with no drift carried over from prior resumes"
+            );
+        }
+    }
+
+    // T-8: standalone (non-sync) ClockPause/ClockResume must retain its existing observable
+    // behaviour — Paused -> Running transition and the clock_continue() MIDI signal — after
+    // the resume-anchor fix (F-4). The fix lives in resume_anchor(), which both the
+    // standalone and sync-mode resume paths already shared before this epic; this epic does
+    // not introduce a mode-specific branch, so standalone mode gains the same exactness
+    // improvement rather than being left on the truncated computation.
+    #[test]
+    fn test_standalone_clock_pause_resume_state_transition_unaffected() {
+        let p = project_with_note(
+            1920,
+            Note {
+                start_tick: 0,
+                duration: 10,
+                pitch: 60,
+                velocity: 80,
+            },
+        );
+        let (mut player, tx, recorded) = make_player(Some(p));
+        player.is_clock_mode = true;
+        player.loop_duration = 1920;
+        player.state = EngineState::Paused;
+        player.pause_context = Some(PauseContext {
+            remaining_events: vec![(480, LoopEvent::ClockPulse)],
+            loop_duration: 1920,
+        });
+        tx.send(LoopCommand::ClockResume).unwrap();
+
+        let should_continue = player.handle_paused();
+
+        assert!(should_continue);
+        assert!(
+            matches!(player.state, EngineState::Running),
+            "ClockResume must still transition Paused -> Running"
+        );
+        assert!(
+            recorded
+                .lock()
+                .unwrap()
+                .contains(&MidiEvent::ClockContinue),
+            "ClockResume must still emit clock_continue for standalone clock mode"
+        );
+    }
+
+    // EP-2 T-1: a SyncBpmUpdate staged mid-pass must be reflected by the scheduler before
+    // the very next not-yet-fired event's deadline is computed — not deferred until the
+    // pass wraps via advance_loop() (F-1, F-2, F-5, AC-1, AC-2, NF-1, NF-2). play_events never
+    // calls advance_loop() itself, so inspecting player.scheduler right after play_events
+    // returns proves the update took effect strictly within the pass, not at its end.
+    #[test]
+    fn test_sync_bpm_update_applies_before_next_events_deadline_not_at_pass_end() {
+        let (mut player, tx, _) = make_player(None);
+        player.scheduler = Scheduler::new(6000);
+        player.anchor = Instant::now();
+
+        let events = vec![(0, LoopEvent::ClockPulse), (1, LoopEvent::ClockPulse)];
+        tx.send(LoopCommand::SyncBpmUpdate(3000.0)).unwrap();
+
+        let outcome = player.play_events(events);
+
+        assert!(matches!(outcome, LoopOutcome::Complete));
+        assert_eq!(
+            player.scheduler.bpm(),
+            3000,
+            "a SyncBpmUpdate staged mid-pass must be applied to the scheduler before \
+             play_events returns, not left pending for advance_loop()"
+        );
+        assert_eq!(
+            player.pending_sync_bpm, None,
+            "the staged update must be consumed, not left pending"
+        );
+    }
+
+    // EP-2 T-4/AC-4: applying a mid-repeat SyncBpmUpdate must change only the scheduler's
+    // rate — never anchor, and loop position (current_tick/loop_elapsed_ticks) must keep
+    // advancing normally from the events actually played, unaffected by the update itself
+    // (F-6, AC-4).
+    #[test]
+    fn test_sync_bpm_update_changes_rate_only_not_loop_position() {
+        let (mut player, tx, _) = make_player(None);
+        player.scheduler = Scheduler::new(6000);
+        player.anchor = Instant::now();
+        let anchor_before = player.anchor;
+
+        let events = vec![(0, LoopEvent::ClockPulse), (5, LoopEvent::ClockPulse)];
+        tx.send(LoopCommand::SyncBpmUpdate(3000.0)).unwrap();
+
+        player.play_events(events);
+
+        assert_eq!(player.scheduler.bpm(), 3000, "the new tempo must be applied");
+        assert_eq!(
+            player.anchor, anchor_before,
+            "applying a sync BPM update must not rebase anchor (F-6)"
+        );
+        assert_eq!(
+            player.loop_elapsed_ticks, 5,
+            "loop position must still reach the last event's tick normally"
+        );
+        assert_eq!(
+            player.current_tick.load(Ordering::Relaxed),
+            5,
+            "current_tick must reflect normal tick advancement, unaffected by the BPM \
+             change itself"
+        );
+    }
+
+    // EP-2 T-6/NF-2/AC-1: a SyncBpmUpdate arriving strictly during sleep_until_with_poll's
+    // wait for an already-computed deadline (not right after an event fires) must return
+    // early via SleepResult::BpmChanged rather than sit unconsumed until that deadline
+    // elapses — satisfying "no settling window" even for the in-flight tick.
+    #[test]
+    fn test_sleep_until_with_poll_returns_bpm_changed_mid_wait() {
+        let (tx, rx) = mpsc::channel::<LoopCommand>();
+        let scheduler = Scheduler::new(120);
+        let mut pending_sync_bpm: Option<f64> = None;
+        let deadline = Instant::now() + Duration::from_millis(50);
+
+        // Keep a sender alive for the whole test: the spawned thread's own sender is
+        // dropped right after send(), which would otherwise make the *next* poll observe
+        // Disconnected instead of exercising the intended mid-wait BpmChanged path.
+        let _tx_keepalive = tx.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            tx.send(LoopCommand::SyncBpmUpdate(300.0)).unwrap();
+        });
+
+        let start = Instant::now();
+        let result = sleep_until_with_poll(deadline, &rx, &scheduler, &mut pending_sync_bpm);
+        let elapsed = start.elapsed();
+
+        assert!(
+            matches!(result, SleepResult::BpmChanged),
+            "must return BpmChanged as soon as a SyncBpmUpdate is observed mid-wait"
+        );
+        assert_eq!(pending_sync_bpm, Some(300.0));
+        assert!(
+            elapsed < Duration::from_millis(40),
+            "must return as soon as the update is observed, not wait out the original \
+             50ms deadline; took {elapsed:?}"
+        );
+    }
+
+    // EP-2 T-6/T-7 integration: after sleep_until_with_poll returns BpmChanged mid-wait,
+    // play_events must apply the update and recompute the deadline for the *same* tick,
+    // then finish emitting it — the in-flight tick's own deadline reflects the new tempo
+    // immediately, not just the next tick's.
+    #[test]
+    fn test_play_events_recomputes_in_flight_deadline_on_mid_wait_bpm_change() {
+        let (mut player, tx, recorded) = make_player(None);
+        player.scheduler = Scheduler::new(120);
+        player.anchor = Instant::now();
+
+        // At 120 bpm (~1.04ms/tick) tick 48 is ~50ms away — far enough that
+        // sleep_until_with_poll takes the polling branch (>2ms remaining) rather than the
+        // immediate/short-spin branch.
+        let events = vec![(48, LoopEvent::ClockPulse)];
+
+        // Keep a sender alive: the spawned thread's own sender is dropped right after
+        // send(), which would otherwise make play_events observe Disconnected on its next
+        // poll instead of exercising the intended mid-wait BPM change.
+        let _tx_keepalive = tx.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(5));
+            // A much higher BPM shrinks tick 48's deadline drastically, so the test can
+            // assert the in-flight tick's deadline was recomputed rather than left at the
+            // original ~50ms.
+            tx.send(LoopCommand::SyncBpmUpdate(24_000.0)).unwrap();
+        });
+
+        let start = Instant::now();
+        let outcome = player.play_events(events);
+        let elapsed = start.elapsed();
+
+        assert!(matches!(outcome, LoopOutcome::Complete));
+        assert_eq!(
+            recorded.lock().unwrap().clone(),
+            vec![MidiEvent::ClockTick],
+            "the in-flight tick must still fire exactly once"
+        );
+        assert!(
+            elapsed < Duration::from_millis(30),
+            "the recomputed (much shorter) deadline for the in-flight tick must be honoured \
+             immediately, not the original ~200ms deadline; took {elapsed:?}"
+        );
+    }
+
+    // EP-2 T-8/F-3/AC-3: successive SyncBpmUpdates, both within one pass and staged again
+    // right after, must each apply independently by their own next opportunity, with the
+    // latest value always winning — no cumulative lag relative to the tracked tempo.
+    #[test]
+    fn test_successive_sync_bpm_updates_each_apply_without_cumulative_lag() {
+        let (mut player, tx, _) = make_player(None);
+        player.scheduler = Scheduler::new(6000);
+        player.anchor = Instant::now();
+
+        let events = vec![
+            (0, LoopEvent::ClockPulse),
+            (1, LoopEvent::ClockPulse),
+            (2, LoopEvent::ClockPulse),
+        ];
+        tx.send(LoopCommand::SyncBpmUpdate(3000.0)).unwrap();
+        tx.send(LoopCommand::SyncBpmUpdate(1500.0)).unwrap();
+
+        player.play_events(events);
+
+        assert_eq!(
+            player.scheduler.bpm(),
+            1500,
+            "the latest staged update must win, applied by its own next opportunity"
+        );
+
+        // A further update arriving too late in a pass to be caught by play_events itself
+        // (staged by the post-emit check on the pass's very last event) must still be
+        // picked up with no further lag, at the earliest available synchronization point:
+        // advance_loop()'s retained fallback branch, which runs as the pass wraps — this is
+        // the same pre-existing branch the Architecture Overview keeps as harmless, not new
+        // behaviour introduced by this fix.
+        tx.send(LoopCommand::SyncBpmUpdate(750.0)).unwrap();
+        player.play_events(vec![(0, LoopEvent::ClockPulse)]);
+        player.advance_loop();
+
+        assert_eq!(
+            player.scheduler.bpm(),
+            750,
+            "an update staged too late for play_events to catch within the pass must still \
+             apply with no further lag, via advance_loop()'s retained fallback, with no \
+             drift carried over from the earlier successive updates"
+        );
+    }
+
+    // EP-2 T-10/F-4: local (non-sync) project BPM changes must be unaffected by this epic's
+    // fix — still applied only once per pass, inside advance_loop(), still rebasing anchor
+    // to Instant::now() (the behaviour this epic's fix deliberately does not touch).
+    #[test]
+    fn test_local_bpm_change_still_applied_only_in_advance_loop_and_rebases_anchor() {
+        let initial = Project {
+            header: Header {
+                bpm: 120,
+                loop_duration: 960,
+            },
+            tracks: vec![],
+        };
+        let store = make_store_with_project(initial);
+        let pending = Project {
+            header: Header {
+                bpm: 200,
+                loop_duration: 960,
+            },
+            tracks: vec![],
+        };
+        store.write().unwrap().set_pending(pending).unwrap();
+
+        let (tx, rx) = mpsc::channel();
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let mut player = PlayerLoop::new(
+            rx,
+            Arc::clone(&store),
+            Box::new(CapturingMidiOutput::new(recorded)),
+            Arc::new(Mutex::new(EngineState::Stopped)),
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(AtomicU64::new(0)),
+        );
+        player.loop_duration = 960;
+        player.scheduler = Scheduler::new(120);
+        let stale_anchor = Instant::now() - Duration::from_secs(10);
+        player.anchor = stale_anchor;
+        drop(tx);
+
+        // A local BPM change is never staged via pending_sync_bpm/SyncBpmUpdate — it is only
+        // ever observed by advance_loop() reading the (now-committed) project header.
+        assert_eq!(player.pending_sync_bpm, None);
+
+        player.advance_loop();
+
+        assert_eq!(
+            player.scheduler.bpm(),
+            200,
+            "the local project BPM must still be picked up, once per pass, in advance_loop()"
+        );
+        assert!(
+            player.anchor > stale_anchor,
+            "a local BPM change must still rebase anchor to Instant::now(), unlike the sync \
+             path this epic fixes"
         );
     }
 
