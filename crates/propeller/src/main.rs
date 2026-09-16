@@ -10,6 +10,7 @@ mod loop_engine;
 mod midi_clock;
 mod midi_port;
 mod socket_path;
+mod tui;
 
 use clap::{Parser, Subcommand};
 use ipc::EngineMode;
@@ -59,6 +60,8 @@ enum Commands {
         #[command(subcommand)]
         command: MidiCommand,
     },
+    /// Open an interactive terminal UI (launches the daemon in the background if needed)
+    Console,
     #[command(hide = true)]
     DaemonRun {
         #[arg(long)]
@@ -132,6 +135,7 @@ fn main() {
         Commands::Midi { command } => match command {
             MidiCommand::Ports => cmd_midi_ports(),
         },
+        Commands::Console => cmd_console(),
         Commands::DaemonRun {
             clock,
             sync,
@@ -450,9 +454,23 @@ fn cmd_midi_ports() {
     }
 }
 
+fn cmd_console() {
+    let sock_path = socket_path::resolve();
+    if let Err(e) = tui::run(&sock_path) {
+        eprintln!("propeller: console error: {e}");
+        std::process::exit(1);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn console_parses() {
+        let cli = Cli::try_parse_from(["propeller", "console"]).unwrap();
+        assert!(matches!(cli.command, Commands::Console));
+    }
 
     // EP-2 T-6: `project get` parses to Commands::Project { command: ProjectCommand::Get } (F-6, NF-1)
     #[test]

@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.10.0] - 2026-09-16
+
+### Changes
+
+- Added `propeller console`, an interactive terminal UI for the propeller daemon with the
+  same look and feel as `propeller-clock`'s console. Launches the daemon in the background
+  if it isn't already running, then shows live status (daemon state, mode, clock state,
+  BPM, MIDI output port, sync port) refreshed automatically.
+- The console lets you toggle the daemon on/off, cycle the MIDI output port, cycle the
+  operating mode (`standalone` → `clock` → `sync`), and cycle the MIDI sync (input) port,
+  all with single-key hotkeys.
+- Changing the port or mode takes effect immediately by stopping and restarting the daemon
+  with the new setting; switching to `sync` mode is blocked with an inline message until a
+  sync port has been chosen. None of these choices are persisted between sessions.
+- Documented the new command in the README's Usage and Features sections.
+
+---
+
 ## [0.9.3] - 2026-09-02
 
 ### Changes

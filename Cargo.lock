@@ -692,11 +692,13 @@ dependencies = [
 
 [[package]]
 name = "propeller"
-version = "0.9.3"
+version = "0.10.0"
 dependencies = [
  "clap",
+ "crossterm",
  "midir",
  "propeller-common",
+ "ratatui",
  "serde",
  "serde_json",
  "tempfile",
@@ -708,7 +710,7 @@ dependencies = [
 
 [[package]]
 name = "propeller-clock"
-version = "0.9.3"
+version = "0.10.0"
 dependencies = [
  "clap",
  "crossterm",
@@ -724,7 +726,7 @@ dependencies = [
 
 [[package]]
 name = "propeller-common"
-version = "0.9.3"
+version = "0.10.0"
 dependencies = [
  "tempfile",
 ]

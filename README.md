@@ -201,6 +201,29 @@ List all output ports propeller can see:
 propeller midi ports
 ```
 
+### Interactive console
+
+```sh
+propeller console
+```
+
+Launches the daemon in the background if it isn't already running, then opens a terminal UI
+with the same look and feel as `propeller-clock`'s console: live status (daemon running/stopped,
+mode, clock state, BPM, MIDI output port, and sync port) shown in the center of the frame,
+refreshed automatically. A help line at the bottom lists the available keys:
+
+- `d` — start the daemon if it's stopped, or stop it if it's running
+- `o` — cycle to the next available MIDI output port (including the default virtual port)
+- `m` — cycle the operating mode: `standalone` → `clock` → `sync` → `standalone`
+- `y` — cycle to the next available MIDI sync (input) port
+- `q` / `Esc` — close the console; leaves the daemon running
+
+Changing the MIDI port, sync port, or mode takes effect immediately: the console stops and
+restarts the daemon with the new setting. Switching to `sync` mode is blocked with an inline
+message until a sync port has been chosen with `y`. None of these choices are persisted —
+they only apply to the current daemon process, the same as setting `PROPELLER_MIDI_PORT` and
+`PROPELLER_SYNC_PORT` by hand.
+
 ### Log files
 
 Diagnostic output is written to:
@@ -548,6 +571,7 @@ PROPELLER_CLOCK_SOCK=/run/user/1000/propeller-clock.sock propeller-clock start
 - **Stale socket recovery** — detects and removes leftover socket files from a previous crash, then starts fresh.
 - **Graceful shutdown** — handles both the `stop` command and SIGTERM; unlinks the socket on exit.
 - **Status check** — `propeller status` reports whether the daemon is running; exits 0 if running, non-zero if not.
+- **Interactive console** — `propeller console` opens a terminal UI (same look and feel as `propeller-clock`'s console) for toggling the daemon, cycling the MIDI output and sync ports, and switching between standalone/clock/sync mode, without hand-editing environment variables.
 - **Structured logging** — writes to the platform log file using `tracing`.
 - **Project model** — a project defines a header (BPM, time signature) and tracks (MIDI channel, instrument, bars of notes). Notes carry pitch, velocity, and duration in ticks; a note can be a rest.
 - **Pitch bend** — tracks may carry 14-bit pitch-bend events (0–16383, center 8192) at arbitrary tick offsets; bent channels reset to center whenever playback stops or pauses.

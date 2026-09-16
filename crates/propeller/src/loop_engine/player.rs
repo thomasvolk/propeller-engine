@@ -2187,10 +2187,7 @@ mod tests {
             "ClockResume must still transition Paused -> Running"
         );
         assert!(
-            recorded
-                .lock()
-                .unwrap()
-                .contains(&MidiEvent::ClockContinue),
+            recorded.lock().unwrap().contains(&MidiEvent::ClockContinue),
             "ClockResume must still emit clock_continue for standalone clock mode"
         );
     }
@@ -2240,7 +2237,11 @@ mod tests {
 
         player.play_events(events);
 
-        assert_eq!(player.scheduler.bpm(), 3000, "the new tempo must be applied");
+        assert_eq!(
+            player.scheduler.bpm(),
+            3000,
+            "the new tempo must be applied"
+        );
         assert_eq!(
             player.anchor, anchor_before,
             "applying a sync BPM update must not rebase anchor (F-6)"
