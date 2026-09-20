@@ -396,7 +396,8 @@ fn cmd_project_get() {
 
 fn cmd_project_clear() {
     let sock_path = socket_path::resolve();
-    if let Err(e) = client::send_command(&sock_path, serde_json::json!({"command": "clear-project"}))
+    if let Err(e) =
+        client::send_command(&sock_path, serde_json::json!({"command": "clear-project"}))
     {
         handle_client_error(e, &sock_path);
     }

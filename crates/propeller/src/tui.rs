@@ -255,8 +255,10 @@ impl Console {
     /// running. A no-op (not an error) when the daemon isn't running, since there is no
     /// project state to clear.
     fn clear_project(&mut self) {
-        match client::send_command(&self.sock_path, serde_json::json!({"command": "clear-project"}))
-        {
+        match client::send_command(
+            &self.sock_path,
+            serde_json::json!({"command": "clear-project"}),
+        ) {
             Ok(_) => self.error_message = None,
             Err(ClientError::Connect(_)) => {}
             Err(ClientError::Daemon { message }) => self.error_message = Some(message),

@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.11.0] - 2026-09-20
+
+### Changes
+
+- Added a `clear-project` command to wipe both the active and pending project in one step,
+  and stop the loop — takes effect immediately, even mid-performance while the loop is
+  running, and doesn't wait for a bar boundary the way `modify-project` does.
+- Exposed the new command as `propeller project clear` on the CLI and as the `c` key in the
+  interactive console.
+- Made it safe to call with nothing loaded: it always returns success rather than erroring
+  when there's no active or pending project.
+- Documented the new command in the README and the JSON socket interface reference.
+
+---
+
 ## [0.10.0] - 2026-09-16
 
 ### Changes

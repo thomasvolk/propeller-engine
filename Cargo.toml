@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/propeller", "crates/propeller-clock", "crates/propeller-common"]
 
 [workspace.package]
-version = "0.10.0"
+version = "0.11.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/thomasvolk/propeller-engine"
@@ -21,4 +21,4 @@ tracing-appender = "0.2"
 tempfile = "3"
 ratatui = "0.29"
 crossterm = "0.28"
-propeller-common = { path = "crates/propeller-common", version = "0.10.0" }
+propeller-common = { path = "crates/propeller-common", version = "0.11.0" }
