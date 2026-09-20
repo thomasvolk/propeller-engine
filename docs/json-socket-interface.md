@@ -166,6 +166,19 @@ Returns the current engine state. See the Response reference below.
 
 Returns the current (active) and pending (staged-but-uncommitted) project, in the same complete shape used to load a project (see `create-project` above). Read-only: never creates, modifies, commits, or discards a project as a side effect. The response is identical regardless of operating mode. See the Response reference below. Equivalent to `propeller project get`.
 
+### clear-project
+
+```json
+{"command": "clear-project"}
+```
+
+Clears both the active and pending project in one step, and stops the loop. Takes effect
+immediately regardless of the loop's current state (Running, Waiting, or Paused) — it does not
+wait for a bar boundary, so a pending project cannot be promoted to active after it's cleared.
+The loop is stopped as part of the same operation, in every operating mode, since there is
+nothing left to play. Always returns `{"status": "ok"}`, including when there was no active or
+pending project to clear. Equivalent to `propeller project clear`.
+
 ### stop
 
 ```json
@@ -380,6 +393,22 @@ printf '{"command":"project"}\n' | nc -U /tmp/propeller.sock
 
 `"current"`/`"pending"` are each omitted entirely when absent. The CLI wraps this in
 `propeller project get`, which additionally strips the `"status"` field — see the
+[Managing projects section in README](../README.md#managing-projects).
+
+### Clear the current and pending project
+
+Wipe whatever's loaded and staged, and stop the loop — safe to send even mid-performance while
+the loop is running:
+
+```sh
+printf '{"command":"clear-project"}\n' | nc -U /tmp/propeller.sock
+```
+
+```json
+{"status":"ok"}
+```
+
+The CLI wraps this in `propeller project clear` — see the
 [Managing projects section in README](../README.md#managing-projects).
 
 ### Poll the current tick position

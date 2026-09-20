@@ -25,7 +25,8 @@ use crate::midi_port;
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 const RESTART_TIMEOUT: Duration = Duration::from_secs(10);
 
-const HELP_LINE: &str = "d start/stop daemon   o midi port   m mode   y sync port   q/Esc quit";
+const HELP_LINE: &str =
+    "d start/stop daemon   o midi port   m mode   y sync port   c clear project   q/Esc quit";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -250,6 +251,19 @@ impl Console {
         }
     }
 
+    /// Clears both the active and pending project immediately, even while the loop is
+    /// running. A no-op (not an error) when the daemon isn't running, since there is no
+    /// project state to clear.
+    fn clear_project(&mut self) {
+        match client::send_command(&self.sock_path, serde_json::json!({"command": "clear-project"}))
+        {
+            Ok(_) => self.error_message = None,
+            Err(ClientError::Connect(_)) => {}
+            Err(ClientError::Daemon { message }) => self.error_message = Some(message),
+            Err(ClientError::Input(msg)) => self.error_message = Some(msg),
+        }
+    }
+
     fn cycle_output_port(&mut self) {
         self.output_port.advance();
         self.apply_if_running();
@@ -339,6 +353,7 @@ fn event_loop(
                 KeyCode::Char('o') => console.cycle_output_port(),
                 KeyCode::Char('m') => console.cycle_mode(),
                 KeyCode::Char('y') => console.cycle_sync_port(),
+                KeyCode::Char('c') => console.clear_project(),
                 _ => {}
             }
         }

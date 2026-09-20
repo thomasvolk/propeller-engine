@@ -87,6 +87,8 @@ enum ProjectCommand {
     },
     /// Print the current/pending project state as compact JSON
     Get,
+    /// Clear the current and pending project immediately, even if the loop is running
+    Clear,
 }
 
 #[derive(Subcommand)]
@@ -126,6 +128,7 @@ fn main() {
             ProjectCommand::Create { filename } => cmd_project_create(filename),
             ProjectCommand::Modify { filename } => cmd_project_modify(filename),
             ProjectCommand::Get => cmd_project_get(),
+            ProjectCommand::Clear => cmd_project_clear(),
         },
         Commands::Loop { command } => match command {
             LoopCommand::Start => cmd_loop_start(),
@@ -391,6 +394,14 @@ fn cmd_project_get() {
     }
 }
 
+fn cmd_project_clear() {
+    let sock_path = socket_path::resolve();
+    if let Err(e) = client::send_command(&sock_path, serde_json::json!({"command": "clear-project"}))
+    {
+        handle_client_error(e, &sock_path);
+    }
+}
+
 fn cmd_loop_start() {
     let sock_path = socket_path::resolve();
     if let Err(e) = client::send_command(&sock_path, serde_json::json!({"command": "loop-start"})) {
@@ -481,6 +492,17 @@ mod tests {
                 command: ProjectCommand::Get,
             } => {}
             _ => panic!("expected Project Get"),
+        }
+    }
+
+    #[test]
+    fn project_clear_parses() {
+        let cli = Cli::try_parse_from(["propeller", "project", "clear"]).unwrap();
+        match cli.command {
+            Commands::Project {
+                command: ProjectCommand::Clear,
+            } => {}
+            _ => panic!("expected Project Clear"),
         }
     }
 

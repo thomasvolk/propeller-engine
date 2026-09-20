@@ -34,6 +34,7 @@ pub enum Command {
     ListMidiPorts,
     Status,
     Project,
+    ClearProject,
     Stop,
     GetPosition,
 }
@@ -140,6 +141,12 @@ mod tests {
     fn deserialize_project() {
         let cmd: Command = serde_json::from_str(r#"{"command":"project"}"#).unwrap();
         assert!(matches!(cmd, Command::Project));
+    }
+
+    #[test]
+    fn deserialize_clear_project() {
+        let cmd: Command = serde_json::from_str(r#"{"command":"clear-project"}"#).unwrap();
+        assert!(matches!(cmd, Command::ClearProject));
     }
 
     #[test]

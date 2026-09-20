@@ -154,6 +154,7 @@ async fn dispatch(
         }
         Command::Status => handle_status(store, engine, settings),
         Command::Project => handle_get_project(store),
+        Command::ClearProject => handle_clear_project(store, engine),
         Command::Stop => ok_response(),
         Command::GetPosition => handle_get_position(engine),
     }
@@ -409,6 +410,15 @@ fn handle_status(
     }
 
     resp
+}
+
+// Clears both the active and pending project and stops the loop unconditionally (harmless
+// no-op if it's already Stopped) — this must take effect immediately regardless of the
+// loop's current state, not wait for a bar boundary or Waiting-state promotion.
+fn handle_clear_project(store: &Arc<RwLock<ProjectStore>>, engine: &Arc<LoopEngine>) -> Value {
+    store.write().unwrap().clear();
+    engine.stop();
+    ok_response()
 }
 
 fn handle_get_project(store: &Arc<RwLock<ProjectStore>>) -> Value {
@@ -1472,6 +1482,113 @@ mod tests {
         assert_eq!(v["status"], "ok");
         assert_eq!(v["current"]["header"]["bpm"], 120);
         assert_eq!(v["pending"]["header"]["bpm"], 140);
+    }
+
+    #[tokio::test]
+    async fn clear_project_returns_ok() {
+        let response = send_command_get_response(r#"{"command":"clear-project"}"#).await;
+        let v: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+        assert_eq!(v["status"], "ok");
+    }
+
+    #[tokio::test]
+    async fn clear_project_wipes_active_and_pending() {
+        let (store, engine, settings, shutdown_tx) = make_shared_state();
+        {
+            use crate::domain::*;
+            let active_project = Project {
+                header: Header {
+                    bpm: 120,
+                    loop_duration: 1920,
+                },
+                tracks: vec![],
+            };
+            store.write().unwrap().set_pending(active_project).unwrap();
+            store.write().unwrap().commit_pending();
+
+            let staged_project = Project {
+                header: Header {
+                    bpm: 140,
+                    loop_duration: 960,
+                },
+                tracks: vec![],
+            };
+            store.write().unwrap().set_pending(staged_project).unwrap();
+        }
+
+        let (client, server) = UnixStream::pair().unwrap();
+        let store_clone = Arc::clone(&store);
+        tokio::spawn(async move {
+            connection_handler(server, store_clone, engine, settings, shutdown_tx).await;
+        });
+
+        let cmd = r#"{"command":"clear-project"}"#.to_string() + "\n";
+        let mut client = client;
+        use tokio::io::AsyncWriteExt;
+        client.write_all(cmd.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        client.read_to_string(&mut resp).await.unwrap();
+
+        let v: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
+        assert_eq!(v["status"], "ok");
+        assert!(store.read().unwrap().active().is_none());
+        assert!(store.read().unwrap().pending().is_none());
+    }
+
+    #[tokio::test]
+    async fn clear_project_stops_running_loop() {
+        let (store, engine, settings, shutdown_tx) = make_shared_state();
+        {
+            use crate::domain::*;
+            let project = Project {
+                header: Header {
+                    bpm: 300,
+                    loop_duration: 480,
+                },
+                tracks: vec![Track {
+                    name: "t".to_string(),
+                    channel: 1,
+                    instrument: 0,
+                    notes: vec![Note {
+                        start_tick: 0,
+                        duration: 480,
+                        pitch: 60,
+                        velocity: 80,
+                    }],
+                    pitch_bends: vec![],
+                }],
+            };
+            store.write().unwrap().set_pending(project).unwrap();
+            store.write().unwrap().commit_pending();
+        }
+        let engine_clone = Arc::clone(&engine);
+        engine_clone.start();
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        assert_eq!(engine_clone.state(), EngineState::Running);
+
+        let (client, server) = UnixStream::pair().unwrap();
+        let s = Arc::clone(&store);
+        let e = Arc::clone(&engine);
+        tokio::spawn(async move {
+            connection_handler(server, s, e, settings, shutdown_tx).await;
+        });
+
+        let cmd = r#"{"command":"clear-project"}"#.to_string() + "\n";
+        let mut client = client;
+        use tokio::io::AsyncWriteExt;
+        client.write_all(cmd.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        client.read_to_string(&mut resp).await.unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        assert_eq!(engine_clone.state(), EngineState::Stopped);
+    }
+
+    #[tokio::test]
+    async fn clear_project_with_nothing_to_clear_is_ok() {
+        let response = send_command_get_response(r#"{"command":"clear-project"}"#).await;
+        let v: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+        assert_eq!(v["status"], "ok");
     }
 
     // T-12: identical ProjectStore state queried once in Standalone mode and once

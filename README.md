@@ -132,6 +132,17 @@ propeller project get
 
 Prints compact JSON with a `"current"` entry, a `"pending"` entry, or both — each omitted entirely when absent, rather than shown as `null`. If the daemon is unreachable or reports an error, `project get` prints a diagnostic to stderr and exits with a non-zero code. See the Runtime interface section for the full response shape.
 
+Clear the active and staged project:
+
+```sh
+propeller project clear
+```
+
+Wipes both the current and pending project immediately — even mid-performance, while the loop
+is running — and stops the loop, since there is nothing left to play. A queued pending project
+is discarded too, so it can't reappear at the next bar boundary. Safe to run when no project is
+loaded; it's a no-op that still returns success.
+
 ### Controlling loop playback
 
 ```sh
@@ -216,6 +227,7 @@ refreshed automatically. A help line at the bottom lists the available keys:
 - `o` — cycle to the next available MIDI output port (including the default virtual port)
 - `m` — cycle the operating mode: `standalone` → `clock` → `sync` → `standalone`
 - `y` — cycle to the next available MIDI sync (input) port
+- `c` — clear the current and pending project immediately, even if the loop is running
 - `q` / `Esc` — close the console; leaves the daemon running
 
 Changing the MIDI port, sync port, or mode takes effect immediately: the console stops and
@@ -419,6 +431,20 @@ Example response with both an active and a staged project:
 
 `"current"` and `"pending"` are each omitted entirely when no project is active or staged, rather than appearing as `null`. `propeller project get` wraps this command and strips the `"status"` field before printing.
 
+#### clear-project
+
+Clears both the active and pending project in one step, and stops the loop.
+
+```json
+{"command": "clear-project"}
+```
+
+Takes effect immediately, regardless of the loop's current state — it does not wait for a bar
+boundary or a `Waiting` state — so the loop can't pick the pending project back up after it's
+cleared. The loop is stopped as part of the same operation, in every operating mode, since
+there is nothing left to play. Always returns `{"status": "ok"}`, including when there was no
+active or pending project to clear. Equivalent to `propeller project clear`.
+
 #### get-position
 
 Returns the current tick position:
@@ -580,6 +606,7 @@ PROPELLER_CLOCK_SOCK=/run/user/1000/propeller-clock.sock propeller-clock start
 - **Runtime JSON interface** — load projects, control playback, adjust BPM and mode, and query status over the socket without restarting the engine.
 - **Position query** — `propeller loop position` (with an optional `--poll`) or the `get-position` socket command report the current tick position for driving visual feedback such as step highlighting.
 - **Project state query** — `propeller project get` or the `project` socket command report the active and staged project as complete JSON, without needing to track separately what was last loaded.
+- **Project clearing** — `propeller project clear` or the `clear-project` socket command wipe the active and pending project and stop the loop immediately, even mid-performance while the loop is running.
 - **Operating modes** — `standalone`, `clock`, and `sync` modes are supported. `standalone` and `clock` are switchable at runtime via `set-mode`; `sync` requires `--sync` at daemon startup.
 - **Sync-mode clock forwarding** — while following an external MIDI clock, propeller relays it (Start, Stop, Continue, Song Position Pointer, and Timing Clock) back out to its own output port so downstream devices chained off that port also stay in sync; on by default in sync mode, disable with `--no-clock-forward`.
 - **Song Position Pointer** — in sync mode, an incoming Song Position Pointer (0xF2) relocates playback per MIDI 1.0: applied immediately while paused, or queued while stopped and applied on the next MIDI Continue.

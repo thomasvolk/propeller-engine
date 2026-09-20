@@ -40,7 +40,8 @@ impl ProjectStore {
         }
     }
 
-    #[cfg(test)]
+    /// Clears both the active and pending project in one step, so a pending project
+    /// cannot survive a clear and reappear at the next bar boundary via commit_pending.
     pub fn clear(&mut self) {
         self.active = None;
         self.pending = None;
@@ -130,6 +131,21 @@ mod tests {
         assert!(store.pending().is_some());
         assert_eq!(store.pending().unwrap().header.bpm, 120);
         assert!(store.active().is_none());
+    }
+
+    #[test]
+    fn test_clear_wipes_active_and_pending() {
+        let mut store = ProjectStore::new();
+        store.set_pending(make_valid_project()).unwrap();
+        store.commit_pending();
+        let mut second = make_valid_project();
+        second.header.bpm = 140;
+        store.set_pending(second).unwrap();
+
+        store.clear();
+
+        assert!(store.active().is_none());
+        assert!(store.pending().is_none());
     }
 
     #[test]
